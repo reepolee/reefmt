@@ -93,4 +93,4 @@ case "${1:-native}" in
 		;;
 esac
 
-rm ./target
+rm -rf ./target
