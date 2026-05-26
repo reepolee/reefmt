@@ -1,60 +1,94 @@
 set -e
 
+APP="reefmt"
+
 build_native() {
 	cargo build --release
-	# binary at ./target/release/reefmt
-	cp ./target/release/reefmt ./reefmt
-	echo "Built native (aarch64-apple-darwin): $(file ./reefmt | sed 's/.*: //')"
+
+	cp ./target/release/$APP ./${APP}-macos-arm64
+
+	echo "Built macOS arm64:"
+	file ./${APP}-macos-arm64 | sed 's/.*: //'
 }
 
 build_intel() {
 	cargo build --release --target x86_64-apple-darwin
-	# binary at ./target/x86_64-apple-darwin/release/reefmt
-	cp ./target/x86_64-apple-darwin/release/reefmt ./reefmt-intel
-	echo "Built x86_64-apple-darwin: $(file ./reefmt-intel | sed 's/.*: //')"
+
+	cp ./target/x86_64-apple-darwin/release/$APP ./${APP}-macos-x64
+
+	echo "Built macOS x64:"
+	file ./${APP}-macos-x64 | sed 's/.*: //'
 }
 
 build_windows() {
 	cargo build --release --target x86_64-pc-windows-gnu
-	# binary at ./target/x86_64-pc-windows-gnu/release/reefmt.exe
-	cp ./target/x86_64-pc-windows-gnu/release/reefmt.exe ./reefmt-windows-x64.exe
-	echo "Built x86_64-pc-windows-gnu: $(file ./reefmt-windows-x64.exe | sed 's/.*: //')"
+
+	cp ./target/x86_64-pc-windows-gnu/release/${APP}.exe \
+		./${APP}-windows-x64.exe
+
+	echo "Built Windows x64:"
+	file ./${APP}-windows-x64.exe | sed 's/.*: //'
+}
+
+build_linux() {
+	cargo build --release --target x86_64-unknown-linux-gnu
+
+	cp ./target/x86_64-unknown-linux-gnu/release/$APP \
+		./${APP}-linux-x64
+
+	echo "Built Linux x64:"
+	file ./${APP}-linux-x64 | sed 's/.*: //'
 }
 
 build_universal() {
 	build_native
 	build_intel
-	lipo -create -output ./reefmt-universal ./reefmt ./reefmt-intel
-	cp ./reefmt-universal ./reefmt
-	rm ./reefmt-intel ./reefmt-universal
-	echo "Universal binary: $(lipo -info ./reefmt | sed 's/.*: //')"
+
+	lipo -create \
+		-output ./${APP}-macos-universal \
+		./${APP}-macos-arm64 \
+		./${APP}-macos-x64
+
+	echo "Built macOS universal:"
+	lipo -info ./${APP}-macos-universal | sed 's/.*: //'
+}
+
+show_outputs() {
+	echo "---"
+	echo "Build outputs:"
+	ls -lh ./${APP}-*
 }
 
 case "${1:-native}" in
 	native)
 		build_native
 		;;
+
 	intel)
 		build_intel
 		;;
+
+	universal)
+		build_universal
+		;;
+
 	windows)
 		build_windows
 		;;
+
+	linux)
+		build_linux
+		;;
+
 	all)
 		build_universal
 		build_windows
-		echo "---"
-		echo "All builds complete:"
-		ls -lh ./reefmt ./reefmt-windows-x64.exe
+		build_linux
+		show_outputs
 		;;
+
 	*)
-		echo "Usage: $0 {native|intel|windows|all}"
-		echo "  native  - build for aarch64-apple-darwin (Apple Silicon, default)"
-		echo "  intel   - build for x86_64-apple-darwin (Intel Mac)"
-		echo "  windows - cross-compile for x86_64-pc-windows-gnu"
-		echo "  all     - build all three, create universal macOS binary"
+		echo "Usage: $0 {native|intel|universal|windows|linux|all}"
 		exit 1
 		;;
 esac
-
-rm -rf ./target
