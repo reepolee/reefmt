@@ -92,3 +92,5 @@ case "${1:-native}" in
 		exit 1
 		;;
 esac
+
+rm -rf ./target
