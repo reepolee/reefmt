@@ -1,0 +1,11 @@
+[package]
+name = "reefmt"
+version = "0.3.5"
+edition = "2021"
+
+[[bin]]
+name = "reefmt"
+path = "src/main.rs"
+
+[dependencies]
+glob = "0.3"
