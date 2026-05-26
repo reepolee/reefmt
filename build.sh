@@ -5,7 +5,6 @@ build_native() {
 	# binary at ./target/release/reefmt
 	cp ./target/release/reefmt ./reefmt
 	echo "Built native (aarch64-apple-darwin): $(file ./reefmt | sed 's/.*: //')"
-	rm -rf ./target
 }
 
 build_intel() {
@@ -13,7 +12,6 @@ build_intel() {
 	# binary at ./target/x86_64-apple-darwin/release/reefmt
 	cp ./target/x86_64-apple-darwin/release/reefmt ./reefmt-intel
 	echo "Built x86_64-apple-darwin: $(file ./reefmt-intel | sed 's/.*: //')"
-	rm -rf ./target
 }
 
 build_windows() {
@@ -21,7 +19,6 @@ build_windows() {
 	# binary at ./target/x86_64-pc-windows-gnu/release/reefmt.exe
 	cp ./target/x86_64-pc-windows-gnu/release/reefmt.exe ./reefmt-windows-x64.exe
 	echo "Built x86_64-pc-windows-gnu: $(file ./reefmt-windows-x64.exe | sed 's/.*: //')"
-	rm -rf ./target
 }
 
 build_universal() {
@@ -59,3 +56,5 @@ case "${1:-native}" in
 		exit 1
 		;;
 esac
+
+rm -rf ./target
