@@ -40,17 +40,6 @@ fn restore(src: &str) -> String {
     out
 }
 
-fn is_js_script(open_tag: &str) -> bool {
-    if !open_tag.starts_with("<script") {
-        return false;
-    }
-    if !open_tag.contains("type=") {
-        return true;
-    }
-    let js_types = ["text/javascript", "application/javascript", "module"];
-    js_types.iter().any(|t| open_tag.contains(t))
-}
-
 fn biome_format(src: &str, lang: &str) -> String {
     let ext = if lang == "css" { "css" } else { "js" };
     let timestamp = std::time::SystemTime::now()
@@ -179,10 +168,6 @@ fn replace_script_style(content: &str, tag_name: &str, lang: &str) -> String {
 
                         if body.trim().is_empty() {
                             result.push_str(open_tag);
-                            result.push_str(close_tag);
-                        } else if tag_name == "script" && !is_js_script(open_tag) {
-                            result.push_str(open_tag);
-                            result.push_str(body);
                             result.push_str(close_tag);
                         } else {
                             let formatted = biome_format(body, lang);
