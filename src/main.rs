@@ -2,7 +2,7 @@ use glob::glob;
 use std::{
     env, fs,
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
 };
 
@@ -79,9 +79,6 @@ fn biome_format(src: &str, lang: &str) -> String {
         .join("\n")
 }
 
-/// Re-indent JS/CSS content based on brace depth. Counts `{` and `}` characters
-/// per line to determine nesting, handling inline pairs like `{ foo }` (net 0)
-/// and patterns like `});`, `} else {`, and `headers: { ... },` correctly.
 fn indent_code(src: &str) -> String {
     let mut out = String::new();
     let mut depth: usize = 0;
@@ -93,19 +90,17 @@ fn indent_code(src: &str) -> String {
             continue;
         }
 
-        // Count closing braces first (before writing)
         let mut opens = 0usize;
         let mut closes = 0usize;
         for ch in trimmed.chars() {
             match ch {
                 '{' => opens += 1,
-                '}' if opens > 0 => opens -= 1,  // pair with preceding open on this line
+                '}' if opens > 0 => opens -= 1,
                 '}' => closes += 1,
                 _ => {}
             }
         }
 
-        // Apply unmatched closes before writing
         if closes > 0 {
             depth = depth.saturating_sub(closes);
         }
@@ -114,7 +109,6 @@ fn indent_code(src: &str) -> String {
         out.push_str(trimmed);
         out.push('\n');
 
-        // Apply unmatched opens after writing
         depth += opens;
     }
 
@@ -137,7 +131,6 @@ fn replace_script_style(content: &str, tag_name: &str, lang: &str) -> String {
             Some(start) => {
                 let base_indent = &remaining[..start];
                 result.push_str(base_indent);
-                // Extract only the line's indentation (whitespace after last newline)
                 let line_indent = match base_indent.rfind('\n') {
                     Some(pos) => &base_indent[pos + 1..],
                     None => base_indent,
@@ -171,13 +164,10 @@ fn replace_script_style(content: &str, tag_name: &str, lang: &str) -> String {
                             result.push_str(close_tag);
                         } else {
                             let formatted = biome_format(body, lang);
-                            // Indent content one level deeper than the open tag,
-                            // and indent the closing tag at the same level
                             let indent_content = format!("{}\t", line_indent);
                             let indented = formatted
                                 .lines()
                                 .map(|l| {
-                                    // Strip biome_format's own \t prefix, use our depth-based indent
                                     let stripped = l.strip_prefix('\t').unwrap_or(l);
                                     format!("{}{}", indent_content, stripped)
                                 })
@@ -198,8 +188,6 @@ fn replace_script_style(content: &str, tag_name: &str, lang: &str) -> String {
 
     result
 }
-
-// ── helpers ───────────────────────────────────────────────────────────────────
 
 fn normalize_ree_spacing(src: &str) -> String {
     let mut out = src.to_string();
@@ -228,7 +216,6 @@ fn collapse_blank_lines(src: &str) -> String {
             out.push('\n');
         }
     }
-    // Preserve trailing blank lines (don't trim_end)
     out
 }
 
@@ -261,9 +248,6 @@ fn leading_tabs(s: &str) -> String {
     s.chars().take_while(|&c| c == '\t').collect()
 }
 
-/// Check whether a tag + body + close pattern appeared on a single line in the
-/// original source. Used to preserve multi-line formatting when the developer
-/// intentionally broke a tag across lines.
 fn was_inline_in_original(original: &str, open_tag: &str, body: &str, close_tag: &str) -> bool {
     let open_trimmed = open_tag.trim();
     let close_trimmed = close_tag.trim();
@@ -295,15 +279,6 @@ fn is_ree_line(line: &str) -> bool {
     line.starts_with('{')
 }
 
-// ── multi-tag HTML depth accounting ───────────────────────────────────────────
-
-/// Scan a trimmed HTML line and return (close_before, open_after):
-/// - close_before: net closing tags that should decrease depth BEFORE writing
-/// - open_after: net opening tags that should increase depth AFTER writing
-///
-/// Handles all tags on the line (not just the first), correctly accounting
-/// for inline-close pairs like `<div>text</div>` (net 0) and void/self-closed
-/// elements like `<br>` and `<img />` (net 0).
 fn compute_html_tag_delta(line: &str, void_tags: &[&str]) -> (isize, isize) {
     let mut close_before = 0isize;
     let mut open_after = 0isize;
@@ -313,7 +288,6 @@ fn compute_html_tag_delta(line: &str, void_tags: &[&str]) -> (isize, isize) {
         let abs_pos = pos + open_pos;
         let rest = &line[abs_pos..];
 
-        // Closing tag: </tag>
         if rest.starts_with("</") {
             let tag_start = abs_pos + 2;
             let tag_name_end = line[tag_start..]
@@ -332,7 +306,6 @@ fn compute_html_tag_delta(line: &str, void_tags: &[&str]) -> (isize, isize) {
             continue;
         }
 
-        // Skip comments, doctype, processing instructions
         if rest.starts_with("<!--") || rest.starts_with("<!") || rest.starts_with("<?") {
             if let Some(close) = rest.find('>') {
                 pos = abs_pos + close + 1;
@@ -342,7 +315,6 @@ fn compute_html_tag_delta(line: &str, void_tags: &[&str]) -> (isize, isize) {
             continue;
         }
 
-        // Opening tag: <tag ...>
         let tag_start = abs_pos + 1;
         let tag_name_end = line[tag_start..]
             .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
@@ -358,13 +330,10 @@ fn compute_html_tag_delta(line: &str, void_tags: &[&str]) -> (isize, isize) {
             let after_tag = &line[abs_pos + tag_len..];
             let has_inline = after_tag.contains(&close_tag);
 
-            // A non-void, non-self-closed tag with no inline close contributes +1 after
             if !void_tags.contains(&tag_name) && !is_self_closed && !has_inline {
                 open_after += 1;
             }
 
-            // If this tag closes inline, its corresponding `</tag>` later
-            // on this line should NOT decrease depth (pre-cancel it now)
             if has_inline {
                 close_before -= 1;
             }
@@ -378,10 +347,6 @@ fn compute_html_tag_delta(line: &str, void_tags: &[&str]) -> (isize, isize) {
     (close_before, open_after)
 }
 
-/// Normalize inline spacing between HTML tags and REE template expressions.
-/// Strips excess whitespace after `>` when followed by `{` (REE tag start),
-/// and before `<` when preceded by `}` (REE tag end).
-/// This prevents `<strong>\t\t{= x }</strong>` — internal padding is removed.
 fn normalize_inline_spacing(line: &str) -> String {
     let mut out = String::new();
     let chars: Vec<char> = line.chars().collect();
@@ -392,7 +357,6 @@ fn normalize_inline_spacing(line: &str) -> String {
         if chars[i] == '>' {
             out.push('>');
             i += 1;
-            // If next non-whitespace is `{`, strip the whitespace
             if let Some(n) = chars[i..].iter().position(|&c| !c.is_whitespace()) {
                 if chars[i + n] == '{' {
                     i += n;
@@ -401,7 +365,6 @@ fn normalize_inline_spacing(line: &str) -> String {
         } else if chars[i] == '}' {
             out.push('}');
             i += 1;
-            // If next non-whitespace is `<`, strip the whitespace
             if let Some(n) = chars[i..].iter().position(|&c| !c.is_whitespace()) {
                 if chars[i + n] == '<' {
                     i += n;
@@ -415,8 +378,6 @@ fn normalize_inline_spacing(line: &str) -> String {
 
     out
 }
-
-// ── main formatter ────────────────────────────────────────────────────────────
 
 fn format_html(src: &str) -> String {
     let void_tags = [
@@ -435,29 +396,23 @@ fn format_html(src: &str) -> String {
             continue;
         }
 
-        // Decrease before ree block closers
         if trimmed.starts_with("{/if") || trimmed.starts_with("{/each") {
             if depth > 0 {
                 depth -= 1;
             }
         }
 
-        // Decrease before {:else} then re-increase after
         let is_else = trimmed.starts_with("{:else") || trimmed.starts_with("{:");
         if is_else && depth > 0 {
             depth -= 1;
         }
 
-        // Compute net HTML tag depth delta for this line
         if !is_ree_line(trimmed) {
             let (close_before, open_after) = compute_html_tag_delta(trimmed, &void_tags);
 
-            // Shallow style: multiple opening/closing tags on the same line
-            // count as at most 1 nesting level each (e.g. `<p><strong>` adds 1, not 2).
             let close_before = close_before.min(1);
             let open_after = open_after.min(1);
 
-            // Apply closing depression before writing (guard against negative)
             if close_before > 0 {
                 for _ in 0..close_before as usize {
                     if depth > 0 {
@@ -471,7 +426,6 @@ fn format_html(src: &str) -> String {
             out.push_str(&normalized);
             out.push('\n');
 
-            // Apply opening elevation after writing
             depth += open_after as usize;
         } else {
             let normalized = normalize_inline_spacing(trimmed);
@@ -480,7 +434,6 @@ fn format_html(src: &str) -> String {
             out.push('\n');
         }
 
-        // Increase after ree block openers (not layout/include)
         if (trimmed.starts_with("{#if") || trimmed.starts_with("{#each"))
             && !trimmed.starts_with("{#include")
             && !trimmed.starts_with("{#layout")
@@ -488,7 +441,6 @@ fn format_html(src: &str) -> String {
             depth += 1;
         }
 
-        // Re-increase after {:else}
         if is_else {
             depth += 1;
         }
@@ -510,12 +462,10 @@ fn collapse_inline_tags(src: &str, original: &str) -> String {
             let close = format!("</{}>", tag_name);
 
             if !has_inline_close(line, &tag_name) {
-                // Find next non-blank line
                 let mut j = i + 1;
                 while j < lines.len() && lines[j].trim().is_empty() {
                     j += 1;
                 }
-                // Find next non-blank line after that
                 let mut k = j + 1;
                 while k < lines.len() && lines[k].trim().is_empty() {
                     k += 1;
@@ -526,8 +476,6 @@ fn collapse_inline_tags(src: &str, original: &str) -> String {
                     && is_ree_inline_only(lines[j].trim())
                     && lines[k].trim() == close
                 {
-                    // Only compact if the original had this on a single line.
-                    // Multi-line formatting from the developer is preserved.
                     if was_inline_in_original(original, line, lines[j].trim(), &close) {
                         let indent = leading_tabs(lines[i]);
                         out.push(format!(
@@ -551,8 +499,6 @@ fn collapse_inline_tags(src: &str, original: &str) -> String {
     out.join("\n")
 }
 
-// ── file processing ───────────────────────────────────────────────────────────
-
 fn format_file(path: &Path) {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
@@ -568,7 +514,6 @@ fn format_file(path: &Path) {
     let result = replace_script_style(&result, "script", "js");
     let result = replace_script_style(&result, "style", "css");
 
-    // Ensure the file ends with at least one newline
     let write_content = if !result.is_empty() && !result.ends_with('\n') {
         format!("{}\n", result)
     } else {
@@ -581,33 +526,57 @@ fn format_file(path: &Path) {
     }
 }
 
+fn collect_ree_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    if dir.is_dir() {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                collect_ree_files(&path, files)?;
+            } else if path.extension().and_then(|s| s.to_str()) == Some("ree") {
+                files.push(path);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
 
-    // Handle -v / --version flag before checking for args
     if args.len() == 1 && (args[0] == "-v" || args[0] == "--version") {
         println!("reefmt v{}", env!("CARGO_PKG_VERSION"));
         return;
     }
 
-    // When no args, format all **/*.ree files
-    let patterns: Vec<String> = if args.is_empty() {
-        vec!["**/*.ree".to_string()]
+    let targets: Vec<String> = if args.is_empty() {
+        vec![".".to_string()]
     } else {
         args
     };
 
-    for pattern in &patterns {
-        if Path::new(pattern).exists() {
-            format_file(Path::new(pattern));
+    for target in targets {
+        let path = Path::new(&target);
+
+        if path.is_dir() {
+            let mut files = Vec::new();
+            if let Err(e) = collect_ree_files(path, &mut files) {
+                eprintln!("Error reading directory {}: {}", target, e);
+                continue;
+            }
+            for file in files {
+                format_file(&file);
+            }
+        } else if path.exists() {
+            format_file(path);
         } else {
-            match glob(pattern) {
+            match glob(&target) {
                 Ok(paths) => {
                     for entry in paths.flatten() {
                         format_file(&entry);
                     }
                 }
-                Err(e) => eprintln!("Invalid glob {}: {}", pattern, e),
+                Err(e) => eprintln!("Invalid glob {}: {}", target, e),
             }
         }
     }
