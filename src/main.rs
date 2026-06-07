@@ -9,8 +9,10 @@ use std::{
 const REE_TAGS: &[(&str, &str)] = &[
     ("{#layout", "__REE_LAYOUT__"),
     ("{#include", "__REE_INCLUDE__"),
+    ("{#with", "__REE_WITH__"),
     ("{#each", "__REE_EACH__"),
     ("{#if", "__REE_IF__"),
+    ("{/with}", "__REE_END_WITH__"),
     ("{/each}", "__REE_END_EACH__"),
     ("{/if}", "__REE_END_IF__"),
     ("{:else}", "__REE_ELSE__"),
@@ -191,14 +193,19 @@ fn replace_script_style(content: &str, tag_name: &str, lang: &str) -> String {
 
 fn normalize_ree_spacing(src: &str) -> String {
     let mut out = src.to_string();
-    for kw in &["if", "each", "include", "layout"] {
+    for kw in &["if", "each", "with", "include", "layout"] {
         out = out.replace(&format!("{{# {}", kw), &format!("{{#{}", kw));
         out = out.replace(&format!("{{/ {}", kw), &format!("{{/{}", kw));
     }
     out.replace("{/ if}", "{/if}")
         .replace("{/ each}", "{/each}")
+        .replace("{/ with}", "{/with}")
         .replace("{/ if }", "{/if}")
         .replace("{/ each }", "{/each}")
+        .replace("{/ with }", "{/with}")
+        .replace("{/if }", "{/if}")
+        .replace("{/each }", "{/each}")
+        .replace("{/with }", "{/with}")
 }
 
 fn collapse_blank_lines(src: &str) -> String {
@@ -381,8 +388,8 @@ fn normalize_inline_spacing(line: &str) -> String {
 
 fn format_html(src: &str) -> String {
     let void_tags = [
-        "area", "base", "br", "col", "embed", "hr", "img", "input",
-        "link", "meta", "param", "source", "track", "wbr",
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
+        "source", "track", "wbr",
     ];
 
     let mut out = String::new();
@@ -396,7 +403,10 @@ fn format_html(src: &str) -> String {
             continue;
         }
 
-        if trimmed.starts_with("{/if") || trimmed.starts_with("{/each") {
+        if trimmed.starts_with("{/if")
+            || trimmed.starts_with("{/each")
+            || trimmed.starts_with("{/with")
+        {
             if depth > 0 {
                 depth -= 1;
             }
@@ -434,7 +444,9 @@ fn format_html(src: &str) -> String {
             out.push('\n');
         }
 
-        if (trimmed.starts_with("{#if") || trimmed.starts_with("{#each"))
+        if (trimmed.starts_with("{#if")
+            || trimmed.starts_with("{#each")
+            || trimmed.starts_with("{#with"))
             && !trimmed.starts_with("{#include")
             && !trimmed.starts_with("{#layout")
         {
@@ -478,13 +490,7 @@ fn collapse_inline_tags(src: &str, original: &str) -> String {
                 {
                     if was_inline_in_original(original, line, lines[j].trim(), &close) {
                         let indent = leading_tabs(lines[i]);
-                        out.push(format!(
-                            "{}{}{}{}",
-                            indent,
-                            line,
-                            lines[j].trim(),
-                            close
-                        ));
+                        out.push(format!("{}{}{}{}", indent, line, lines[j].trim(), close));
                         i = k + 1;
                         continue;
                     }
@@ -523,6 +529,28 @@ fn format_file(path: &Path) {
     match fs::write(path, &write_content) {
         Ok(_) => println!("Formatted: {}", path.display()),
         Err(e) => eprintln!("Error writing {}: {}", path.display(), e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_with_directive_as_block() {
+        let src = "{#with props.headers}\n<div>\n{=title}\n</div>\n{/with}";
+
+        assert_eq!(
+            format_html(&normalize_ree_spacing(src)),
+            "{#with props.headers}\n\t<div>\n\t\t{=title}\n\t</div>\n{/with}\n"
+        );
+    }
+
+    #[test]
+    fn normalizes_with_directive_spacing() {
+        let src = "{# with props.headers}\n{/ with }";
+
+        assert_eq!(normalize_ree_spacing(src), "{#with props.headers}\n{/with}");
     }
 }
 
