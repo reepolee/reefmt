@@ -53,7 +53,9 @@ fn biome_format(src: &str, lang: &str) -> String {
         .to_string_lossy()
         .into_owned();
 
-    let protected = protect(src.trim());
+    // Protect HTML comments so content inside them is not modified
+    let (html_protected, html_comments) = protect_html_comments(src.trim());
+    let protected = protect(&html_protected);
 
     let mut tmp = fs::File::create(&tmp_path).expect("create tmp");
     tmp.write_all(protected.as_bytes()).expect("write tmp");
@@ -65,7 +67,11 @@ fn biome_format(src: &str, lang: &str) -> String {
 
     let formatted = match output {
         Ok(_) => match fs::read_to_string(&tmp_path) {
-            Ok(content) => indent_code(&restore(&content)),
+            Ok(content) => {
+                let restored = restore(&content);
+                let restored = restore_html_comments(&restored, &html_comments);
+                indent_code(&restored)
+            }
             Err(_) => indent_code(src),
         },
         Err(_) => indent_code(src),
@@ -191,13 +197,56 @@ fn replace_script_style(content: &str, tag_name: &str, lang: &str) -> String {
     result
 }
 
+/// Replace HTML comments (`<!-- ... -->`) with unique placeholders
+/// so they are not modified by string transformations.
+fn protect_html_comments(src: &str) -> (String, Vec<String>) {
+    let mut result = String::new();
+    let mut placeholders: Vec<String> = Vec::new();
+    let mut rest = src;
+
+    while let Some(start) = rest.find("<!--") {
+        // Push everything before the comment
+        result.push_str(&rest[..start]);
+        // Find the end of the comment
+        if let Some(end) = rest[start..].find("-->") {
+            let comment_end = start + end + 3;
+            placeholders.push(rest[start..comment_end].to_string());
+            let placeholder = format!("__REE_HTML_COMMENT_{}__", placeholders.len() - 1);
+            result.push_str(&placeholder);
+            rest = &rest[comment_end..];
+        } else {
+            // Unterminated comment — push the rest as-is
+            result.push_str(&rest[start..]);
+            rest = "";
+            break;
+        }
+    }
+
+    result.push_str(rest);
+    (result, placeholders)
+}
+
+/// Restore HTML comments from their placeholders.
+fn restore_html_comments(src: &str, placeholders: &[String]) -> String {
+    let mut result = src.to_string();
+    for (i, comment) in placeholders.iter().enumerate() {
+        let placeholder = format!("__REE_HTML_COMMENT_{}__", i);
+        result = result.replace(&placeholder, comment);
+    }
+    result
+}
+
 fn normalize_ree_spacing(src: &str) -> String {
-    let mut out = src.to_string();
+    // Protect HTML comments so Ree tag-like text inside them is not normalized
+    let (protected, comment_placeholders) = protect_html_comments(src);
+    let mut out = protected;
+
     for kw in &["if", "each", "with", "include", "layout"] {
         out = out.replace(&format!("{{# {}", kw), &format!("{{#{}", kw));
         out = out.replace(&format!("{{/ {}", kw), &format!("{{/{}", kw));
     }
-    out.replace("{/ if}", "{/if}")
+    out = out
+        .replace("{/ if}", "{/if}")
         .replace("{/ each}", "{/each}")
         .replace("{/ with}", "{/with}")
         .replace("{/ if }", "{/if}")
@@ -205,7 +254,9 @@ fn normalize_ree_spacing(src: &str) -> String {
         .replace("{/ with }", "{/with}")
         .replace("{/if }", "{/if}")
         .replace("{/each }", "{/each}")
-        .replace("{/with }", "{/with}")
+        .replace("{/with }", "{/with}");
+
+    restore_html_comments(&out, &comment_placeholders)
 }
 
 fn collapse_blank_lines(src: &str) -> String {
@@ -313,7 +364,18 @@ fn compute_html_tag_delta(line: &str, void_tags: &[&str]) -> (isize, isize) {
             continue;
         }
 
-        if rest.starts_with("<!--") || rest.starts_with("<!") || rest.starts_with("<?") {
+        if rest.starts_with("<!--") {
+            // HTML comment - find the closing --> marker
+            if let Some(close) = rest.find("-->") {
+                pos = abs_pos + close + 3;
+            } else {
+                break;
+            }
+            continue;
+        }
+
+        if rest.starts_with("<!") || rest.starts_with("<?") {
+            // Doctype, CDATA, processing instructions - find the first >
             if let Some(close) = rest.find('>') {
                 pos = abs_pos + close + 1;
             } else {
@@ -394,6 +456,7 @@ fn format_html(src: &str) -> String {
 
     let mut out = String::new();
     let mut depth: usize = 0;
+    let mut in_comment: bool = false;
 
     for line in src.lines() {
         let trimmed = line.trim();
@@ -403,16 +466,28 @@ fn format_html(src: &str) -> String {
             continue;
         }
 
-        if trimmed.starts_with("{/if")
-            || trimmed.starts_with("{/each")
-            || trimmed.starts_with("{/with")
-        {
-            if depth > 0 {
-                depth -= 1;
+        // Track whether we're inside a multiline HTML comment.
+        // Ree template directives inside comments should not affect depth.
+        if trimmed.contains("<!--") && !trimmed.contains("-->") {
+            in_comment = true;
+        }
+        if trimmed.contains("-->") {
+            in_comment = false;
+        }
+
+        if !in_comment {
+            if trimmed.starts_with("{/if")
+                || trimmed.starts_with("{/each")
+                || trimmed.starts_with("{/with")
+            {
+                if depth > 0 {
+                    depth -= 1;
+                }
             }
         }
 
-        let is_else = trimmed.starts_with("{:else") || trimmed.starts_with("{:");
+        let is_else = !in_comment
+            && (trimmed.starts_with("{:else") || trimmed.starts_with("{:"));
         if is_else && depth > 0 {
             depth -= 1;
         }
@@ -444,17 +519,19 @@ fn format_html(src: &str) -> String {
             out.push('\n');
         }
 
-        if (trimmed.starts_with("{#if")
-            || trimmed.starts_with("{#each")
-            || trimmed.starts_with("{#with"))
-            && !trimmed.starts_with("{#include")
-            && !trimmed.starts_with("{#layout")
-        {
-            depth += 1;
-        }
+        if !in_comment {
+            if (trimmed.starts_with("{#if")
+                || trimmed.starts_with("{#each")
+                || trimmed.starts_with("{#with"))
+                && !trimmed.starts_with("{#include")
+                && !trimmed.starts_with("{#layout")
+            {
+                depth += 1;
+            }
 
-        if is_else {
-            depth += 1;
+            if is_else {
+                depth += 1;
+            }
         }
     }
 
@@ -551,6 +628,240 @@ mod tests {
         let src = "{# with props.headers}\n{/ with }";
 
         assert_eq!(normalize_ree_spacing(src), "{#with props.headers}\n{/with}");
+    }
+
+    #[test]
+    fn indents_single_line_html_comment() {
+        let src = "<div>\n<!-- single line comment -->\n</div>";
+
+        assert_eq!(
+            format_html(src),
+            "<div>\n\t<!-- single line comment -->\n</div>\n"
+        );
+    }
+
+    #[test]
+    fn indents_multiline_html_comment() {
+        let src = "<div>\n<!--\n  comment\n-->\n</div>";
+
+        // Comment content lines get trimmed and indented at same depth
+        // as the comment markers, not deeper.
+        assert_eq!(
+            format_html(src),
+            "<div>\n\t<!--\n\tcomment\n\t-->\n</div>\n"
+        );
+    }
+
+    #[test]
+    fn indents_comment_with_html_like_tags_inside() {
+        // HTML comment that contains something that looks like an HTML tag
+        let src = "<div>\n<!-- this is <b>bold</b> text -->\n<span>text</span>\n</div>";
+
+        assert_eq!(
+            format_html(src),
+            "<div>\n\t<!-- this is <b>bold</b> text -->\n\t<span>text</span>\n</div>\n"
+        );
+    }
+
+    #[test]
+    fn indents_comment_inside_ree_block() {
+        let src = "{#if show}\n<div>\n<!-- comment -->\n<span>text</span>\n</div>\n{/if}";
+
+        assert_eq!(
+            format_html(src),
+            "{#if show}\n\t<div>\n\t\t<!-- comment -->\n\t\t<span>text</span>\n\t</div>\n{/if}\n"
+        );
+    }
+
+    #[test]
+    fn ree_tag_inside_multiline_comment_does_not_affect_depth() {
+        // Ree template directives inside multiline HTML comments
+        // should not affect depth tracking.
+        let src =
+            "{#if show}\n<div>\n<!--\n{#if debug}\n-->\n<p>visible</p>\n</div>\n{/if}";
+
+        let result = format_html(src);
+        let lines: Vec<&str> = result.lines().collect();
+
+        assert_eq!(lines[0], "{#if show}", "opening if");
+        assert_eq!(lines[1], "\t<div>", "div at depth 1");
+        assert_eq!(lines[2], "\t\t<!--", "comment start at depth 2");
+        assert_eq!(
+            lines[3], "\t\t{#if debug}",
+            "ree tag inside comment at depth 2"
+        );
+        assert_eq!(lines[4], "\t\t-->", "comment end at depth 2");
+        assert_eq!(lines[5], "\t\t<p>visible</p>", "p at depth 2");
+        assert_eq!(lines[6], "\t</div>", "closing div at depth 1");
+        assert_eq!(lines[7], "{/if}", "closing if at depth 0");
+    }
+
+    #[test]
+    fn ree_if_inside_multiline_comment_doesnt_open_block() {
+        // {#if} inside a comment should NOT increase depth,
+        // so content after the comment stays at correct depth.
+        let src = "<div>\n<!--\n{#if debug}\n-->\n<p>hi</p>\n</div>";
+
+        let result = format_html(src);
+        let lines: Vec<&str> = result.lines().collect();
+
+        assert_eq!(lines[0], "<div>", "opening div at depth 0");
+        assert_eq!(lines[1], "\t<!--", "comment at depth 1");
+        assert_eq!(
+            lines[3], "\t-->",
+            "comment end at depth 1, not deeper"
+        );
+        assert_eq!(lines[4], "\t<p>hi</p>", "p at depth 1");
+        assert_eq!(lines[5], "</div>", "closing div at depth 0");
+    }
+
+    #[test]
+    fn ree_slash_if_inside_comment_doesnt_close_block() {
+        // {/if} inside a comment should NOT decrease depth.
+        let src = "<div>\n<!--\n{/if}\n-->\n<p>hi</p>\n</div>";
+
+        let result = format_html(src);
+        let lines: Vec<&str> = result.lines().collect();
+
+        assert_eq!(lines[0], "<div>", "opening div at depth 0");
+        assert_eq!(lines[2], "\t{/if}", "/if inside comment at depth 1");
+        assert_eq!(lines[4], "\t<p>hi</p>", "p still at depth 1, not unindented");
+        assert_eq!(lines[5], "</div>", "closing div at depth 0");
+    }
+
+    #[test]
+    fn normalize_skips_ree_directives_in_html_comments() {
+        // Ree-style syntax inside HTML comments should not be normalized
+        let src = "<!-- {# if show} -->\n<div>\n{# if show}\n<span>text</span>\n{/ if }";
+
+        // The comment content should be preserved exactly;
+        // real Ree directives outside comments should still be normalized.
+        let result = normalize_ree_spacing(src);
+        assert_eq!(
+            result,
+            "<!-- {# if show} -->\n<div>\n{#if show}\n<span>text</span>\n{/if}"
+        );
+    }
+
+    #[test]
+    fn normalize_skips_ree_directives_in_multiline_html_comments() {
+        // Ree-style syntax inside multiline HTML comments should not be normalized
+        let src = "<div>\n<!--\n{# if debug}\n{/ if }\n-->\n{# each items}\n<p>item</p>\n{/each}";
+
+        let result = normalize_ree_spacing(src);
+        let lines: Vec<&str> = result.lines().collect();
+
+        // Comment content preserved exactly
+        assert_eq!(lines[1], "<!--");
+        assert_eq!(lines[2], "{# if debug}", "inside comment - preserved");
+        assert_eq!(lines[3], "{/ if }", "inside comment - preserved");
+        assert_eq!(lines[4], "-->");
+        // Real directives outside comment are normalized
+        assert_eq!(lines[5], "{#each items}", "outside comment - normalized");
+        assert_eq!(lines[7], "{/each}", "outside comment - normalized");
+    }
+
+    #[test]
+    fn normalize_preserves_comment_near_real_directives() {
+        // A comment adjacent to a real Ree directive should not interfere
+        let src = "{#if show}<!-- {# if comment} -->\n<p>text</p>\n{/if}";
+
+        // The comment's {# if comment} should stay as-is; the real {#if and {/if} should be fine
+        let result = normalize_ree_spacing(src);
+        assert_eq!(
+            result,
+            "{#if show}<!-- {# if comment} -->\n<p>text</p>\n{/if}"
+        );
+    }
+
+    #[test]
+    fn normalize_with_no_comments_is_unchanged() {
+        // Normal behavior without HTML comments should be unaffected
+        let src = "{# if show}\n{/ if }";
+
+        assert_eq!(
+            normalize_ree_spacing(src),
+            "{#if show}\n{/if}"
+        );
+    }
+
+    #[test]
+    fn single_line_comment_with_ree_tag_still_correct() {
+        // Single-line HTML comments (opening and closing on same line)
+        // should not enter comment state at all.
+        let src = "<div>\n<!-- {#if debug} -->\n<span>text</span>\n</div>";
+
+        let result = format_html(src);
+        let lines: Vec<&str> = result.lines().collect();
+
+        assert_eq!(lines[0], "<div>");
+        assert_eq!(lines[1], "\t<!-- {#if debug} -->", "single line comment at depth 1");
+        assert_eq!(lines[2], "\t<span>text</span>", "span at depth 1");
+        assert_eq!(lines[3], "</div>");
+    }
+
+    #[test]
+    fn protect_skips_ree_tags_inside_html_comments() {
+        // Simulate the protect pipeline from biome_format:
+        // protect_html_comments -> protect -> restore -> restore_html_comments
+        let src = "// <!-- {=value} -->\n/* {# if debug} */";
+
+        let (html_protected, html_comments) = protect_html_comments(src);
+        let after_protect = protect(&html_protected);
+        let after_restore = restore(&after_protect);
+        let final_result = restore_html_comments(&after_restore, &html_comments);
+
+        // The Reese tags inside HTML comments should be preserved exactly
+        assert!(
+            final_result.contains("<!-- {=value} -->"),
+            "Ree tag inside HTML comment should be preserved, got: {}",
+            final_result
+        );
+        // The Ree tag outside HTML comment (in /* */) should be restored too
+        assert!(
+            final_result.contains("{# if debug}"),
+            "Ree tag in block comment should be preserved, got: {}",
+            final_result
+        );
+    }
+
+    #[test]
+    fn protect_preserves_html_comment_markers() {
+        // Even without Ree tags inside, HTML comment markers should survive
+        // the protect/restore pipeline.
+        let src = "let x = 1;\n<!--\n  legacy JS guard\n-->\nlet y = 2;";
+
+        let (html_protected, html_comments) = protect_html_comments(src);
+        let after_protect = protect(&html_protected);
+        let after_restore = restore(&after_protect);
+        let final_result = restore_html_comments(&after_restore, &html_comments);
+
+        assert_eq!(final_result, src, "HTML comments should survive protect/restore unchanged");
+    }
+
+    #[test]
+    fn comment_does_not_affect_sibling_indentation() {
+        // A comment with nested tag-looking content should not affect
+        // indentation of subsequent sibling elements.
+        let src = "<ul>\n<li>first</li>\n<!-- comment with <b>nested</b> -->\n<li>second</li>\n</ul>";
+
+        let result = format_html(src);
+        let lines: Vec<&str> = result.lines().collect();
+
+        // <li>first</li> should be at depth 1
+        assert_eq!(lines[1], "\t<li>first</li>", "first li indented correctly");
+        // comment should be at depth 1
+        assert_eq!(
+            lines[2], "\t<!-- comment with <b>nested</b> -->",
+            "comment indented correctly"
+        );
+        // <li>second</li> should be at depth 1
+        assert_eq!(
+            lines[3], "\t<li>second</li>",
+            "second li indented correctly"
+        );
+        // </ul> should be at depth 0
+        assert_eq!(lines[4], "</ul>", "closing ul indented correctly");
     }
 }
 
