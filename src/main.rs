@@ -591,9 +591,12 @@ fn format_file(path: &Path) {
         }
     };
 
-    let result = normalize_ree_spacing(&content);
+    // Normalize line endings so comparison with formatted output is fair
+    let normalized = content.replace("\r\n", "\n");
+
+    let result = normalize_ree_spacing(&normalized);
     let result = format_html(&result);
-    let result = collapse_inline_tags(&result, &content);
+    let result = collapse_inline_tags(&result, &normalized);
     let result = replace_script_style(&result, "script", "js");
     let result = replace_script_style(&result, "style", "css");
 
@@ -603,7 +606,7 @@ fn format_file(path: &Path) {
         result
     };
 
-    if write_content == content {
+    if write_content == normalized {
         return;
     }
 
