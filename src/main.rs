@@ -603,6 +603,10 @@ fn format_file(path: &Path) {
         result
     };
 
+    if write_content == content {
+        return;
+    }
+
     match fs::write(path, &write_content) {
         Ok(_) => println!("Formatted: {}", path.display()),
         Err(e) => eprintln!("Error writing {}: {}", path.display(), e),
