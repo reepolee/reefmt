@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -e
+
+# Pre-push hook: auto-bump patch version in Cargo.toml before pushing.
+# This ensures the version is only incremented when code is actually pushed.
+
+CARGO_TOML="Cargo.toml"
+
+# Read current version
+current_version=$(awk -F'"' '/^version = /{print $2; exit}' "$CARGO_TOML")
+if [ -z "$current_version" ]; then
+    echo "ERROR: Could not find version in $CARGO_TOML" >&2
+    exit 1
+fi
+
+# Increment patch version
+major=$(echo "$current_version" | cut -d. -f1)
+minor=$(echo "$current_version" | cut -d. -f2)
+patch=$(echo "$current_version" | cut -d. -f3)
+new_patch=$((patch + 1))
+new_version="$major.$minor.$new_patch"
+
+# Update Cargo.toml
+sed -i '' "s/version = \"$current_version\"/version = \"$new_version\"/" "$CARGO_TOML" 2>/dev/null || \
+sed -i "s/version = \"$current_version\"/version = \"$new_version\"/" "$CARGO_TOML"
+
+echo "Pre-push: Bumped version to $new_version"
+
+# Stage and amend the last commit to include the version bump.
+# Using --amend ensures the change ships with the current push rather than
+# creating a separate commit that git would skip (refs are resolved before the hook runs).
+git add "$CARGO_TOML"
+git commit --amend --no-edit
+
+echo "Pre-push: Amended last commit with version $new_version"
