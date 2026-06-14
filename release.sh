@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Release script for macOS and Linux.
 # Builds the native binary for the current platform and publishes it as a GitHub Release.
+# Version is auto-bumped (patch) only when the tag for the current version doesn't exist yet.
 #
 # Usage: bash release.sh [--draft]
 #   --draft  Create the release as a draft (default: published)
@@ -10,9 +11,9 @@
 #   - git
 #
 # Workflow (run on each machine after pushing code):
-#   1. macOS:  bash release.sh            → builds, creates tag + release, uploads
-#   2. Linux:  bash release.sh            → builds, uploads to existing release
-#   3. Windows: .\release.ps1            → builds, uploads to existing release
+#   1. macOS (first): bash release.sh    → bumps version, creates tag + release, uploads
+#   2. Linux:          bash release.sh    → builds, uploads to existing release
+#   3. Windows:        .\release.ps1     → builds, uploads to existing release
 
 set -euo pipefail
 
@@ -33,8 +34,18 @@ if ! gh auth status &>/dev/null; then
 fi
 
 # ──────────────────────────────────────────────
-# Read version from Cargo.toml
+# Read current version from Cargo.toml
 # ──────────────────────────────────────────────
+
+bump_version() {
+	local current="$1"
+	local major="${current%%.*}"
+	local rest="${current#*.}"
+	local minor="${rest%%.*}"
+	local patch="${rest#*.}"
+	local new_patch=$((patch + 1))
+	echo "$major.$minor.$new_patch"
+}
 
 version=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
 if [ -z "$version" ]; then
@@ -42,12 +53,8 @@ if [ -z "$version" ]; then
 	exit 1
 fi
 
-tag="v$version"
-
 os="$(uname -s)"
 arch="$(uname -m)"
-
-echo "═══ reefmt release $version for $os ($arch) ═══"
 
 # ──────────────────────────────────────────────
 # Determine binary name for this platform
@@ -74,6 +81,32 @@ case "$os" in
 esac
 
 # ──────────────────────────────────────────────
+# Decide: bump version or use existing
+# ──────────────────────────────────────────────
+
+tag="v$version"
+
+if git ls-remote --tags origin "$tag" 2>/dev/null | grep -q "refs/tags/$tag$"; then
+	# Tag already exists → this is a subsequent machine. Just build and upload.
+	echo "═══ reefmt release $version for $os ($arch) ═══"
+	echo "  (Tag $tag already released. Uploading binary only.)"
+	do_bump=false
+else
+	# Tag doesn't exist → this is the first machine. Bump version, then build and release.
+	new_version=$(bump_version "$version")
+	echo "═══ reefmt release $new_version for $os ($arch) ═══"
+	echo "  (Bumping from $version → $new_version)"
+
+	# Update Cargo.toml
+	sed -i '' "s/version = \"$version\"/version = \"$new_version\"/" Cargo.toml 2>/dev/null || \
+	sed -i "s/version = \"$version\"/version = \"$new_version\"/" Cargo.toml
+
+	version="$new_version"
+	tag="v$version"
+	do_bump=true
+fi
+
+# ──────────────────────────────────────────────
 # Build
 # ──────────────────────────────────────────────
 
@@ -82,6 +115,18 @@ echo "→ Building $binary_name..."
 cargo build --release
 cp "./target/release/$APP" "./$binary_name"
 file "./$binary_name"
+
+# ──────────────────────────────────────────────
+# Commit version bump (first machine only)
+# ──────────────────────────────────────────────
+
+if [ "$do_bump" = true ]; then
+	echo ""
+	echo "→ Committing version bump..."
+	git add Cargo.toml
+	git commit -m "Bump version to $version"
+	echo "  Committed: Bump version to $version"
+fi
 
 # ──────────────────────────────────────────────
 # Create and push git tag
@@ -97,12 +142,13 @@ else
 	echo "  Created tag $tag locally."
 fi
 
-# Push the tag if it hasn't been pushed yet
-if ! git ls-remote --tags origin "$tag" | grep -q "$tag"; then
-	git push origin "$tag"
-	echo "  Pushed tag $tag to origin."
-else
-	echo "  Tag $tag already exists on origin."
+# Push tag and (if bumped) the version bump commit together
+echo "  Pushing tag $tag to origin..."
+git push origin "$tag"
+
+if [ "$do_bump" = true ]; then
+	echo "  Pushing version bump commit..."
+	git push origin HEAD
 fi
 
 # ──────────────────────────────────────────────
