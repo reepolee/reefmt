@@ -58,32 +58,44 @@ switch ($arch) {
 }
 
 # ──────────────────────────────────────────────
-# Decide: bump version or use existing
+# Detect code changes since last release
 # ──────────────────────────────────────────────
+
+git fetch --tags 2>$null | Out-Null
+
+$latestTag = git describe --tags --abbrev=0 --match 'v*' 2>$null
+$newCommits = 0
+
+if ($latestTag) {
+    $newCommits = [int](git rev-list HEAD "^$latestTag" --count 2>$null)
+} else {
+    # No prior tag → this is the first release ever
+    $newCommits = 1
+}
 
 $tag = "v$version"
 $doBump = $false
 
-gh release view $tag 2>$null | Out-Null
-if ($LASTEXITCODE -eq 0) {
-    # Release already exists -> this is a subsequent machine. Just build and upload.
-    Write-Host "═══ reefmt release $version for Windows ═══"
-    Write-Host "  (Tag $tag already released. Uploading binary only.)"
-    $doBump = $false
-} else {
-    # No release yet -> this is the first machine. Bump version, then build and release.
+if ($newCommits -gt 0) {
+    # Code has changed since last release → bump version
     $parts = $version -split '\.'
     $newVersion = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
 
     Write-Host "═══ reefmt release $newVersion for Windows ═══"
-    Write-Host "  (Bumping from $version -> $newVersion)"
+    Write-Host "  (Bumping from $version -> $newVersion, $newCommits commits since $latestTag)"
 
+    $cargoContent = Get-Content "Cargo.toml" -Raw
     $cargoContent = $cargoContent -replace 'version = "\d+\.\d+\.\d+"', "version = `"$newVersion`""
     Set-Content "Cargo.toml" -Value $cargoContent
 
     $version = $newVersion
     $tag = "v$version"
     $doBump = $true
+} else {
+    # No code changes → just upload the binary
+    Write-Host "═══ reefmt release $version for Windows ═══"
+    Write-Host "  (No new commits since $latestTag. Uploading binary only.)"
+    $doBump = $false
 }
 
 # ──────────────────────────────────────────────
