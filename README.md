@@ -6,54 +6,58 @@ Used by https://marketplace.visualstudio.com/items?itemName=reepolee.ree-templat
 
 Check out https://www.reepolee.com for more information.
 
-## Development
+## Install
 
-This is a Rust project, we make cross builds on MacOS and native on Windows.
-
-MacOS:
+**macOS / Linux:**
 
 ```bash
-bash macos.sh all
+curl -fsSL https://raw.githubusercontent.com/reepolee/reefmt/main/install.sh | bash
 ```
 
-Linux:
-
-```bash
-bash linux.sh
-```
-
-Windows:
+**Windows:**
 
 ```powershell
-.\windows.ps1
+irm https://raw.githubusercontent.com/reepolee/reefmt/main/install.ps1 | iex
 ```
 
-Each combined script builds **and** installs the binary to your PATH:
+The script detects your OS and architecture, downloads the correct binary from the latest GitHub Release, and adds it to your PATH.
 
-- **macOS** builds for arm64 (default), x64, or all targets via subcommands:
-  `bash macos.sh native` | `intel` | `universal` | `windows` | `linux` | `all`
+Or download a binary directly from the [latest release](https://github.com/reepolee/reefmt/releases/latest).
 
-- **Linux** builds a native x64 binary and installs it.
+## Development
 
-- **Windows** builds a native x64 binary and installs it.
+This is a Rust project. Build and install the latest local source:
 
-Install output (macOS):
+**macOS / Linux:**
 
-```
-/Users/ales/.local/bin already in PATH
-Installed:
-  ./reefmt-macos-arm64 → /Users/ales/.local/bin/reefmt
-
-Restart shell or run:
-export PATH="/Users/ales/.local/bin:$PATH"
+```bash
+bash release.sh
 ```
 
-Install output (Windows):
+**Windows:**
 
+```powershell
+.\release.ps1
 ```
-C:\Users\ales\bin already in PATH
-Installed to C:\Users\ales\bin\reefmt.exe
 
-Restart terminal to use reefmt
+This builds from source, tags the release, publishes to GitHub, and installs the binary to your PATH.
+
+To just test locally without releasing:
+
+```bash
+cargo build --release
+cp target/release/reefmt ~/.local/bin/   # macOS/Linux
+# or
+Copy-Item .\target\release\reefmt.exe ~\bin\   # Windows
 ```
+
+### Release workflow
+
+Run on each machine after pushing code:
+
+1. **macOS (first):** `bash release.sh` — bumps version, creates tag and GitHub Release, uploads macOS binary
+2. **Linux:** `bash release.sh` — uploads Linux binary to existing release
+3. **Windows:** `.\release.ps1` — uploads Windows binary to existing release
+
+Add `--draft` / `-Draft` to create the release as a draft.
 
