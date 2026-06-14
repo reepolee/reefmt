@@ -48,7 +48,14 @@ if (-not $versionMatch.Success) {
 }
 
 $version = $versionMatch.Groups[1].Value
-$binaryName = "$AppName-windows-x64.exe"
+
+# Detect Windows architecture
+$arch = $env:PROCESSOR_ARCHITECTURE
+switch ($arch) {
+    'AMD64' { $binaryName = "$AppName-windows-x64.exe" }
+    'ARM64' { $binaryName = "$AppName-windows-arm64.exe" }
+    default { Write-Error "Unsupported architecture: $arch"; exit 1 }
+}
 
 # ──────────────────────────────────────────────
 # Decide: bump version or use existing
@@ -57,14 +64,14 @@ $binaryName = "$AppName-windows-x64.exe"
 $tag = "v$version"
 $doBump = $false
 
-$tagRemote = git ls-remote --tags origin $tag 2>$null
-if ($tagRemote -match "refs/tags/$tag`$") {
-    # Tag already exists -> this is a subsequent machine. Just build and upload.
+gh release view $tag 2>$null | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    # Release already exists -> this is a subsequent machine. Just build and upload.
     Write-Host "═══ reefmt release $version for Windows ═══"
     Write-Host "  (Tag $tag already released. Uploading binary only.)"
     $doBump = $false
 } else {
-    # Tag doesn't exist -> this is the first machine. Bump version, then build and release.
+    # No release yet -> this is the first machine. Bump version, then build and release.
     $parts = $version -split '\.'
     $newVersion = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
 
@@ -85,7 +92,7 @@ if ($tagRemote -match "refs/tags/$tag`$") {
 
 Write-Host "`n→ Building $binaryName..."
 cargo build --release
-Copy-Item ".\target\release\$binaryName" ".\$binaryName"
+Copy-Item ".\target\release\$AppName.exe" ".\$binaryName"
 
 # ──────────────────────────────────────────────
 # Commit version bump (first machine only)
@@ -138,7 +145,7 @@ if ($LASTEXITCODE -eq 0) {
 } else {
     Write-Host "  Creating release $tag..."
     $releaseArgs = @(
-        "create", $tag,
+        "release", "create", $tag,
         "$assetPath#$assetName",
         "--title", $tag,
         "--notes", "Release $tag"
@@ -149,6 +156,30 @@ if ($LASTEXITCODE -eq 0) {
     }
     gh @releaseArgs
 }
+
+# ──────────────────────────────────────────────
+# Install locally (to PATH)
+# ──────────────────────────────────────────────
+
+Write-Host "`n→ Installing locally..."
+$InstallDir = Join-Path $HOME "bin"
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+Copy-Item ".\target\release\$AppName.exe" (Join-Path $InstallDir "$AppName.exe") -Force
+
+$UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$Paths = $UserPath -split ";"
+if ($Paths -notcontains $InstallDir) {
+    $NewPath = if ([string]::IsNullOrWhiteSpace($UserPath)) {
+        $InstallDir
+    } else {
+        "$UserPath;$InstallDir"
+    }
+    [Environment]::SetEnvironmentVariable("Path", $NewPath, "User")
+    Write-Host "  Added $InstallDir to user PATH"
+    Write-Host "  Restart terminal to use $AppName"
+}
+
+Write-Host "  Installed to $(Join-Path $InstallDir "$AppName.exe")"
 
 # ──────────────────────────────────────────────
 # Done
