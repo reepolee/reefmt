@@ -19,7 +19,9 @@
 		"printWidth": 140,
 		"useTabs": true,
 		"indentWidth": 1,
-		"whitespaceSensitivity": "css"
+		"whitespaceSensitivity": "css",
+		"preferAttrsSingleLine": true,
+		"closingBracketSameLine": true
 	},
 	"excludes": [
 		"vendor/**",
