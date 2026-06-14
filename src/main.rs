@@ -633,11 +633,20 @@ fn compute_html_tag_delta(line: &str, void_tags: &[&str]) -> (isize, isize) {
         let first_lt = line.find('<');
         let is_before_any_tag = first_lt.is_none() || first_gt < first_lt.unwrap();
         if is_before_any_tag {
-            // Check it's not '/>' and not part of '-->'
-            let not_self_close = first_gt == 0 || !line[..first_gt].ends_with('/');
-            let not_comment_close = first_gt < 2 || &line[first_gt.saturating_sub(2)..first_gt] != "--";
-            if not_self_close && not_comment_close {
-                open_after += 1;
+            // If this standalone '>' is followed by a closing tag (e.g., "></confirm-dialog>"),
+            // it's completing a multiline opening tag that closes on the same line.
+            // Don't increment open_after — the close will balance the open that
+            // was already counted when the multiline tag started.
+            let completes_multiline_then_closes = first_lt.is_some()
+                && line[first_lt.unwrap()..].starts_with("</");
+
+            if !completes_multiline_then_closes {
+                // Check it's not '/>' and not part of '-->'
+                let not_self_close = first_gt == 0 || !line[..first_gt].ends_with('/');
+                let not_comment_close = first_gt < 2 || &line[first_gt.saturating_sub(2)..first_gt] != "--";
+                if not_self_close && not_comment_close {
+                    open_after += 1;
+                }
             }
         }
     }
@@ -840,7 +849,22 @@ fn format_html(src: &str) -> String {
             let (close_before, open_after) = compute_html_tag_delta(trimmed, &void_tags);
 
             let close_before = close_before.min(1);
-            let open_after = open_after.min(1);
+            let mut open_after = open_after.min(1);
+
+            // Handle multiline opening tags: if a line starts an opening tag
+            // (like <confirm-dialog) without '>', the tag's attributes continue
+            // on subsequent lines. Increment depth so they indent properly.
+            if open_after == 0 && trimmed.starts_with('<')
+                && !trimmed.starts_with("</")
+                && !trimmed.starts_with("<!--")
+                && !trimmed.starts_with("<!")
+                && !trimmed.contains('>')
+            {
+                let tag_name = extract_tag_name(trimmed);
+                if !void_tags.contains(&tag_name.as_str()) {
+                    open_after += 1;
+                }
+            }
 
             if close_before > 0 {
                 depth = depth.saturating_sub(close_before as usize);
