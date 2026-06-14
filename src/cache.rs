@@ -65,13 +65,6 @@ impl FormatCache {
         }
     }
 
-    /// Remove a file from the cache (e.g. when it has format errors).
-    pub(crate) fn invalidate(&mut self, path: &Path) {
-        if let Some(key) = canonical_key(path) {
-            self.files.remove(&key);
-        }
-    }
-
     fn lookup(&self, path: &Path) -> Option<u128> {
         let key = canonical_key(path)?;
         self.files.get(&key).copied()
@@ -192,23 +185,6 @@ mod tests {
         let cache = FormatCache::load();
         let path = Path::new("/nonexistent/path/to/file.ree");
         assert!(!cache.is_fresh(path), "non-existent file should not be fresh");
-    }
-
-    #[test]
-    fn invalidation_removes_entry() {
-        let dir = env::temp_dir().join("reefmt_cache_test_invalidate_entry");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.ree");
-        fs::write(&path, "content").unwrap();
-
-        let mut cache = FormatCache::load();
-        cache.mark_fresh(&path);
-        assert!(cache.is_fresh(&path));
-
-        cache.invalidate(&path);
-        assert!(!cache.is_fresh(&path), "should not be fresh after invalidation");
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
