@@ -70,8 +70,9 @@ case "$os" in
 		;;
 	Linux)
 		case "$arch" in
-			x86_64|amd64) binary_name="${APP}-linux-x64" ;;
-			*)           echo "Unsupported arch: $arch" >&2; exit 1 ;;
+			x86_64|amd64)      binary_name="${APP}-linux-x64" ;;
+			arm64|aarch64)     binary_name="${APP}-linux-arm64" ;;
+			*)                 echo "Unsupported arch: $arch" >&2; exit 1 ;;
 		esac
 		;;
 	*)
@@ -86,13 +87,13 @@ esac
 
 tag="v$version"
 
-if git ls-remote --tags origin "$tag" 2>/dev/null | grep -q "refs/tags/$tag$"; then
-	# Tag already exists → this is a subsequent machine. Just build and upload.
+if gh release view "$tag" >/dev/null 2>&1; then
+	# Release already exists → this is a subsequent machine. Just build and upload.
 	echo "═══ reefmt release $version for $os ($arch) ═══"
 	echo "  (Tag $tag already released. Uploading binary only.)"
 	do_bump=false
 else
-	# Tag doesn't exist → this is the first machine. Bump version, then build and release.
+	# No release yet → this is the first machine. Bump version, then build and release.
 	new_version=$(bump_version "$version")
 	echo "═══ reefmt release $new_version for $os ($arch) ═══"
 	echo "  (Bumping from $version → $new_version)"
@@ -178,6 +179,39 @@ else
 		--notes "Release $tag" \
 		$draft_flag
 fi
+
+# ──────────────────────────────────────────────
+# Install locally (to PATH)
+# ──────────────────────────────────────────────
+
+echo ""
+echo "→ Installing locally..."
+install_dir="$HOME/.local/bin"
+mkdir -p "$install_dir"
+cp "./target/release/$APP" "$install_dir/$APP"
+chmod +x "$install_dir/$APP"
+
+if ! echo ":$PATH:" | grep -q ":$install_dir:"; then
+	shell_rc=""
+	if [ -n "${ZSH_VERSION:-}" ]; then
+		shell_rc="$HOME/.zshrc"
+	elif [ -n "${BASH_VERSION:-}" ]; then
+		shell_rc="$HOME/.bashrc"
+	else
+		shell_rc="$HOME/.profile"
+	fi
+
+	if ! grep -Fq "$install_dir" "$shell_rc" 2>/dev/null; then
+		{
+			echo
+			echo "export PATH=\"$install_dir:\$PATH\""
+		} >> "$shell_rc"
+		echo "  Added $install_dir to PATH in $shell_rc"
+	fi
+	echo "  Restart shell or run: export PATH=\"$install_dir:\$PATH\""
+fi
+
+echo "  Installed to $install_dir/$APP"
 
 # ──────────────────────────────────────────────
 # Done
