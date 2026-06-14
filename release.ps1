@@ -67,6 +67,14 @@ $latestTag = git describe --tags --abbrev=0 --match 'v*' 2>$null
 $newCommits = 0
 
 if ($latestTag) {
+    # Verify local version matches the latest tag before proceeding.
+    # If you run the release script without pulling first, versions will diverge.
+    $tagVersion = $latestTag.TrimStart('v')
+    if ($tagVersion -ne $version) {
+        Write-Error "Local version ($version) differs from latest tag ($tagVersion). Run 'git pull' first to sync, then try again."
+        exit 1
+    }
+
     $newCommits = [int](git rev-list HEAD "^$latestTag" --count 2>$null)
 } else {
     # No prior tag → this is the first release ever
@@ -112,7 +120,7 @@ Copy-Item ".\target\release\$AppName.exe" ".\$binaryName"
 
 if ($doBump) {
     Write-Host "`n→ Committing version bump..."
-    git add "Cargo.toml", "Cargo.lock"
+    git add "Cargo.toml"
     git commit -m "Bump version to $version"
     Write-Host "  Committed: Bump version to $version"
 }
@@ -192,17 +200,6 @@ if ($Paths -notcontains $InstallDir) {
 }
 
 Write-Host "  Installed to $(Join-Path $InstallDir "$AppName.exe")"
-
-# ──────────────────────────────────────────────
-# Restore Cargo.lock (non-bump runs only)
-# ──────────────────────────────────────────────
-
-# On machines that don't bump the version, building modifies Cargo.lock
-# with platform-specific entries. Restore it so the working tree stays
-# clean and doesn't cause conflicts when switching branches or machines.
-if (-not $doBump) {
-    git checkout Cargo.lock 2>$null | Out-Null
-}
 
 # ──────────────────────────────────────────────
 # Done
