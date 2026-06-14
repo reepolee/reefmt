@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "reefmt"
-version = "0.5.21"
+version = "0.5.22"
 dependencies = [
  "glob",
  "json5",
