@@ -279,7 +279,6 @@ pub(crate) fn format_file(path: &Path, mode: Mode, config: &crate::ReeConfig) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn check_mode_does_not_modify_ree_file() {

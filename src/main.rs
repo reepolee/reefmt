@@ -1,14 +1,17 @@
 mod ree_tags;
 mod ree_format;
 mod format;
+mod cache;
 
 use serde::Deserialize;
 use std::{
     env, fs,
-    io::{Read, Write},
+    io::Read,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
 };
 use glob::glob;
+use rayon::prelude::*;
 
 /// Reefmt configuration — loaded from `reefmt.jsonc` in the project root.
 #[derive(Deserialize)]
@@ -149,6 +152,11 @@ fn main() {
         args.retain(|a| a != "--check" && a != "--dry-run" && a != "-c");
     }
 
+    let no_cache = args.iter().position(|a| a == "--no-cache").is_some();
+    if no_cache {
+        args.retain(|a| a != "--no-cache");
+    }
+
     let mode = if diff_mode {
         format::Mode::Diff
     } else if check_mode {
@@ -217,7 +225,7 @@ fn main() {
 
 	// Glob patterns for files to skip (e.g. "generator/templates/**/*.ts").
 	// Matches file paths relative to the project root.
-	"skipFiles": [],
+	"skipFiles": [".reefmt-cache"],
 
 	// File extensions to format.
 	"extensions": ["ree", "ts", "js", "css"],
@@ -247,8 +255,10 @@ fn main() {
     };
 
     let config = load_config();
-    let mut any_modified = false;
-    let show_progress = mode == format::Mode::Write;
+    let any_modified = AtomicBool::new(false);
+
+    // Phase 1: collect all file paths from all targets
+    let mut all_files: Vec<PathBuf> = Vec::new();
 
     for target in targets {
         let path = Path::new(&target);
@@ -259,23 +269,9 @@ fn main() {
                 eprintln!("Error reading directory {}: {}", target, e);
                 continue;
             }
-            for file in files {
-                if show_progress {
-                    eprint!("\r\x1b[KChecking: {}", file.display());
-                    let _ = std::io::stderr().flush();
-                }
-                if format::format_file(&file, mode, &config) {
-                    any_modified = true;
-                }
-            }
+            all_files.extend(files);
         } else if path.exists() {
-            if show_progress {
-                eprint!("\r\x1b[KChecking: {}", path.display());
-                let _ = std::io::stderr().flush();
-            }
-            if format::format_file(path, mode, &config) {
-                any_modified = true;
-            }
+            all_files.push(path.to_path_buf());
         } else {
             match glob(&target) {
                 Ok(paths) => {
@@ -283,13 +279,7 @@ fn main() {
                         if should_skip_path(&entry, &config) {
                             continue;
                         }
-                        if show_progress {
-                            eprint!("\r\x1b[KChecking: {}", entry.display());
-                            let _ = std::io::stderr().flush();
-                        }
-                        if format::format_file(&entry, mode, &config) {
-                            any_modified = true;
-                        }
+                        all_files.push(entry);
                     }
                 }
                 Err(e) => eprintln!("Invalid glob {}: {}", target, e),
@@ -297,12 +287,38 @@ fn main() {
         }
     }
 
-    if show_progress {
-        eprint!("\r\x1b[K");
-        let _ = std::io::stderr().flush();
+    if no_cache {
+        // Phase 2 (no-cache): process all files in parallel, skip cache entirely
+        all_files.par_iter().for_each(|file| {
+            if format::format_file(file, mode, &config) {
+                any_modified.store(true, Ordering::SeqCst);
+            }
+        });
+    } else {
+        // Phase 2: load cache and filter out files that are already up to date
+        let mut cache = cache::FormatCache::load();
+        let uncached: Vec<PathBuf> = all_files
+            .into_iter()
+            .filter(|f| !cache.is_fresh(f))
+            .collect();
+
+        // Phase 3: format remaining files in parallel
+        if !uncached.is_empty() {
+            uncached.par_iter().for_each(|file| {
+                if format::format_file(file, mode, &config) {
+                    any_modified.store(true, Ordering::SeqCst);
+                }
+            });
+
+            // Phase 4: update cache for all processed files
+            for file in &uncached {
+                cache.mark_fresh(file);
+            }
+            cache.save();
+        }
     }
 
-    if mode != format::Mode::Write && any_modified {
+    if mode != format::Mode::Write && any_modified.load(Ordering::SeqCst) {
         std::process::exit(1);
     }
 }
@@ -429,7 +445,7 @@ mod tests {
 
 	// Glob patterns for files to skip (e.g. "generator/templates/**/*.ts").
 	// Matches file paths relative to the project root.
-	"skipFiles": [],
+	"skipFiles": [".reefmt-cache"],
 
 	// File extensions to format.
 	"extensions": ["ree", "ts", "js", "css"],
@@ -457,6 +473,7 @@ mod tests {
         assert!(config.extensions.contains(&"css".to_string()));
 
         assert!(config.skip_dot_dirs);
+        assert!(config.skip_files.contains(&".reefmt-cache".to_string()));
     }
 
     #[test]
