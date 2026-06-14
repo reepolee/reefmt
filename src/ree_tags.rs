@@ -83,18 +83,28 @@ pub(crate) fn restore_html_comments(src: &str, placeholders: &[String]) -> Strin
 /// with opaque placeholders before HTML formatting.
 /// This prevents dprint's markup_fmt from collapsing whitespace
 /// inside raw JS blocks.
-pub(crate) fn protect_raw_js_blocks(src: &str) -> (String, Vec<String>) {
+///
+/// Returns (protected_string, placeholders, on_own_line_per_block) where
+/// `on_own_line_per_block[i]` is true if block i was preceded by a newline
+/// (i.e. on its own line in the source).
+pub(crate) fn protect_raw_js_blocks(src: &str) -> (String, Vec<String>, Vec<bool>) {
     let mut result = String::new();
     let mut placeholders: Vec<String> = Vec::new();
+    let mut own_line: Vec<bool> = Vec::new();
     let mut rest = src;
 
     while let Some(start) = rest.find("{{") {
         result.push_str(&rest[..start]);
+
+        // Check if this block starts on its own line (preceded by newline)
+        let preceded_by_newline = rest[..start].contains('\n');
+
         // Find the matching }}
         let after_open = &rest[start + 2..];
         if let Some(end) = after_open.find("}}") {
             let block_end = start + 2 + end + 2;
             placeholders.push(rest[start..block_end].to_string());
+            own_line.push(preceded_by_newline);
             let placeholder = format!("__JB{}__", placeholders.len() - 1);
             result.push_str(&placeholder);
             rest = &rest[block_end..];
@@ -107,7 +117,7 @@ pub(crate) fn protect_raw_js_blocks(src: &str) -> (String, Vec<String>) {
     }
 
     result.push_str(rest);
-    (result, placeholders)
+    (result, placeholders, own_line)
 }
 
 /// Restore raw JS blocks from their placeholders.

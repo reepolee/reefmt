@@ -234,6 +234,34 @@ pub(crate) fn fake_html_to_ree(src: &str, entries: &[FakeEntry]) -> String {
     collapse_blank_lines(&result)
 }
 
+/// After dprint formatting, ensure raw JS block placeholders that were
+/// originally on their own line stay on their own line. dprint's markup_fmt
+/// collapses adjacent text-like placeholders into a single line, losing the
+/// structural line break.
+fn fix_raw_js_line_breaks(formatted: &str, own_line: &[bool]) -> String {
+    let mut result = formatted.to_string();
+    for (i, &should_be_own_line) in own_line.iter().enumerate().rev() {
+        if should_be_own_line {
+            let placeholder = format!("__JB{}__", i);
+            if let Some(pos) = result.find(&placeholder) {
+                // Check if the placeholder is already at the start of a line
+                let before = &result[..pos];
+                let at_line_start = before.ends_with('\n') || before.is_empty();
+                if !at_line_start {
+                    // Match preceding line's indentation for the new line
+                    let indent = before.rfind('\n').map_or("", |nl| {
+                        let rest = &before[nl + 1..];
+                        let ws_len = rest.len() - rest.trim_start().len();
+                        &rest[..ws_len]
+                    });
+                    result.insert_str(pos, &format!("\n{}", indent));
+                }
+            }
+        }
+    }
+    result
+}
+
 /// Format Ree template HTML via dprint's markup_fmt plugin.
 ///
 /// Pipeline:
@@ -250,7 +278,7 @@ pub(crate) fn fake_html_to_ree(src: &str, entries: &[FakeEntry]) -> String {
 /// Returns None if dprint produced no change.
 pub(crate) fn format_ree_html_via_dprint(src: &str, config_path: &str) -> Option<String> {
     let (after_comments, html_comments) = protect_html_comments(src.trim());
-    let (after_raw_js, raw_js_blocks) = protect_raw_js_blocks(&after_comments);
+    let (after_raw_js, raw_js_blocks, raw_js_own_line) = protect_raw_js_blocks(&after_comments);
     let (after_block_tags, entries) = ree_to_fake_html(&after_raw_js);
     let protected = protect(&after_block_tags);
 
@@ -259,6 +287,12 @@ pub(crate) fn format_ree_html_via_dprint(src: &str, config_path: &str) -> Option
     if formatted.trim() == protected.trim() {
         return None;
     }
+
+    // Ensure raw JS blocks that were on their own line remain on their own line.
+    // dprint's markup_fmt may collapse adjacent text-like placeholders into
+    // a single line, losing the original line break between a comment and a
+    // {{ }} expression that follow each other on separate lines.
+    let formatted = fix_raw_js_line_breaks(&formatted, &raw_js_own_line);
 
     let restored = restore(&formatted);
     let restored = fake_html_to_ree(&restored, &entries);
