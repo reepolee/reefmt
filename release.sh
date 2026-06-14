@@ -89,6 +89,15 @@ git fetch --tags 2>/dev/null || true
 latest_tag=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo "")
 
 if [ -n "$latest_tag" ]; then
+	# Verify local version matches the latest tag before proceeding.
+	# If you run the release script without pulling first, versions will diverge.
+	tag_version="${latest_tag#v}"
+	if [ "$tag_version" != "$version" ]; then
+		echo "ERROR: Local version ($version) differs from latest tag ($tag_version)." >&2
+		echo "  Run 'git pull' first to sync, then try again." >&2
+		exit 1
+	fi
+
 	new_commits=$(git rev-list HEAD "^$latest_tag" --count 2>/dev/null || echo "0")
 else
 	# No prior tag → this is the first release ever
@@ -134,7 +143,7 @@ file "./$binary_name"
 if [ "$do_bump" = true ]; then
 	echo ""
 	echo "→ Committing version bump..."
-	git add Cargo.toml Cargo.lock
+	git add Cargo.toml
 	git commit -m "Bump version to $version"
 	echo "  Committed: Bump version to $version"
 fi
@@ -222,17 +231,6 @@ if ! echo ":$PATH:" | grep -q ":$install_dir:"; then
 fi
 
 echo "  Installed to $install_dir/$APP"
-
-# ──────────────────────────────────────────────
-# Restore Cargo.lock (non-bump runs only)
-# ──────────────────────────────────────────────
-
-# On machines that don't bump the version, building modifies Cargo.lock
-# with platform-specific entries. Restore it so the working tree stays
-# clean and doesn't cause conflicts when switching branches or machines.
-if [ "$do_bump" = false ]; then
-	git checkout Cargo.lock 2>/dev/null || true
-fi
 
 # ──────────────────────────────────────────────
 # Done
