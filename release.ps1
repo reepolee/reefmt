@@ -112,7 +112,7 @@ Copy-Item ".\target\release\$AppName.exe" ".\$binaryName"
 
 if ($doBump) {
     Write-Host "`n→ Committing version bump..."
-    git add "Cargo.toml"
+    git add "Cargo.toml", "Cargo.lock"
     git commit -m "Bump version to $version"
     Write-Host "  Committed: Bump version to $version"
 }
@@ -192,6 +192,17 @@ if ($Paths -notcontains $InstallDir) {
 }
 
 Write-Host "  Installed to $(Join-Path $InstallDir "$AppName.exe")"
+
+# ──────────────────────────────────────────────
+# Restore Cargo.lock (non-bump runs only)
+# ──────────────────────────────────────────────
+
+# On machines that don't bump the version, building modifies Cargo.lock
+# with platform-specific entries. Restore it so the working tree stays
+# clean and doesn't cause conflicts when switching branches or machines.
+if (-not $doBump) {
+    git checkout Cargo.lock 2>$null | Out-Null
+}
 
 # ──────────────────────────────────────────────
 # Done
