@@ -3,10 +3,14 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use similar::{ChangeTag, DiffOp};
 
 use crate::ree_tags::{protect, restore, protect_html_comments, restore_html_comments};
 use crate::ree_format::{flatten_concat, indent_code};
+
+/// Atomic counter for generating unique temp file names across parallel threads.
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Operating mode: write files, check-only (list files), or diff (show changes).
 #[derive(Clone, Copy, PartialEq)]
@@ -52,10 +56,18 @@ pub(crate) fn print_diff(path: &Path, original: &str, formatted: &str) {
     }
 }
 
+/// Generate a unique identifier for temp files (process ID + atomic counter).
+/// Guarantees uniqueness across parallel threads.
+fn temp_uid() -> String {
+    let pid = std::process::id();
+    let count = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{}_{}", pid, count)
+}
+
 /// Resolve the dprint config path. If a `dprint.json` exists in the current
 /// directory, use it directly. Otherwise, write the hardcoded defaults to a
 /// temp file and return that path.
-pub(crate) fn resolve_dprint_config(timestamp: u128) -> Option<String> {
+pub(crate) fn resolve_dprint_config() -> Option<String> {
     if let Ok(cwd) = env::current_dir() {
         let external = cwd.join("dprint.json");
         if external.exists() {
@@ -67,8 +79,9 @@ pub(crate) fn resolve_dprint_config(timestamp: u128) -> Option<String> {
         }
     }
 
+    let uid = temp_uid();
     let config_path = env::temp_dir()
-        .join(format!("reefmt_dprint_config_{}.json", timestamp))
+        .join(format!("reefmt_dprint_config_{}.json", uid))
         .to_string_lossy()
         .into_owned();
 
@@ -80,8 +93,9 @@ pub(crate) fn resolve_dprint_config(timestamp: u128) -> Option<String> {
 }
 
 /// Run biome lint --fix on the JS/CSS/TS fragment (via temp file).
-pub(crate) fn run_biome_lint(src: &str, ext: &str, timestamp: u128) -> String {
-    let dir = env::temp_dir().join(format!("reefmt_biome_{}", timestamp));
+pub(crate) fn run_biome_lint(src: &str, ext: &str) -> String {
+    let uid = temp_uid();
+    let dir = env::temp_dir().join(format!("reefmt_biome_{}", uid));
     if fs::create_dir_all(&dir).is_err() {
         return src.to_string();
     }
@@ -159,17 +173,13 @@ pub(crate) fn pipe_dprint(src: &str, ext: &str, config_path: &str) -> String {
 /// Format code (JS/TS/CSS) through biome lint-fix + dprint formatting.
 pub(crate) fn dprint_format(src: &str, lang: &str) -> String {
     let ext = if lang == "css" { "css" } else { "js" };
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis();
 
     let (html_protected, html_comments) = protect_html_comments(src.trim());
     let protected = protect(&html_protected);
     let flattened = flatten_concat(&protected);
-    let after_lint = run_biome_lint(&flattened, ext, timestamp);
+    let after_lint = run_biome_lint(&flattened, ext);
 
-    let config_path = resolve_dprint_config(timestamp);
+    let config_path = resolve_dprint_config();
     let formatted = match config_path {
         Some(ref path) => {
             let result = pipe_dprint(&after_lint, ext, path);
@@ -197,15 +207,10 @@ pub(crate) fn dprint_format(src: &str, lang: &str) -> String {
 pub(crate) fn format_code_content(content: &str, ext: &str) -> String {
     let normalized = content.replace("\r\n", "\n");
 
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis();
-
     let flattened = flatten_concat(&normalized);
-    let after_lint = run_biome_lint(&flattened, ext, timestamp);
+    let after_lint = run_biome_lint(&flattened, ext);
 
-    let formatted = match resolve_dprint_config(timestamp) {
+    let formatted = match resolve_dprint_config() {
         Some(ref config_path) => {
             let result = pipe_dprint(&after_lint, ext, config_path);
             if config_path.contains("reefmt_dprint_config_") {
