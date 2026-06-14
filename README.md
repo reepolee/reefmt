@@ -13,26 +13,31 @@ This is a Rust project, we make cross builds on MacOS and native on Windows.
 MacOS:
 
 ```bash
+bash macos.sh all
+```
 
-bash build.sh all
+Linux:
+
+```bash
+bash linux.sh
 ```
 
 Windows:
 
-```bash
-
-.\build.ps1
+```powershell
+.\windows.ps1
 ```
 
-Install scripts should put them on PATH:
+Each combined script builds **and** installs the binary to your PATH:
 
-MacOS:
+- **macOS** builds for arm64 (default), x64, or all targets via subcommands:
+  `bash macos.sh native` | `intel` | `universal` | `windows` | `linux` | `all`
 
-```bash
-bash install.sh
-```
+- **Linux** builds a native x64 binary and installs it.
 
-Outputs:
+- **Windows** builds a native x64 binary and installs it.
+
+Install output (macOS):
 
 ```
 /Users/ales/.local/bin already in PATH
@@ -43,13 +48,7 @@ Restart shell or run:
 export PATH="/Users/ales/.local/bin:$PATH"
 ```
 
-Windows:
-
-```bash
-.\install.ps1
-```
-
-Outputs:
+Install output (Windows):
 
 ```
 C:\Users\ales\bin already in PATH
