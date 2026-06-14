@@ -2,8 +2,10 @@
 # Builds the native binary and publishes it as a GitHub Release.
 # Version is auto-bumped (patch) only when the tag for the current version doesn't exist yet.
 #
-# Usage: .\release.ps1 [-Draft]
+# Usage: .\release.ps1 [-Draft] [-Minor] [-Force]
 #   -Draft  Create the release as a draft (default: published)
+#   -Minor  Bump the minor version instead of the patch version (default: patch)
+#   -Force  Skip version mismatch check (use when pushing ahead of remote)
 #
 # Prerequisites:
 #   - gh CLI (https://cli.github.com) — authenticated via `gh auth login`
@@ -15,7 +17,9 @@
 #   3. Windows:        .\release.ps1      -> builds, uploads to existing release
 
 param(
-    [switch]$Draft
+    [switch]$Draft,
+    [switch]$Minor,
+    [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
@@ -71,8 +75,12 @@ if ($latestTag) {
     # If you run the release script without pulling first, versions will diverge.
     $tagVersion = $latestTag.TrimStart('v')
     if ($tagVersion -ne $version) {
-        Write-Error "Local version ($version) differs from latest tag ($tagVersion). Run 'git pull' first to sync, then try again."
-        exit 1
+        if ($Force) {
+            Write-Host "  (Warning: local version $version differs from latest tag $tagVersion, proceeding with -Force)"
+        } else {
+            Write-Error "Local version ($version) differs from latest tag ($tagVersion). Run 'git pull' first to sync, or use -Force to override."
+            exit 1
+        }
     }
 
     $newCommits = [int](git rev-list HEAD "^$latestTag" --count 2>$null)
@@ -87,10 +95,16 @@ $doBump = $false
 if ($newCommits -gt 0) {
     # Code has changed since last release → bump version
     $parts = $version -split '\.'
-    $newVersion = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
+    if ($Minor) {
+        $newVersion = "$($parts[0]).$([int]$parts[1] + 1).0"
+        $bumpType = "minor"
+    } else {
+        $newVersion = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
+        $bumpType = "patch"
+    }
 
     Write-Host "═══ reefmt release $newVersion for Windows ═══"
-    Write-Host "  (Bumping from $version -> $newVersion, $newCommits commits since $latestTag)"
+    Write-Host "  (Bumping $bumpType from $version -> $newVersion, $newCommits commits since $latestTag)"
 
     $cargoContent = Get-Content "Cargo.toml" -Raw
     $cargoContent = $cargoContent -replace 'version = "\d+\.\d+\.\d+"', "version = `"$newVersion`""
