@@ -1,45 +1,23 @@
-use glob::glob;
+mod ree_tags;
+mod ree_format;
+mod format;
+
 use serde::Deserialize;
-use similar::{ChangeTag, DiffOp};
 use std::{
     env, fs,
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
 };
+use glob::glob;
 
-const REE_TAGS: &[(&str, &str)] = &[
-    ("{#layout", "__REE_LAYOUT__"),
-    ("{#include", "__REE_INCLUDE__"),
-    ("{#with", "__REE_WITH__"),
-    ("{#each", "__REE_EACH__"),
-    ("{#if", "__REE_IF__"),
-    ("{/with}", "__REE_END_WITH__"),
-    ("{/each}", "__REE_END_EACH__"),
-    ("{/if}", "__REE_END_IF__"),
-    ("{:else}", "__REE_ELSE__"),
-    ("{@", "__REE_COMPONENT__"),
-    ("{{", "__REE_RAW_JS_OPEN__"),
-    ("}}", "__REE_RAW_JS_CLOSE__"),
-    ("{~", "__REE_UNESCAPED__"),
-    ("{=", "__REE_ESCAPED__"),
-    ("{:", "__REE_COLON__"),
-    ("{#", "__REE_HASH__"),
-    ("{/", "__REE_SLASH__"),
-];
-
-// Default configs are embedded from standalone files at build time.
-const DPRINT_CONFIG: &str = include_str!("../dprint.default.json");
-const BIOME_CONFIG: &str = include_str!("../biome.default.json");
 /// Reefmt configuration — loaded from `reefmt.jsonc` in the project root.
 #[derive(Deserialize)]
 #[serde(default)]
-struct ReeConfig {
+pub(crate) struct ReeConfig {
     /// Directories to skip when formatting.
     #[serde(rename = "skipDirs")]
     skip_dirs: Vec<String>,
     /// Glob patterns for files to skip (e.g. "generator/templates/**/*.ts").
-    /// Matches file paths relative to the project root.
     #[serde(rename = "skipFiles")]
     skip_files: Vec<String>,
     /// File extensions to format.
@@ -96,2088 +74,11 @@ fn load_config() -> ReeConfig {
     ReeConfig::default()
 }
 
-fn protect(src: &str) -> String {
-    let mut out = src.to_string();
-    for (tag, placeholder) in REE_TAGS {
-        out = out.replace(tag, placeholder);
-    }
-    out
-}
-
-fn restore(src: &str) -> String {
-    let mut out = src.to_string();
-    for (tag, placeholder) in REE_TAGS {
-        out = out.replace(placeholder, tag);
-    }
-    out
-}
-
-/// Resolve the dprint config path. If a `dprint.json` exists in the current
-/// directory, use it directly. Otherwise, write the hardcoded defaults to a
-/// temp file and return that path.
-fn resolve_dprint_config(timestamp: u128) -> Option<String> {
-    // Check for external config in CWD
-    if let Ok(cwd) = env::current_dir() {
-        let external = cwd.join("dprint.json");
-        if external.exists() {
-            return Some(external.to_string_lossy().into_owned());
-        }
-        let external_jsonc = cwd.join("dprint.jsonc");
-        if external_jsonc.exists() {
-            return Some(external_jsonc.to_string_lossy().into_owned());
-        }
-    }
-
-    // Fall back to hardcoded defaults
-    let config_path = env::temp_dir()
-        .join(format!("reefmt_dprint_config_{}.json", timestamp))
-        .to_string_lossy()
-        .into_owned();
-
-    if fs::write(&config_path, DPRINT_CONFIG).is_ok() {
-        Some(config_path)
-    } else {
-        None
-    }
-}
-
-/// Run biome lint --fix on the JS/CSS/TS fragment (via temp file)
-/// to apply refactoring rules. Uses an external `biome.json`/`biome.jsonc`
-/// from the current directory if available, otherwise falls back to the
-/// hardcoded defaults. Returns the source unchanged if biome is not installed.
-fn run_biome_lint(src: &str, ext: &str, timestamp: u128) -> String {
-    let dir = env::temp_dir().join(format!("reefmt_biome_{}", timestamp));
-    if fs::create_dir_all(&dir).is_err() {
-        return src.to_string();
-    }
-
-    let tmp_path = dir.join(format!("input.{}", ext));
-    let config_path = dir.join("biome.json");
-
-    // Use external biome.json from CWD if it exists, otherwise use hardcoded defaults
-    let biome_config = env::current_dir()
-        .ok()
-        .and_then(|cwd| {
-            let path = cwd.join("biome.json");
-            if path.exists() {
-                fs::read_to_string(&path).ok()
-            } else {
-                let path = cwd.join("biome.jsonc");
-                if path.exists() {
-                    fs::read_to_string(&path).ok()
-                } else {
-                    None
-                }
-            }
-        })
-        .unwrap_or_else(|| BIOME_CONFIG.to_string());
-
-    if fs::write(&config_path, biome_config).is_err()
-        || fs::write(&tmp_path, src).is_err()
-    {
-        let _ = fs::remove_dir_all(&dir);
-        return src.to_string();
-    }
-
-    // Set current_dir to the temp dir so biome finds the config we wrote there
-    let filename = format!("input.{}", ext);
-    let result = Command::new("biome")
-        .current_dir(&dir)
-        .args(["lint", "--write", "--unsafe", &filename])
-        .output();
-
-    let output = match result {
-        Ok(_) => match fs::read_to_string(&tmp_path) {
-            Ok(content) => content,
-            Err(_) => src.to_string(),
-        },
-        Err(_) => src.to_string(),
-    };
-
-    let _ = fs::remove_dir_all(&dir);
-    output
-}
-
-/// Pipe content through dprint for formatting. Returns the formatted output
-/// unchanged (no Ree-specific processing, no extra indentation).
-/// Falls back to returning the source unchanged if dprint is not installed.
-fn pipe_dprint(src: &str, ext: &str, config_path: &str) -> String {
-    let mut child = match Command::new("dprint")
-        .args(["fmt", "--stdin", &format!("file.{}", ext), "--config", config_path])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => return src.to_string(),
-    };
-
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(src.as_bytes());
-    }
-
-    match child.wait_with_output() {
-        Ok(output) if output.status.success() => {
-            String::from_utf8_lossy(&output.stdout).to_string()
-        }
-        _ => src.to_string(),
-    }
-}
-
-fn dprint_format(src: &str, lang: &str) -> String {
-    let ext = if lang == "css" { "css" } else { "js" };
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis();
-
-    // Protect HTML comments so content inside them is not modified
-    let (html_protected, html_comments) = protect_html_comments(src.trim());
-    let protected = protect(&html_protected);
-
-    // Step 1: Join multiline concatenation so biome's useTemplate can detect it
-    let flattened = flatten_concat(&protected);
-
-    // Step 2: Run biome lint --fix on the fragment (refactoring like prefer-template)
-    let after_lint = run_biome_lint(&flattened, ext, timestamp);
-
-    // Step 3: Pipe through dprint for formatting (with external config if available)
-    let config_path = resolve_dprint_config(timestamp);
-
-    let formatted = match config_path {
-        Some(ref path) => {
-            let result = pipe_dprint(&after_lint, ext, path);
-            // Only clean up temp configs — never delete an external dprint.json!
-            if path.contains("reefmt_dprint_config_") {
-                let _ = fs::remove_file(path);
-            }
-            result
-        }
-        None => indent_code(src),
-    };
-
-    let restored = restore(&formatted);
-    let restored = restore_html_comments(&restored, &html_comments);
-    let indented = indent_code(&restored);
-
-    indented
-        .trim()
-        .lines()
-        .map(|l| format!("\t{}", l))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn indent_code(src: &str) -> String {
-    let mut out = String::new();
-    let mut depth: usize = 0;
-
-    for line in src.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            out.push('\n');
-            continue;
-        }
-
-        let mut opens = 0usize;
-        let mut closes = 0usize;
-        for ch in trimmed.chars() {
-            match ch {
-                '{' => opens += 1,
-                '}' if opens > 0 => opens -= 1,
-                '}' => closes += 1,
-                _ => {}
-            }
-        }
-
-        if closes > 0 {
-            depth = depth.saturating_sub(closes);
-        }
-
-        out.push_str(&"\t".repeat(depth));
-        out.push_str(trimmed);
-        out.push('\n');
-
-        depth += opens;
-    }
-
-    out
-}
-
-/// Flatten multiline string concatenation into single lines so biome's
-/// `useTemplate` rule can detect and convert it. Only joins lines where
-/// the continuation line starts with `+` (after trimming), which is the
-/// standard pattern for multiline string concatenation in JS.
-fn flatten_concat(src: &str) -> String {
-    let mut out = String::new();
-    let mut prev_line = String::new();
-    let mut has_prev = false;
-
-    for line in src.lines() {
-        let trimmed = line.trim();
-        if has_prev && trimmed.starts_with('+') {
-            // Join continuation line to previous: remove the newline and leading whitespace
-            prev_line.push(' ');
-            prev_line.push_str(trimmed);
-        } else {
-            if has_prev {
-                out.push_str(&prev_line);
-                out.push('\n');
-            }
-            prev_line = line.to_string();
-            has_prev = true;
-        }
-    }
-    if has_prev {
-        out.push_str(&prev_line);
-    }
-    out
-}
-
-/// Format raw JS blocks ({{ ... }}) in a Ree template.
-/// Extracts JS code between `{{` and `}}` markers,
-/// formats it through biome lint-fix + dprint (same as `<script>` content),
-/// and re-indents properly.
-fn replace_raw_js_blocks(content: &str) -> String {
-    let mut result = String::new();
-    let mut remaining = content;
-
-    loop {
-        match remaining.find("{{") {
-            None => {
-                result.push_str(remaining);
-                break;
-            }
-            Some(start) => {
-                result.push_str(&remaining[..start]);
-                let before_block = &remaining[..start];
-                let line_indent = match before_block.rfind('\n') {
-                    Some(pos) => &before_block[pos + 1..],
-                    None => before_block,
-                };
-                remaining = &remaining[start..];
-
-                // Find closing }}
-                match remaining[2..].find("}}") {
-                    None => {
-                        result.push_str(remaining);
-                        break;
-                    }
-                    Some(end) => {
-                        let body = &remaining[2..end + 2]; // between {{ and }}
-                        let close_end = end + 4;
-
-                        if body.trim().is_empty() {
-                            result.push_str("{{");
-                            result.push_str("}}");
-                        } else {
-                            let is_multiline = body.contains('\n');
-                            let formatted = dprint_format(body, "js");
-
-                            if is_multiline {
-                                // Multiline block — expand like <script>...</script>
-                                let indent_content = format!("{}\t", line_indent);
-                                let indented = formatted
-                                    .lines()
-                                    .map(|l| {
-                                        let stripped = l.strip_prefix('\t').unwrap_or(l);
-                                        format!("{}{}", indent_content, stripped)
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("\n");
-                                result.push_str("{{");
-                                result.push('\n');
-                                result.push_str(&indented);
-                                result.push('\n');
-                                result.push_str(line_indent);
-                                result.push_str("}}");
-                            } else {
-                                // Single line — keep inline
-                                let trimmed = formatted.trim();
-                                result.push_str(&format!("{{{{ {} }}}}", trimmed));
-                            }
-                        }
-                        remaining = &remaining[close_end..];
-                    }
-                }
-            }
-        }
-    }
-
-    result
-}
-
-fn replace_script_style(content: &str, tag_name: &str, lang: &str) -> String {
-    let open_marker = format!("<{}", tag_name);
-    let close_marker = format!("</{}>", tag_name);
-
-    let mut result = String::new();
-    let mut remaining = content;
-
-    loop {
-        match remaining.find(&open_marker) {
-            None => {
-                result.push_str(remaining);
-                break;
-            }
-            Some(start) => {
-                let base_indent = &remaining[..start];
-                result.push_str(base_indent);
-                let line_indent = match base_indent.rfind('\n') {
-                    Some(pos) => &base_indent[pos + 1..],
-                    None => base_indent,
-                };
-                remaining = &remaining[start..];
-
-                let tag_end = match remaining.find('>') {
-                    Some(i) => i + 1,
-                    None => {
-                        result.push_str(remaining);
-                        break;
-                    }
-                };
-                let open_tag = &remaining[..tag_end];
-                remaining = &remaining[tag_end..];
-
-                match remaining.find(&close_marker) {
-                    None => {
-                        result.push_str(open_tag);
-                        result.push_str(remaining);
-                        break;
-                    }
-                    Some(body_end) => {
-                        let body = &remaining[..body_end];
-                        let close_end = body_end + close_marker.len();
-                        let close_tag = &remaining[body_end..close_end];
-                        remaining = &remaining[close_end..];
-
-                        if body.trim().is_empty() {
-                            result.push_str(open_tag);
-                            result.push_str(close_tag);
-                        } else {
-                            let formatted = dprint_format(body, lang);
-                            let indent_content = format!("{}\t", line_indent);
-                            let indented = formatted
-                                .lines()
-                                .map(|l| {
-                                    let stripped = l.strip_prefix('\t').unwrap_or(l);
-                                    format!("{}{}", indent_content, stripped)
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            result.push_str(open_tag);
-                            result.push('\n');
-                            result.push_str(&indented);
-                            result.push('\n');
-                            result.push_str(line_indent);
-                            result.push_str(close_tag);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    result
-}
-
-/// Replace HTML comments (`<!-- ... -->`) with unique placeholders
-/// so they are not modified by string transformations.
-fn protect_html_comments(src: &str) -> (String, Vec<String>) {
-    let mut result = String::new();
-    let mut placeholders: Vec<String> = Vec::new();
-    let mut rest = src;
-
-    while let Some(start) = rest.find("<!--") {
-        // Push everything before the comment
-        result.push_str(&rest[..start]);
-        // Find the end of the comment
-        if let Some(end) = rest[start..].find("-->") {
-            let comment_end = start + end + 3;
-            placeholders.push(rest[start..comment_end].to_string());
-            let placeholder = format!("__REE_HTML_COMMENT_{}__", placeholders.len() - 1);
-            result.push_str(&placeholder);
-            rest = &rest[comment_end..];
-        } else {
-            // Unterminated comment — push the rest as-is
-            result.push_str(&rest[start..]);
-            rest = "";
-            break;
-        }
-    }
-
-    result.push_str(rest);
-    (result, placeholders)
-}
-
-/// Restore HTML comments from their placeholders.
-fn restore_html_comments(src: &str, placeholders: &[String]) -> String {
-    let mut result = src.to_string();
-    for (i, comment) in placeholders.iter().enumerate() {
-        let placeholder = format!("__REE_HTML_COMMENT_{}__", i);
-        result = result.replace(&placeholder, comment);
-    }
-    result
-}
-
-fn normalize_ree_spacing(src: &str) -> String {
-    // Protect HTML comments so Ree tag-like text inside them is not normalized
-    let (protected, comment_placeholders) = protect_html_comments(src);
-    let mut out = protected;
-
-    for kw in &["if", "each", "with", "include", "layout"] {
-        out = out.replace(&format!("{{# {}", kw), &format!("{{#{}", kw));
-        out = out.replace(&format!("{{/ {}", kw), &format!("{{/{}", kw));
-    }
-    out = out
-        .replace("{/ if}", "{/if}")
-        .replace("{/ each}", "{/each}")
-        .replace("{/ with}", "{/with}")
-        .replace("{/ if }", "{/if}")
-        .replace("{/ each }", "{/each}")
-        .replace("{/ with }", "{/with}")
-        .replace("{/if }", "{/if}")
-        .replace("{/each }", "{/each}")
-        .replace("{/with }", "{/with}");
-
-    restore_html_comments(&out, &comment_placeholders)
-}
-
-// ── Fake HTML elements (for dprint markup_fmt integration) ────────────────
-
-/// One entry in the fake-element map. Each `<ree-N>` / `</ree-N>` pair in the
-/// fake HTML corresponds to one FakeEntry at index N-1.
-struct FakeEntry {
-    /// What `<ree-N>` (or `<ree-N />`) restores to.
-    open_text: String,
-    /// What `</ree-N>` restores to. Empty string = synthetic close emitted for
-    /// an {:else} boundary; the tag is simply deleted on restore.
-    close_text: String,
-}
-
-/// Find the position just past the balanced closing `}` starting from the
-/// opening `{`. Handles nested braces (e.g. `{#if obj.items.find(x => x)}`).
-fn find_ree_block_end(src: &str) -> usize {
-    let mut depth = 0usize;
-    for (i, c) in src.char_indices() {
-        match c {
-            '{' => depth += 1,
-            '}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return i + 1;
-                }
-            }
-            _ => {}
-        }
-    }
-    src.len()
-}
-
-/// Convert Ree block-control tags to paired fake HTML elements so dprint's
-/// HTML formatter understands the nesting structure.
-///
-/// Only handles structural tags: {#if}, {#each}, {#with}, their closers, and
-/// {:else}/{:else if}. All other Ree syntax is passed through unchanged and
-/// will be handled by the existing protect()/restore() calls that wrap this.
-///
-/// {:else} emits `</ree-N><ree-M>`:
-///   - `</ree-N>` maps to "" (synthetic, deleted on restore)
-///   - `<ree-M>` maps to the {:else...} tag
-///   - `</ree-M>` is set when the matching {/if} is found → maps to "{/if}"
-fn ree_to_fake_html(src: &str) -> (String, Vec<FakeEntry>) {
-    let mut out = String::new();
-    let mut entries: Vec<FakeEntry> = Vec::new();
-    let mut stack: Vec<usize> = Vec::new(); // indices into entries for open blocks
-    let mut rest = src;
-
-    while !rest.is_empty() {
-        let Some(pos) = rest.find('{') else {
-            out.push_str(rest);
-            break;
-        };
-
-        let after = &rest[pos..];
-
-        // Categorise the tag at this position.
-        let is_if_open   = after.starts_with("{#if}")
-                        || matches!(after.as_bytes().get(4), Some(b' ' | b'\t' | b'\r' | b'\n'))
-                           && after.starts_with("{#if");
-        let is_each_open = after.starts_with("{#each}")
-                        || matches!(after.as_bytes().get(6), Some(b' ' | b'\t' | b'\r' | b'\n'))
-                           && after.starts_with("{#each");
-        let is_with_open = after.starts_with("{#with}")
-                        || matches!(after.as_bytes().get(6), Some(b' ' | b'\t' | b'\r' | b'\n'))
-                           && after.starts_with("{#with");
-
-        let is_if_close   = after.starts_with("{/if}");
-        let is_each_close = after.starts_with("{/each}");
-        let is_with_close = after.starts_with("{/with}");
-
-        // {:else} and {:else if ...} — but NOT {:param} or other colon-tags
-        let is_else = after.starts_with("{:else}") || after.starts_with("{:else ");
-
-        if is_if_open || is_each_open || is_with_open {
-            out.push_str(&rest[..pos]);
-            let end = find_ree_block_end(after);
-            let tag = after[..end].to_string();
-            let idx = entries.len();
-            entries.push(FakeEntry { open_text: tag, close_text: String::new() });
-            stack.push(idx);
-            out.push_str(&format!("<ree-{}>", idx + 1));
-            rest = &after[end..];
-
-        } else if is_if_close || is_each_close || is_with_close {
-            out.push_str(&rest[..pos]);
-            let end = find_ree_block_end(after);
-            let tag = after[..end].to_string();
-            match stack.pop() {
-                Some(idx) => {
-                    entries[idx].close_text = tag;
-                    out.push_str(&format!("</ree-{}>", idx + 1));
-                }
-                None => out.push_str(&tag), // unmatched closer — pass through
-            }
-            rest = &after[end..];
-
-        } else if is_else {
-            out.push_str(&rest[..pos]);
-            let end = find_ree_block_end(after);
-            let tag = after[..end].to_string();
-
-            // Synthetically close the current open block (close_text stays "")
-            if let Some(prev_idx) = stack.pop() {
-                out.push_str(&format!("</ree-{}>", prev_idx + 1));
-            }
-
-            // Open a new block entry for the else branch
-            let idx = entries.len();
-            entries.push(FakeEntry { open_text: tag, close_text: String::new() });
-            stack.push(idx);
-            out.push_str(&format!("<ree-{}>", idx + 1));
-            rest = &after[end..];
-
-        } else {
-            // Not a block-control tag — pass through the `{` and advance
-            out.push_str(&rest[..pos + 1]);
-            rest = &rest[pos + 1..];
-        }
-    }
-
-    (out, entries)
-}
-
-/// Restore fake HTML elements back to original Ree tags.
-/// Empty close_text (synthetic {:else} closes) simply vanishes, leaving at
-/// most a blank line which collapse_blank_lines() cleans up.
-fn fake_html_to_ree(src: &str, entries: &[FakeEntry]) -> String {
-    let mut result = src.to_string();
-    // Replace from highest N → lowest to avoid ree-1 matching inside ree-10, ree-11, etc.
-    for (i, entry) in entries.iter().enumerate().rev() {
-        let n = i + 1;
-        result = result.replace(&format!("<ree-{}>", n), &entry.open_text);
-        result = result.replace(&format!("</ree-{}>", n), &entry.close_text);
-    }
-    collapse_blank_lines(&result)
-}
-
-fn collapse_blank_lines(src: &str) -> String {
-    let mut out = String::new();
-    let mut blank_count = 0usize;
-    for line in src.lines() {
-        if line.trim().is_empty() {
-            blank_count += 1;
-            if blank_count <= 1 {
-                out.push('\n');
-            }
-        } else {
-            blank_count = 0;
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    out
-}
-
-fn is_opening_html_tag(line: &str) -> bool {
-    line.starts_with('<')
-        && !line.starts_with("</")
-        && !line.starts_with("<!--")
-        && !line.starts_with("<!")
-        && line.contains('>')
-}
-
-fn is_self_closed(line: &str) -> bool {
-    line.trim_end().ends_with("/>")
-}
-
-fn extract_tag_name(line: &str) -> String {
-    let start = if line.starts_with('<') { 1 } else { 0 };
-    let rest = &line[start..];
-    rest.split(|c: char| c.is_whitespace() || c == '>' || c == '/')
-        .next()
-        .unwrap_or("")
-        .to_lowercase()
-}
-
-fn has_inline_close(line: &str, tag_name: &str) -> bool {
-    line.contains(&format!("</{}>", tag_name))
-}
-
-fn leading_tabs(s: &str) -> String {
-    s.chars().take_while(|&c| c == '\t').collect()
-}
-
-
-/// Strip content between HTML comment markers (`<!-- ... -->`) from a line,
-/// replacing it with a space so tokens don't merge. This prevents Ree tags
-/// like `{#if}` inside comments from affecting depth tracking.
-fn strip_html_comment_content(s: &str) -> String {
-    let mut result = String::new();
-    let mut rest = s;
-    loop {
-        match rest.find("<!--") {
-            None => {
-                result.push_str(rest);
-                break;
-            }
-            Some(start) => {
-                result.push_str(&rest[..start]);
-                match rest[start..].find("-->") {
-                    None => {
-                        // Unterminated comment — push the rest as-is
-                        result.push_str(&rest[start..]);
-                        break;
-                    }
-                    Some(end) => {
-                        rest = &rest[start + end + 3..];
-                        result.push(' '); // keep token separation
-                    }
-                }
-            }
-        }
-    }
-    result
-}
-
-fn is_ree_line(line: &str) -> bool {
-    line.starts_with('{')
-}
-
-fn compute_html_tag_delta(line: &str, void_tags: &[&str]) -> (isize, isize) {
-    let mut close_before = 0isize;
-    let mut open_after = 0isize;
-    let mut pos = 0;        // Detect standalone '>' that closes an opening tag from a previous line.
-        // When a tag's attributes span multiple lines (e.g. <tag\n  attr="val"\n>),
-        // the '>' on its own line (or before </tag>) completes the opening tag and
-        // should increment open_after. Skip '/>' (self-closing) and '-->' (comment).
-        // Only count if '>' is the first non-whitespace character on the line,
-        // so CSS child combinators (`.foo > div`) and inline text '>' are not
-        // mistaken for HTML tag closers.
-        if let Some(first_gt) = line.find('>') {
-            let first_lt = line.find('<');
-            let is_before_any_tag = first_lt.is_none() || first_gt < first_lt.unwrap();
-            if is_before_any_tag {
-                // Check it's not '/>' and not part of '-->'
-                let not_self_close = first_gt == 0 || !line[..first_gt].ends_with('/');
-                let not_comment_close = first_gt < 2 || &line[first_gt.saturating_sub(2)..first_gt] != "--";
-                if not_self_close && not_comment_close {
-                    // Only count if '>' is the first non-whitespace character —
-                    // avoids matching '>' inside CSS selectors or text content.
-                    let first_non_ws = line.find(|c: char| !c.is_whitespace());
-                    if first_non_ws == Some(first_gt) {
-                        open_after += 1;
-                    }
-                }
-            }
-        }
-
-    while let Some(open_pos) = line[pos..].find('<') {
-        let abs_pos = pos + open_pos;
-        let rest = &line[abs_pos..];
-
-        if rest.starts_with("</") {
-            let tag_start = abs_pos + 2;
-            let tag_name_end = line[tag_start..]
-                .find(|c: char| c.is_whitespace() || c == '>')
-                .map(|p| tag_start + p)
-                .unwrap_or(line.len());
-            let tag_name = &line[tag_start..tag_name_end];
-            if !void_tags.contains(&tag_name) {
-                close_before += 1;
-            }
-            if let Some(close) = rest.find('>') {
-                pos = abs_pos + close + 1;
-            } else {
-                break;
-            }
-            continue;
-        }
-
-        if rest.starts_with("<!--") {
-            // HTML comment - find the closing --> marker
-            if let Some(close) = rest.find("-->") {
-                pos = abs_pos + close + 3;
-            } else {
-                break;
-            }
-            continue;
-        }
-
-        if rest.starts_with("<!") || rest.starts_with("<?") {
-            // Doctype, CDATA, processing instructions - find the first >
-            if let Some(close) = rest.find('>') {
-                pos = abs_pos + close + 1;
-            } else {
-                break;
-            }
-            continue;
-        }
-
-        let tag_start = abs_pos + 1;
-        let tag_name_end = line[tag_start..]
-            .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
-            .map(|p| tag_start + p)
-            .unwrap_or(line.len());
-        let tag_name = &line[tag_start..tag_name_end];
-
-        if let Some(close) = rest.find('>') {
-            let tag_len = close + 1;
-            let is_self_closed = rest[..close].ends_with('/');
-
-            let close_tag = format!("</{}>", tag_name);
-            let after_tag = &line[abs_pos + tag_len..];
-            let has_inline = after_tag.contains(&close_tag);
-
-            if !void_tags.contains(&tag_name) && !is_self_closed && !has_inline {
-                open_after += 1;
-            }
-
-            if has_inline {
-                close_before -= 1;
-            }
-
-            pos = abs_pos + tag_len;
-        } else {
-            break;
-        }
-    }
-
-    (close_before, open_after)
-}
-
-fn normalize_inline_spacing(line: &str) -> String {
-    let mut out = String::new();
-    let chars: Vec<char> = line.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
-    // Track brace depth so we don't normalize whitespace inside Ree expressions
-    let mut brace_depth: usize = 0;
-
-    while i < len {
-        if chars[i] == '{' {
-            brace_depth += 1;
-            out.push('{');
-            i += 1;
-        } else if chars[i] == '}' {
-            brace_depth = brace_depth.saturating_sub(1);
-            out.push('}');
-            i += 1;
-            if let Some(n) = chars[i..].iter().position(|&c| !c.is_whitespace()) {
-                if chars[i + n] == '<' {
-                    i += n;
-                }
-            }
-        } else if chars[i] == '>' {
-            out.push('>');
-            i += 1;
-            if let Some(n) = chars[i..].iter().position(|&c| !c.is_whitespace()) {
-                if chars[i + n] == '{' {
-                    i += n;
-                }
-            }
-        } else if chars[i] == '/' && i + 1 < len && chars[i + 1] == '>' && brace_depth == 0 {
-            // Normalize whitespace before /> (self-closing tag marker):
-            // strip any trailing whitespace and ensure a single space.
-            let last_non_ws = out.rfind(|c: char| !c.is_whitespace());
-            if let Some(pos) = last_non_ws {
-                out.truncate(pos + 1);
-            }
-            out.push_str(" />");
-            i += 2;
-        } else {
-            out.push(chars[i]);
-            i += 1;
-        }
-    }
-
-    out
-}
-
-fn format_html(src: &str) -> String {
-    let void_tags = [
-        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
-        "source", "track", "wbr",
-    ];
-
-    let mut out = String::new();
-    let mut depth: usize = 0;
-    let mut in_comment: bool = false;
-    // When an opening tag spans multiple lines (<tag\n  attr="val"\n>),
-    // attributes on intermediate lines should be indented one level deeper.
-    let mut multiline_attr_depth: Option<usize> = None;
-
-    for line in src.lines() {
-        let trimmed = line.trim();
-
-        if trimmed.is_empty() {
-            out.push('\n');
-            continue;
-        }
-
-        // Track whether we're inside a multiline HTML comment.
-        // Ree template directives inside comments should not affect depth.
-        if trimmed.contains("<!--") && !trimmed.contains("-->") {
-            in_comment = true;
-        }
-        if trimmed.contains("-->") {
-            in_comment = false;
-        }
-
-        // Count Ree open and close occurrences on this full line, so inline
-        // usage like {#if cond}content{/if} doesn't mis-track depth.
-        // Strip HTML comment content so Ree tags inside <!-- ... --> (both
-        // single-line and multiline) are not counted. {#include} and
-        // {#layout} don't match {#if}/{#each}/{#with} so they're safe.
-        let count_source = if in_comment {
-            String::new()
-        } else {
-            strip_html_comment_content(trimmed)
-        };
-        let (ree_opens, ree_closes) = if !count_source.is_empty() {
-            let mut opens = 0usize;
-            let mut closes = 0usize;
-            let mut pos = 0;
-            while let Some(idx) = count_source[pos..].find("{#if") {
-                opens += 1;
-                pos += idx + 4;
-            }
-            pos = 0;
-            while let Some(idx) = count_source[pos..].find("{#each") {
-                opens += 1;
-                pos += idx + 6;
-            }
-            pos = 0;
-            while let Some(idx) = count_source[pos..].find("{#with") {
-                opens += 1;
-                pos += idx + 6;
-            }
-            pos = 0;
-            while let Some(idx) = count_source[pos..].find("{/if") {
-                closes += 1;
-                pos += idx + 4;
-            }
-            pos = 0;
-            while let Some(idx) = count_source[pos..].find("{/each") {
-                closes += 1;
-                pos += idx + 6;
-            }
-            pos = 0;
-            while let Some(idx) = count_source[pos..].find("{/with") {
-                closes += 1;
-                pos += idx + 6;
-            }
-            (opens, closes)
-        } else {
-            (0, 0)
-        };
-
-        // Adjust depth for net Ree open/close balance
-        let ree_net_close = ree_closes.saturating_sub(ree_opens);
-        let ree_net_open = ree_opens.saturating_sub(ree_closes);
-
-        // Apply closes before writing
-        depth = depth.saturating_sub(ree_net_close);
-
-        let is_else = !in_comment
-            && (trimmed.starts_with("{:else") || trimmed.starts_with("{:"));
-        if is_else {
-            depth = depth.saturating_sub(1);
-        }
-
-        // Determine if this line is an attribute continuation of a multiline opening tag.
-        // Attributes should be indented one level deeper than the tag itself.
-        // Lines that close the opening tag (with '>' or '/>') are still attribute
-        // continuations — only exclude bare '>' or '/>' lines and new/closing tags.
-        let is_attr_continuation = multiline_attr_depth.is_some()
-            && !trimmed.starts_with('<')   // not the opening <tag itself
-            && !trimmed.starts_with("</") // not a closing tag
-            && !trimmed.starts_with('>')  // not a bare '>' closer
-            && !trimmed.starts_with('/'); // not a bare '/>' self-close
-
-        if !is_ree_line(trimmed) {
-            let (close_before, open_after) = compute_html_tag_delta(trimmed, &void_tags);
-
-            let close_before = close_before.min(1);
-            let mut open_after = open_after.min(1);
-
-            // When completing a multiline opening tag where `>` is not the first
-            // non-whitespace character (e.g., `onclick="...">`), ensure the tag
-            // opening is counted so content inside the tag is at the right depth.
-            // Only fire if the `>` is not part of a self-closing tag (`/>`).
-            if multiline_attr_depth.is_some() && trimmed.contains('>') && open_after == 0 {
-                let gt_pos = trimmed.find('>').unwrap();
-                let is_self_close = gt_pos > 0 && trimmed.as_bytes()[gt_pos - 1] == b'/';
-                if !is_self_close {
-                    open_after = 1;
-                }
-            }
-
-            let write_depth = if is_attr_continuation {
-                // Attribute lines go one level deeper than the opening tag
-                multiline_attr_depth.unwrap()
-            } else {
-                depth
-            };
-
-            if close_before > 0 && open_after > 0 {
-                // When a standalone '>' completes an opening tag from a previous line
-                // and </tag> closes it on the same line (e.g., ></auto-complete>),
-                // the close and open cancel — write at current depth, no net change.
-                let normalized = normalize_inline_spacing(trimmed);
-                out.push_str(&"\t".repeat(write_depth));
-                out.push_str(&normalized);
-                out.push('\n');
-            } else {
-                if close_before > 0 {
-                    depth = depth.saturating_sub(close_before as usize);
-                }
-
-                let normalized = normalize_inline_spacing(trimmed);
-                // For attribute continuations, use the attr depth (parent+1).
-                // Otherwise use depth (which has been adjusted for close_before).
-                let effective_depth = if is_attr_continuation {
-                    multiline_attr_depth.unwrap()
-                } else {
-                    depth
-                };
-                out.push_str(&"\t".repeat(effective_depth));
-                out.push_str(&normalized);
-                out.push('\n');
-
-                depth += open_after as usize;
-            }
-        } else {
-            // Ree lines inside a multiline opening tag should be indented
-            // one level deeper (attribute continuation depth).
-            let ree_depth = multiline_attr_depth.unwrap_or(depth);
-            let normalized = normalize_inline_spacing(trimmed);
-            out.push_str(&"\t".repeat(ree_depth));
-            out.push_str(&normalized);
-            out.push('\n');
-        }
-
-        // Track multiline opening tag state
-        if !is_ree_line(trimmed) {
-            if trimmed.starts_with('<') && !trimmed.starts_with("<!--")
-                && !trimmed.starts_with("</") && !trimmed.contains('>')
-            {
-                // Start of a multiline opening tag — attributes go one level deeper
-                multiline_attr_depth = Some(depth + 1);
-            }
-            if trimmed.contains('>') {
-                // The opening tag has been closed — clear multiline state
-                multiline_attr_depth = None;
-            }
-        } else if trimmed.ends_with("/>") {
-            // A Ree line ending with '/>' (self-closing tag marker)
-            // closes the multiline opening tag — clear multiline state.
-            // Uses ends_with instead of contains to avoid false positives
-            // from '/>' appearing inside Ree expression strings.
-            multiline_attr_depth = None;
-        }
-
-        // Apply net opens after writing
-        depth += ree_net_open;
-
-        if is_else {
-            depth += 1;
-        }
-    }
-
-    collapse_blank_lines(&out)
-}
-
-/// After format_html, collapse HTML tags that fit on one line.
-/// Handles:
-///   1. Multiline opening tags (attributes on separate lines) — merge to one line
-///   2. <tag>\n  content\n</tag> — collapse to <tag>content</tag>
-///   3. <tag>\n</tag> — collapse to <tag></tag>
-fn collapse_fitting_tags(src: &str) -> String {
-    const LINE_WIDTH: usize = 120;
-    let lines: Vec<&str> = src.lines().collect();
-    let len = lines.len();
-    let mut out: Vec<String> = Vec::new();
-    let mut i = 0;
-
-    while i < len {
-        let line_i = lines[i];
-        let trimmed_i = line_i.trim();
-        let indent_i = leading_tabs(line_i);
-
-        // --- 1. Multiline opening/self-closing tag ---
-        // If a line starts with '<' (but not '<!--' or '</') and doesn't
-        // contain '>' or '/>', the tag continues on the next line.
-        // Also handle: <input ... attr="..."
-        //                     {#if cond}checked{/if} />
-        if trimmed_i.starts_with('<') && !trimmed_i.starts_with("<!--")
-            && !trimmed_i.starts_with("</") && !trimmed_i.contains('>')
-        {
-            let mut merged = trimmed_i.to_string();
-            let mut j = i + 1;
-            while j < len {
-                let tj = lines[j].trim();
-                merged.push(' ');
-                merged.push_str(tj);
-                j += 1;
-                if tj.contains('>') || tj.ends_with("/>") {
-                    break;
-                }
-            }
-            // Only collapse if the merged line fits
-            if merged.len() + indent_i.len() <= LINE_WIDTH {
-                out.push(format!("{}{}", indent_i, merged));
-                i = j;
-                continue;
-            }
-            // Keep original lines
-            out.extend(lines[i..j.min(len)].iter().map(|l| l.to_string()));
-            i = j;
-            continue;
-        }
-
-        // --- 2. Opening tag followed by content and closing tag ---
-        // Pattern: <tag ...>\n  content\n</tag>
-        // Only for Ree/non-HTML content that fits on one line.
-        if is_opening_html_tag(trimmed_i) && !is_self_closed(trimmed_i) {
-            let tag_name = extract_tag_name(trimmed_i);
-            let close_str = format!("</{}>", tag_name);
-
-            if !has_inline_close(trimmed_i, &tag_name) {
-                // Skip blank lines after opening tag
-                let mut j = i + 1;
-                while j < len && lines[j].trim().is_empty() {
-                    j += 1;
-                }
-
-                if j < len {
-                    let body = lines[j].trim();
-                    // Only collapse if body is a Ree expression or short text (not an HTML tag)
-                    if !body.starts_with('<') {
-                        // Skip blank lines after content
-                        let mut k = j + 1;
-                        while k < len && lines[k].trim().is_empty() {
-                            k += 1;
-                        }
-
-                        if k < len && lines[k].trim() == close_str {
-                            // Try collapsing: <tag>content</tag> (with space)
-                            let collapsed = format!("{}{} {}{}", indent_i, trimmed_i, body, close_str);
-                            if collapsed.len() <= LINE_WIDTH {
-                                out.push(collapsed);
-                                i = k + 1;
-                                continue;
-                            }
-                            // Try without space: <tag>content</tag>
-                            let collapsed_tight = format!("{}{}{}{}", indent_i, trimmed_i, body, close_str);
-                            if collapsed_tight.len() <= LINE_WIDTH {
-                                out.push(collapsed_tight);
-                                i = k + 1;
-                                continue;
-                            }
-                        }
-                    }
-                }
-
-                // --- 3. Empty element: <tag>\n</tag> ---
-                let mut j = i + 1;
-                while j < len && lines[j].trim().is_empty() {
-                    j += 1;
-                }
-                if j < len && lines[j].trim() == close_str {
-                    let collapsed = format!("{}{}{}", indent_i, trimmed_i, close_str);
-                    if collapsed.len() <= LINE_WIDTH {
-                        out.push(collapsed);
-                        i = j + 1;
-                        continue;
-                    }
-                }
-            }
-        }
-
-        out.push(line_i.to_string());
-        i += 1;
-    }
-
-    out.join("\n")
-}
-
-/// Operating mode: write files, check-only (list files), or diff (show changes).
-#[derive(Clone, Copy, PartialEq)]
-enum Mode { Write, Check, Diff }
-
-/// Print a unified diff between original and formatted content.
-/// Uses the `similar` crate (Myers diff algorithm) for proper hunk detection.
-fn print_diff(path: &Path, original: &str, formatted: &str) {
-    let path_str = path.to_string_lossy();
-    let diff = similar::TextDiff::from_lines(original, formatted);
-
-    println!("--- a/{}", path_str);
-    println!("+++ b/{}", path_str);
-
-    for op in diff.ops() {
-        match op {
-            DiffOp::Equal { .. } => continue,
-            _ => {
-                let old_range = op.old_range();
-                let new_range = op.new_range();
-                let old_count = old_range.end - old_range.start;
-                let new_count = new_range.end - new_range.start;
-                println!(
-                    "@@ -{},{} +{},{} @@",
-                    old_range.start + 1,
-                    if old_count == 0 { 1 } else { old_count },
-                    new_range.start + 1,
-                    if new_count == 0 { 1 } else { new_count },
-                );
-                for change in diff.iter_changes(op) {
-                    match change.tag() {
-                        ChangeTag::Delete => print!("-{}", change.value()),
-                        ChangeTag::Insert => print!("+{}", change.value()),
-                        ChangeTag::Equal => print!(" {}", change.value()),
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Format Ree template content, returning the formatted string.
-/// Format the HTML skeleton of a Ree template via dprint's markup_fmt plugin.
-///
-/// Pipeline:
-///   protect_html_comments
-///   → ree_to_fake_html        (block tags → <ree-N> pairs, {:else} → split)
-///   → protect                 (remaining inline Ree syntax → __REE_*__ strings)
-///   → pipe_dprint html        (markup_fmt sees valid HTML with real structure)
-///   → restore                 (inline syntax back)
-///   → fake_html_to_ree        (block tags back)
-///   → restore_html_comments
-///
-/// Returns None if dprint produced no change (plugin not installed).
-fn format_ree_html_via_dprint(src: &str, config_path: &str) -> Option<String> {
-    let (after_comments, html_comments) = protect_html_comments(src.trim());
-    let (after_blocks, entries) = ree_to_fake_html(&after_comments);
-    let protected = protect(&after_blocks);
-
-    let formatted = pipe_dprint(&protected, "html", config_path);
-
-    if formatted.trim() == protected.trim() {
-        return None;
-    }
-
-    let restored = restore(&formatted);
-    let restored = fake_html_to_ree(&restored, &entries);
-    Some(restore_html_comments(&restored, &html_comments))
-}
-
-fn format_ree_content(content: &str) -> String {
-    let normalized = content.replace("\r\n", "\n");
-    let result = normalize_ree_spacing(&normalized);
-
-    // Try dprint HTML formatting with fake Ree elements first.
-    // Falls back to the custom format_html() + collapse_fitting_tags()
-    // when dprint or its markup_fmt plugin is not installed.
-    let result = {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-
-        match resolve_dprint_config(timestamp) {
-            Some(ref path) => {
-                let dprint_result = format_ree_html_via_dprint(&result, path);
-                if path.contains("reefmt_dprint_config_") {
-                    let _ = fs::remove_file(path);
-                }
-                dprint_result.unwrap_or_else(|| {
-                    let html = format_html(&result);
-                    collapse_fitting_tags(&html)
-                })
-            }
-            None => {
-                let html = format_html(&result);
-                collapse_fitting_tags(&html)
-            }
-        }
-    };
-
-    let result = replace_raw_js_blocks(&result);
-    let result = replace_script_style(&result, "script", "js");
-    let result = replace_script_style(&result, "style", "css");
-    if !result.is_empty() && !result.ends_with('\n') {
-        format!("{}\n", result)
-    } else {
-        result
-    }
-}
-
-/// Format a Ree template file. Returns `true` if the file was (or would be) modified.
-fn format_ree_file(path: &Path, mode: Mode) -> bool {
-    let content = match fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Error reading {}: {}", path.display(), e);
-            return false;
-        }
-    };
-
-    let normalized = content.replace("\r\n", "\n");
-    let write_content = format_ree_content(&normalized);
-
-    if write_content == normalized {
-        return false;
-    }
-
-    match mode {
-        Mode::Write => {
-            match fs::write(path, &write_content) {
-                Ok(_) => eprintln!("\r\x1b[KFormatted: {}", path.display()),
-                Err(e) => eprintln!("Error writing {}: {}", path.display(), e),
-            }
-        }
-        Mode::Check => {
-            eprintln!("Would format: {}", path.display());
-        }
-        Mode::Diff => {
-            print_diff(path, &normalized, &write_content);
-        }
-    }
-
-    true
-}
-
-/// Format standalone code content (TS/JS/CSS) by piping through
-/// biome lint-fix then dprint formatting. No Ree-specific processing.
-/// Falls back to lint-only if dprint is not installed.
-fn format_code_content(content: &str, ext: &str) -> String {
-    let normalized = content.replace("\r\n", "\n");
-
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis();
-
-    // Step 1: Flatten multiline string concatenation so biome's useTemplate
-    // rule can detect and convert it to template literals.
-    let flattened = flatten_concat(&normalized);
-
-    // Step 2: biome lint --fix (uses external biome.json if available)
-    let after_lint = run_biome_lint(&flattened, ext, timestamp);
-
-    // Step 2: dprint format (uses external dprint.json if available)
-    let formatted = match resolve_dprint_config(timestamp) {
-        Some(ref config_path) => {
-            let result = pipe_dprint(&after_lint, ext, config_path);
-            // Only clean up if it was a temp config (not an external one in CWD)
-            if config_path.contains("reefmt_dprint_config_") {
-                let _ = fs::remove_file(config_path);
-            }
-            result
-        }
-        None => after_lint,
-    };
-
-    if !formatted.is_empty() && !formatted.ends_with('\n') {
-        format!("{}\n", formatted)
-    } else {
-        formatted
-    }
-}
-
-/// Format a standalone code file (TS, JS, CSS) by piping through
-/// biome lint-fix then dprint formatting. No Ree-specific processing.
-/// Falls back to lint-only if dprint is not installed.
-/// Returns `true` if the file was (or would be) modified.
-fn format_code_file(path: &Path, mode: Mode) -> bool {
-    let content = match fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Error reading {}: {}", path.display(), e);
-            return false;
-        }
-    };
-
-    let normalized = content.replace("\r\n", "\n");
-    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-    let write_content = format_code_content(&normalized, ext);
-
-    if write_content == normalized {
-        return false;
-    }
-
-    match mode {
-        Mode::Write => {
-            match fs::write(path, &write_content) {
-                Ok(_) => eprintln!("\r\x1b[KFormatted: {}", path.display()),
-                Err(e) => eprintln!("Error writing {}: {}", path.display(), e),
-            }
-        }
-        Mode::Check => {
-            eprintln!("Would format: {}", path.display());
-        }
-        Mode::Diff => {
-            print_diff(path, &normalized, &write_content);
-        }
-    }
-
-    true
-}
-
-/// Dispatch to the correct formatter based on file extension.
-/// Returns `true` if the file was (or would be) modified.
-fn format_file(path: &Path, mode: Mode, config: &ReeConfig) -> bool {
-    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-    if !config.extensions.iter().any(|e| e == ext) {
-        return false;
-    }
-    if should_skip_file(path, config) {
-        return false;
-    }
-    match ext {
-        "ree" => format_ree_file(path, mode),
-        "ts" | "js" | "css" => format_code_file(path, mode),
-        _ => false,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn formats_with_directive_as_block() {
-        let src = "{#with props.headers}\n<div>\n{=title}\n</div>\n{/with}";
-
-        assert_eq!(
-            format_html(&normalize_ree_spacing(src)),
-            "{#with props.headers}\n\t<div>\n\t\t{=title}\n\t</div>\n{/with}\n"
-        );
-    }
-
-    #[test]
-    fn normalizes_with_directive_spacing() {
-        let src = "{# with props.headers}\n{/ with }";
-
-        assert_eq!(normalize_ree_spacing(src), "{#with props.headers}\n{/with}");
-    }
-
-    #[test]
-    fn indents_single_line_html_comment() {
-        let src = "<div>\n<!-- single line comment -->\n</div>";
-
-        assert_eq!(
-            format_html(src),
-            "<div>\n\t<!-- single line comment -->\n</div>\n"
-        );
-    }
-
-    #[test]
-    fn indents_multiline_html_comment() {
-        let src = "<div>\n<!--\n  comment\n-->\n</div>";
-
-        // Comment content lines get trimmed and indented at same depth
-        // as the comment markers, not deeper.
-        assert_eq!(
-            format_html(src),
-            "<div>\n\t<!--\n\tcomment\n\t-->\n</div>\n"
-        );
-    }
-
-    #[test]
-    fn indents_comment_with_html_like_tags_inside() {
-        // HTML comment that contains something that looks like an HTML tag
-        let src = "<div>\n<!-- this is <b>bold</b> text -->\n<span>text</span>\n</div>";
-
-        assert_eq!(
-            format_html(src),
-            "<div>\n\t<!-- this is <b>bold</b> text -->\n\t<span>text</span>\n</div>\n"
-        );
-    }
-
-    #[test]
-    fn indents_comment_inside_ree_block() {
-        let src = "{#if show}\n<div>\n<!-- comment -->\n<span>text</span>\n</div>\n{/if}";
-
-        assert_eq!(
-            format_html(src),
-            "{#if show}\n\t<div>\n\t\t<!-- comment -->\n\t\t<span>text</span>\n\t</div>\n{/if}\n"
-        );
-    }
-
-    #[test]
-    fn ree_tag_inside_multiline_comment_does_not_affect_depth() {
-        // Ree template directives inside multiline HTML comments
-        // should not affect depth tracking.
-        let src =
-            "{#if show}\n<div>\n<!--\n{#if debug}\n-->\n<p>visible</p>\n</div>\n{/if}";
-
-        let result = format_html(src);
-        let lines: Vec<&str> = result.lines().collect();
-
-        assert_eq!(lines[0], "{#if show}", "opening if");
-        assert_eq!(lines[1], "\t<div>", "div at depth 1");
-        assert_eq!(lines[2], "\t\t<!--", "comment start at depth 2");
-        assert_eq!(
-            lines[3], "\t\t{#if debug}",
-            "ree tag inside comment at depth 2"
-        );
-        assert_eq!(lines[4], "\t\t-->", "comment end at depth 2");
-        assert_eq!(lines[5], "\t\t<p>visible</p>", "p at depth 2");
-        assert_eq!(lines[6], "\t</div>", "closing div at depth 1");
-        assert_eq!(lines[7], "{/if}", "closing if at depth 0");
-    }
-
-    #[test]
-    fn ree_if_inside_multiline_comment_doesnt_open_block() {
-        // {#if} inside a comment should NOT increase depth,
-        // so content after the comment stays at correct depth.
-        let src = "<div>\n<!--\n{#if debug}\n-->\n<p>hi</p>\n</div>";
-
-        let result = format_html(src);
-        let lines: Vec<&str> = result.lines().collect();
-
-        assert_eq!(lines[0], "<div>", "opening div at depth 0");
-        assert_eq!(lines[1], "\t<!--", "comment at depth 1");
-        assert_eq!(
-            lines[3], "\t-->",
-            "comment end at depth 1, not deeper"
-        );
-        assert_eq!(lines[4], "\t<p>hi</p>", "p at depth 1");
-        assert_eq!(lines[5], "</div>", "closing div at depth 0");
-    }
-
-    #[test]
-    fn ree_slash_if_inside_comment_doesnt_close_block() {
-        // {/if} inside a comment should NOT decrease depth.
-        let src = "<div>\n<!--\n{/if}\n-->\n<p>hi</p>\n</div>";
-
-        let result = format_html(src);
-        let lines: Vec<&str> = result.lines().collect();
-
-        assert_eq!(lines[0], "<div>", "opening div at depth 0");
-        assert_eq!(lines[2], "\t{/if}", "/if inside comment at depth 1");
-        assert_eq!(lines[4], "\t<p>hi</p>", "p still at depth 1, not unindented");
-        assert_eq!(lines[5], "</div>", "closing div at depth 0");
-    }
-
-    #[test]
-    fn normalize_skips_ree_directives_in_html_comments() {
-        // Ree-style syntax inside HTML comments should not be normalized
-        let src = "<!-- {# if show} -->\n<div>\n{# if show}\n<span>text</span>\n{/ if }";
-
-        // The comment content should be preserved exactly;
-        // real Ree directives outside comments should still be normalized.
-        let result = normalize_ree_spacing(src);
-        assert_eq!(
-            result,
-            "<!-- {# if show} -->\n<div>\n{#if show}\n<span>text</span>\n{/if}"
-        );
-    }
-
-    #[test]
-    fn normalize_skips_ree_directives_in_multiline_html_comments() {
-        // Ree-style syntax inside multiline HTML comments should not be normalized
-        let src = "<div>\n<!--\n{# if debug}\n{/ if }\n-->\n{# each items}\n<p>item</p>\n{/each}";
-
-        let result = normalize_ree_spacing(src);
-        let lines: Vec<&str> = result.lines().collect();
-
-        // Comment content preserved exactly
-        assert_eq!(lines[1], "<!--");
-        assert_eq!(lines[2], "{# if debug}", "inside comment - preserved");
-        assert_eq!(lines[3], "{/ if }", "inside comment - preserved");
-        assert_eq!(lines[4], "-->");
-        // Real directives outside comment are normalized
-        assert_eq!(lines[5], "{#each items}", "outside comment - normalized");
-        assert_eq!(lines[7], "{/each}", "outside comment - normalized");
-    }
-
-    #[test]
-    fn normalize_preserves_comment_near_real_directives() {
-        // A comment adjacent to a real Ree directive should not interfere
-        let src = "{#if show}<!-- {# if comment} -->\n<p>text</p>\n{/if}";
-
-        // The comment's {# if comment} should stay as-is; the real {#if and {/if} should be fine
-        let result = normalize_ree_spacing(src);
-        assert_eq!(
-            result,
-            "{#if show}<!-- {# if comment} -->\n<p>text</p>\n{/if}"
-        );
-    }
-
-    #[test]
-    fn normalize_with_no_comments_is_unchanged() {
-        // Normal behavior without HTML comments should be unaffected
-        let src = "{# if show}\n{/ if }";
-
-        assert_eq!(
-            normalize_ree_spacing(src),
-            "{#if show}\n{/if}"
-        );
-    }
-
-    #[test]
-    fn single_line_comment_with_ree_tag_still_correct() {
-        // Single-line HTML comments (opening and closing on same line)
-        // should not enter comment state at all.
-        let src = "<div>\n<!-- {#if debug} -->\n<span>text</span>\n</div>";
-
-        let result = format_html(src);
-        let lines: Vec<&str> = result.lines().collect();
-
-        assert_eq!(lines[0], "<div>");
-        assert_eq!(lines[1], "\t<!-- {#if debug} -->", "single line comment at depth 1");
-        assert_eq!(lines[2], "\t<span>text</span>", "span at depth 1");
-        assert_eq!(lines[3], "</div>");
-    }
-
-    #[test]
-    fn protect_skips_ree_tags_inside_html_comments() {
-        // Simulate the protect pipeline from biome_format:
-        // protect_html_comments -> protect -> restore -> restore_html_comments
-        let src = "// <!-- {=value} -->\n/* {# if debug} */";
-
-        let (html_protected, html_comments) = protect_html_comments(src);
-        let after_protect = protect(&html_protected);
-        let after_restore = restore(&after_protect);
-        let final_result = restore_html_comments(&after_restore, &html_comments);
-
-        // The Reese tags inside HTML comments should be preserved exactly
-        assert!(
-            final_result.contains("<!-- {=value} -->"),
-            "Ree tag inside HTML comment should be preserved, got: {}",
-            final_result
-        );
-        // The Ree tag outside HTML comment (in /* */) should be restored too
-        assert!(
-            final_result.contains("{# if debug}"),
-            "Ree tag in block comment should be preserved, got: {}",
-            final_result
-        );
-    }
-
-    #[test]
-    fn protect_preserves_html_comment_markers() {
-        // Even without Ree tags inside, HTML comment markers should survive
-        // the protect/restore pipeline.
-        let src = "let x = 1;\n<!--\n  legacy JS guard\n-->\nlet y = 2;";
-
-        let (html_protected, html_comments) = protect_html_comments(src);
-        let after_protect = protect(&html_protected);
-        let after_restore = restore(&after_protect);
-        let final_result = restore_html_comments(&after_restore, &html_comments);
-
-        assert_eq!(final_result, src, "HTML comments should survive protect/restore unchanged");
-    }
-
-    #[test]
-    fn check_mode_does_not_modify_ree_file() {
-        let dir = env::temp_dir().join("reefmt_test_check_mode");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.ree");
-        let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
-        fs::write(&path, unformatted).unwrap();
-
-        // Check mode should report change without modifying the file
-        let modified = format_ree_file(&path, Mode::Check);
-        assert!(modified, "Check mode should return true when file would change");
-        let content_after = fs::read_to_string(&path).unwrap();
-        assert_eq!(content_after, unformatted, "Check mode should not modify the file");
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn check_mode_reports_no_change_for_formatted_ree_file() {
-        // Use simple content that is idempotent through the full pipeline
-        let dir = env::temp_dir().join(format!("reefmt_test_check_fmt_{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.ree");
-        let content = "<span>text</span>\n";
-        fs::write(&path, content).unwrap();
-
-        // Check mode should report no change for already-formatted file
-        let modified = format_ree_file(&path, Mode::Check);
-        assert!(!modified, "Check mode should return false for already-formatted file (modified={})", modified);
-
-        // Also verify the file was not modified
-        let content_after = fs::read_to_string(&path).unwrap();
-        assert_eq!(content_after, content, "Check mode should not modify the file");
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn diff_mode_does_not_modify_ree_file() {
-        let dir = env::temp_dir().join("reefmt_test_diff_mode");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.ree");
-        let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
-        fs::write(&path, unformatted).unwrap();
-
-        // Diff mode should report change without modifying the file
-        let modified = format_ree_file(&path, Mode::Diff);
-        assert!(modified, "Diff mode should return true when file would change");
-        let content_after = fs::read_to_string(&path).unwrap();
-        assert_eq!(content_after, unformatted, "Diff mode should not modify the file");
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn write_mode_modifies_ree_file() {
-        let dir = env::temp_dir().join("reefmt_test_write_mode");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.ree");
-        let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
-        fs::write(&path, unformatted).unwrap();
-
-        // Write mode should format the file
-        let modified = format_ree_file(&path, Mode::Write);
-        assert!(modified, "Write mode should return true when file changes");
-        let content_after = fs::read_to_string(&path).unwrap();
-        assert_ne!(content_after, unformatted, "Write mode should modify the file");
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn format_file_unsupported_extension_returns_false() {
-        let dir = env::temp_dir().join("reefmt_test_unsupported");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.txt");
-        fs::write(&path, "hello world").unwrap();
-
-        let config = ReeConfig::default();
-        let modified = format_file(&path, Mode::Write, &config);
-        assert!(!modified, "format_file should return false for unsupported extension");
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn check_mode_ree_file_missing_returns_false() {
-        let path = Path::new("/tmp/nonexistent_file_reefmt_test.ree");
-        let modified = format_ree_file(path, Mode::Check);
-        assert!(!modified, "format_ree_file should return false for missing file");
-    }
-
-    #[test]
-    fn comment_does_not_affect_sibling_indentation() {
-        // A comment with nested tag-looking content should not affect
-        // indentation of subsequent sibling elements.
-        let src = "<ul>\n<li>first</li>\n<!-- comment with <b>nested</b> -->\n<li>second</li>\n</ul>";
-
-        let result = format_html(src);
-        let lines: Vec<&str> = result.lines().collect();
-
-        // <li>first</li> should be at depth 1
-        assert_eq!(lines[1], "\t<li>first</li>", "first li indented correctly");
-        // comment should be at depth 1
-        assert_eq!(
-            lines[2], "\t<!-- comment with <b>nested</b> -->",
-            "comment indented correctly"
-        );
-        // <li>second</li> should be at depth 1
-        assert_eq!(
-            lines[3], "\t<li>second</li>",
-            "second li indented correctly"
-        );
-        // </ul> should be at depth 0
-        assert_eq!(lines[4], "</ul>", "closing ul indented correctly");
-    }
-
-    #[test]
-    fn check_mode_via_format_file_dispatcher() {
-        // format_file should delegate to format_ree_file for .ree files
-        let dir = env::temp_dir().join("reefmt_test_file_check");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.ree");
-        let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
-        fs::write(&path, unformatted).unwrap();
-
-        let config = ReeConfig::default();
-        let modified = format_file(&path, Mode::Check, &config);
-        assert!(modified, "format_file Check should detect unformatted .ree file");
-        let content_after = fs::read_to_string(&path).unwrap();
-        assert_eq!(content_after, unformatted, "format_file Check should not modify the file");
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn diff_mode_via_format_file_dispatcher() {
-        // format_file should delegate to format_ree_file for .ree files
-        let dir = env::temp_dir().join("reefmt_test_file_diff");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.ree");
-        let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
-        fs::write(&path, unformatted).unwrap();
-
-        let config = ReeConfig::default();
-        let modified = format_file(&path, Mode::Diff, &config);
-        assert!(modified, "format_file Diff should detect unformatted .ree file");
-        let content_after = fs::read_to_string(&path).unwrap();
-        assert_eq!(content_after, unformatted, "format_file Diff should not modify the file");
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn diff_mode_formatted_ree_file_returns_false() {
-        // Diff mode on already-formatted content should return false
-        let dir = env::temp_dir().join(format!("reefmt_test_diff_fmt_{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.ree");
-        let content = "<span>text</span>\n";
-        fs::write(&path, content).unwrap();
-
-        let modified = format_ree_file(&path, Mode::Diff);
-        assert!(!modified, "Diff mode should return false for already-formatted file (modified={})", modified);
-        let content_after = fs::read_to_string(&path).unwrap();
-        assert_eq!(content_after, content, "Diff mode should not modify the file");
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn check_mode_code_file_does_not_modify() {
-        // Check mode on a code file should not modify the file,
-        // regardless of whether external tools are installed.
-        // The return value depends on whether tools are available to format.
-        let dir = env::temp_dir().join("reefmt_test_code_check");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.ts");
-        let content = "const x = 1;\n";
-        fs::write(&path, content).unwrap();
-
-        let _modified = format_code_file(&path, Mode::Check);
-        let content_after = fs::read_to_string(&path).unwrap();
-        assert_eq!(content_after, content, "Check mode should not modify the code file");
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn format_file_check_mode_unsupported_extension() {
-        // format_file with Check mode on unsupported extension
-        let dir = env::temp_dir().join("reefmt_test_unsupported_check");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.txt");
-        fs::write(&path, "hello world").unwrap();
-
-        let config = ReeConfig::default();
-        let modified = format_file(&path, Mode::Check, &config);
-        assert!(!modified, "format_file Check should return false for unsupported extension");
-        let content_after = fs::read_to_string(&path).unwrap();
-        assert_eq!(content_after, "hello world", "Check mode should not modify the file");
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn check_mode_empty_ree_file_returns_false() {
-        // An empty file is already "formatted" as far as the pipeline is concerned
-        let dir = env::temp_dir().join("reefmt_test_empty_check");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("empty.ree");
-        fs::write(&path, "").unwrap();
-
-        let modified = format_ree_file(&path, Mode::Check);
-        assert!(!modified, "Check mode should return false for empty file");
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn format_ree_content_idempotent() {
-        // The Ree formatting pipeline should be idempotent:
-        // formatting already-formatted content should produce the same output.
-        // Use simple idempotent content that the full pipeline doesn't transform.
-        let src = "<span>text</span>\n";
-        let result = format_ree_content(src);
-        assert_eq!(result, src, "format_ree_content should be idempotent for already-formatted content");
-    }
-
-    #[test]
-    fn diff_mode_code_file_missing_returns_false() {
-        let path = Path::new("/tmp/nonexistent_file_reefmt_diff_test.ts");
-        let modified = format_code_file(path, Mode::Diff);
-        assert!(!modified, "format_code_file Diff should return false for missing file");
-    }
-
-    #[test]
-    fn init_template_parses_as_valid_config() {
-        // The exact template produced by `reefmt --init` (must match main())
-        let template = r#"{
-	// Directories to skip when formatting (glob patterns not needed,
-	// just directory names — any folder with this name is skipped).
-	"skipDirs": ["node_modules", "vendor", "vendors", "dist", "templates", "static"],
-
-	// Glob patterns for files to skip (e.g. "generator/templates/**/*.ts").
-	// Matches file paths relative to the project root.
-	"skipFiles": [],
-
-	// File extensions to format.
-	"extensions": ["ree", "ts", "js", "css"],
-
-	// Whether to skip dot-directories (folders starting with '.',
-	// like .git, .next, .cache, .svelte-kit, etc.).
-	"skipDotDirs": true
-}"#;
-
-        let config: ReeConfig =
-            json5::from_str(template).expect("--init template should be valid JSONC");
-
-        assert_eq!(config.skip_dirs.len(), 6);
-        assert!(config.skip_dirs.contains(&"node_modules".to_string()));
-        assert!(config.skip_dirs.contains(&"vendor".to_string()));
-        assert!(config.skip_dirs.contains(&"vendors".to_string()));
-        assert!(config.skip_dirs.contains(&"dist".to_string()));
-        assert!(config.skip_dirs.contains(&"templates".to_string()));
-        assert!(config.skip_dirs.contains(&"static".to_string()));
-
-        assert_eq!(config.extensions.len(), 4);
-        assert!(config.extensions.contains(&"ree".to_string()));
-        assert!(config.extensions.contains(&"ts".to_string()));
-        assert!(config.extensions.contains(&"js".to_string()));
-        assert!(config.extensions.contains(&"css".to_string()));
-
-        assert!(config.skip_dot_dirs);
-    }
-
-    #[test]
-    fn ree_attribute_in_multiline_tag_uses_continuation_depth() {
-        // When a multiline opening tag has a Ree line as part of its
-        // attributes (e.g. {#if ...}checked{/if} />), the Ree line should
-        // be indented one level deeper than the opening tag.
-        let src = "<label class=\"filter-option\">\n\t<input type=\"checkbox\"\n\t{#if def.checked_values.includes(opt.option_value)}checked{/if} />\n\t{= opt.option_text }\n</label>";
-
-        let result = format_html(src);
-        let lines: Vec<&str> = result.lines().collect();
-
-        assert_eq!(lines[0], "<label class=\"filter-option\">", "opening label");
-        assert_eq!(lines[1], "\t<input type=\"checkbox\"", "input tag at depth 1");
-        assert_eq!(lines[2], "\t\t{#if def.checked_values.includes(opt.option_value)}checked{/if} />", "ree attribute continuation at depth 2");
-        assert_eq!(lines[3], "\t{= opt.option_text }", "ree expression at depth 1");
-        assert_eq!(lines[4], "</label>", "closing label at depth 0");
-    }
-
-    #[test]
-    fn skip_files_glob_matches_relative_path() {
-        let mut config = ReeConfig::default();
-        config.skip_files = vec!["generator/templates/**/*.ts".to_string()];
-
-        // Should match: file under generator/templates/
-        let matched = Path::new("generator/templates/ui/button.ts");
-        assert!(should_skip_file(&matched, &config));
-
-        // Should not match: .ree file in templates
-        let not_matched_ree = Path::new("generator/templates/ui/button.ree");
-        assert!(!should_skip_file(&not_matched_ree, &config));
-
-        // Should not match: .ts file outside templates
-        let not_matched_outside = Path::new("src/ui/button.ts");
-        assert!(!should_skip_file(&not_matched_outside, &config));
-
-        // Empty skipFiles should never match
-        config.skip_files = vec![];
-        let empty_skip = Path::new("generator/templates/ui/button.ts");
-        assert!(!should_skip_file(&empty_skip, &config));
-    }
-
-    #[test]
-    fn skip_files_handles_absolute_paths() {
-        let mut config = ReeConfig::default();
-        config.skip_files = vec!["templates/**/*.ts".to_string()];
-
-        // Absolute paths should be made relative to CWD
-        let cwd = env::current_dir().unwrap();
-        let abs_path = cwd.join("templates/ui/button.ts");
-        assert!(should_skip_file(&abs_path, &config));
-
-        // Paths outside CWD should not match (glob is relative)
-        let outside = Path::new("/nonexistent/templates/ui/button.ts");
-        assert!(!should_skip_file(&outside, &config));
-    }
-
-    /// Format using the old custom-only pipeline (no dprint HTML formatting).
-    /// Used for comparison with the new dprint-based path.
-    fn format_ree_content_custom_only(content: &str) -> String {
-        let normalized = content.replace("\r\n", "\n");
-        let result = normalize_ree_spacing(&normalized);
-        let result = format_html(&result);
-        let result = collapse_fitting_tags(&result);
-        let result = replace_raw_js_blocks(&result);
-        let result = replace_script_style(&result, "script", "js");
-        let result = replace_script_style(&result, "style", "css");
-        if !result.is_empty() && !result.ends_with('\n') {
-            format!("{}\n", result)
-        } else {
-            result
-        }
-    }
-
-    /// Compare dprint vs custom formatter outputs on a set of fixtures.
-    /// Prints differences when they occur so you can see what changed.
-    #[test]
-    fn compare_dprint_vs_custom_formatter() {
-        let fixtures = vec![
-            // 1. Simple if block
-            "{#if show}\n<div>\n{=title}\n</div>\n{/if}",
-            // 2. Nested blocks
-            "{#if a}\n<div>\n{#if b}\n<span>text</span>\n{/if}\n</div>\n{/if}",
-            // 3. If-else
-            "{#if cond}\n<p>yes</p>\n{:else}\n<p>no</p>\n{/if}",
-            // 4. If-else if
-            "{#if a}\n<p>a</p>\n{:else if b}\n<p>b</p>\n{:else}\n<p>c</p>\n{/if}",
-            // 5. Each block
-            "{#each items}\n<li>\n{=item}\n</li>\n{/each}",
-            // 6. With block
-            "{#with user}\n<span>\n{=name}\n</span>\n{/with}",
-            // 7. Mixed HTML + Ree
-            "{#if show}\n<ul>\n{#each items}\n<li class=\"{=cls}\">\n{=item}\n</li>\n{/each}\n</ul>\n{/if}",
-            // 8. Multiline attributes
-            "<div\n  class=\"foo\"\n  id=\"bar\"\n>\ncontent\n</div>",
-            // 9. Self-closing tags
-            "<div>\n<input type=\"text\" />\n<br />\n<hr/>\n</div>",
-            // 10. Ree attribute inside multiline tag
-            "<label class=\"filter-option\">\n\t<input type=\"checkbox\"\n\t{#if def.checked}checked{/if} />\n\t{= opt.text }\n</label>",
-            // 11. Plain HTML (no Ree tags)
-            "<ul>\n<li>first</li>\n<li>second</li>\n</ul>",
-            // 12. With script/style blocks
-            "<div>\n<script>\nlet x = 1;\nlet y = 2;\n</script>\n<style>\n.c { color: red; }\n</style>\n</div>",
-            // 13. Raw JS blocks
-            "<div>\n{{ const x = 1; }}\n</div>",
-            // 14. With HTML comments
-            "<div>\n<!-- comment -->\n<p>text</p>\n</div>",
-            // 15. Ree tag inside HTML comment (should not affect depth)
-            "<div>\n<!--\n{#if debug}\n-->\n<p>visible</p>\n</div>",
-        ];
-
-        let mut any_diff = false;
-
-        for (i, fixture) in fixtures.iter().enumerate() {
-            let dprint_output = format_ree_content(fixture);
-            let custom_output = format_ree_content_custom_only(fixture);
-
-            if dprint_output != custom_output {
-                any_diff = true;
-                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                println!("Fixture #{} — DIFFERS", i + 1);
-                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                println!("--- Input ---");
-                for line in fixture.lines() {
-                    println!("  {}", line);
-                }
-                println!();
-                println!("--- DPRINT output ({} chars) ---", dprint_output.len());
-                for line in dprint_output.lines() {
-                    println!("  {}", line);
-                }
-                println!();
-                println!("--- CUSTOM output ({} chars) ---", custom_output.len());
-                for line in custom_output.lines() {
-                    println!("  {}", line);
-                }
-                println!();
-
-                // Show a character-by-character diff indicator
-                let diff = similar::TextDiff::from_lines(&dprint_output, &custom_output);
-                println!("--- unified diff (dprint → custom) ---");
-                for change in diff.iter_all_changes() {
-                    let sign = match change.tag() {
-                        similar::ChangeTag::Delete => "-",
-                        similar::ChangeTag::Insert => "+",
-                        similar::ChangeTag::Equal => " ",
-                    };
-                    print!("{}{}", sign, change.value());
-                }
-                println!();
-            } else {
-                println!("Fixture #{} — OK (identical)", i + 1);
-            }
-        }
-
-        if any_diff {
-            println!();
-            println!("⚠️  Some fixtures produce different output between dprint and custom formatters.");
-        } else {
-            println!();
-            println!("✅ All fixtures produce identical output between dprint and custom formatters.");
-        }
-
-        // This is informational — we don't assert so it doesn't block CI
-    }
-
-    #[test]
-    fn load_config_parses_reefmt_jsonc_from_directory() {
-        let dir = env::temp_dir().join(format!(
-            "reefmt_test_load_config_{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-
-        // Write a reefmt.jsonc with custom values
-        let config_content = r#"{
-	"skipDirs": ["node_modules", "dist"],
-	"extensions": ["ree", "ts"],
-	"skipDotDirs": false
-}"#;
-        fs::write(dir.join("reefmt.jsonc"), config_content).unwrap();
-
-        // Save current dir, change to temp dir, load config, restore
-        let original_cwd = env::current_dir().unwrap();
-        env::set_current_dir(&dir).unwrap();
-
-        let config = load_config();
-
-        env::set_current_dir(&original_cwd).unwrap();
-
-        // Verify custom values were loaded
-        assert_eq!(config.skip_dirs.len(), 2);
-        assert!(!config.skip_dirs.contains(&"vendor".to_string()));
-
-        assert_eq!(config.extensions.len(), 2);
-        assert!(!config.extensions.contains(&"js".to_string()));
-
-        assert!(!config.skip_dot_dirs);
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-}
-
 /// Check whether a file path matches any `skipFiles` glob pattern.
-/// The path is converted to be relative to the current working directory
-/// before matching, so user-provided patterns like `"templates/**/*.ts"`
-/// work correctly regardless of whether `file_path` is absolute or relative.
-fn should_skip_file(file_path: &Path, config: &ReeConfig) -> bool {
+pub(crate) fn should_skip_file(file_path: &Path, config: &ReeConfig) -> bool {
     if config.skip_files.is_empty() {
         return false;
     }
-    // Try to make the path relative to CWD so user glob patterns match.
     let rel_path = env::current_dir()
         .ok()
         .and_then(|cwd| file_path.strip_prefix(&cwd).ok())
@@ -2191,7 +92,7 @@ fn should_skip_file(file_path: &Path, config: &ReeConfig) -> bool {
 }
 
 /// Check whether a path is inside a directory that should be skipped
-/// (e.g. `node_modules`, `vendor`, `vendors`, or any dot-folder like `.git`).
+/// (e.g. `node_modules`, `vendor`, or any dot-folder like `.git`).
 fn should_skip_path(path: &Path, config: &ReeConfig) -> bool {
     path.components().any(|c| {
         if let std::path::Component::Normal(s) = c {
@@ -2218,7 +119,6 @@ fn collect_source_files(
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
-                // Skip vendor / dependency directories
                 if should_skip_path(&path, config) {
                     continue;
                 }
@@ -2250,18 +150,17 @@ fn main() {
     }
 
     let mode = if diff_mode {
-        Mode::Diff
+        format::Mode::Diff
     } else if check_mode {
-        Mode::Check
+        format::Mode::Check
     } else {
-        Mode::Write
+        format::Mode::Write
     };
 
     // Parse --stdin flag (consumes an optional extension argument)
     let stdin_mode = args.iter().position(|a| a == "--stdin");
     let stdin_ext: Option<String> = stdin_mode.and_then(|pos| {
         args.remove(pos);
-        // If the next argument is an extension (starts with '.'), consume it
         if args.first().is_some_and(|a| a.starts_with('.')) {
             Some(args.remove(0))
         } else {
@@ -2280,8 +179,8 @@ fn main() {
         let ext = ext.trim_start_matches('.');
 
         let formatted = match ext {
-            "ree" => format_ree_content(&input),
-            "ts" | "js" | "css" => format_code_content(&input, ext),
+            "ree" => ree_format::format_ree_content(&input),
+            "ts" | "js" | "css" => format::format_code_content(&input, ext),
             _ => {
                 eprintln!("Unsupported extension for --stdin: .{}", ext);
                 std::process::exit(1);
@@ -2348,9 +247,8 @@ fn main() {
     };
 
     let config = load_config();
-
     let mut any_modified = false;
-    let show_progress = mode == Mode::Write;
+    let show_progress = mode == format::Mode::Write;
 
     for target in targets {
         let path = Path::new(&target);
@@ -2366,7 +264,7 @@ fn main() {
                     eprint!("\r\x1b[KChecking: {}", file.display());
                     let _ = std::io::stderr().flush();
                 }
-                if format_file(&file, mode, &config) {
+                if format::format_file(&file, mode, &config) {
                     any_modified = true;
                 }
             }
@@ -2375,7 +273,7 @@ fn main() {
                 eprint!("\r\x1b[KChecking: {}", path.display());
                 let _ = std::io::stderr().flush();
             }
-            if format_file(path, mode, &config) {
+            if format::format_file(path, mode, &config) {
                 any_modified = true;
             }
         } else {
@@ -2389,7 +287,7 @@ fn main() {
                             eprint!("\r\x1b[KChecking: {}", entry.display());
                             let _ = std::io::stderr().flush();
                         }
-                        if format_file(&entry, mode, &config) {
+                        if format::format_file(&entry, mode, &config) {
                             any_modified = true;
                         }
                     }
@@ -2399,13 +297,198 @@ fn main() {
         }
     }
 
-    // Clear the progress line
     if show_progress {
         eprint!("\r\x1b[K");
         let _ = std::io::stderr().flush();
     }
 
-    if mode != Mode::Write && any_modified {
+    if mode != format::Mode::Write && any_modified {
         std::process::exit(1);
+    }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_file_unsupported_extension_returns_false() {
+        let dir = env::temp_dir().join("reefmt_test_unsupported");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.txt");
+        fs::write(&path, "hello world").unwrap();
+
+        let config = ReeConfig::default();
+        let modified = format::format_file(&path, format::Mode::Write, &config);
+        assert!(!modified, "format_file should return false for unsupported extension");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn format_file_check_mode_unsupported_extension() {
+        let dir = env::temp_dir().join("reefmt_test_unsupported_check");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.txt");
+        fs::write(&path, "hello world").unwrap();
+
+        let config = ReeConfig::default();
+        let modified = format::format_file(&path, format::Mode::Check, &config);
+        assert!(!modified, "format_file Check should return false for unsupported extension");
+        let content_after = fs::read_to_string(&path).unwrap();
+        assert_eq!(content_after, "hello world", "Check mode should not modify the file");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_mode_empty_ree_file_returns_false() {
+        let dir = env::temp_dir().join("reefmt_test_empty_check");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("empty.ree");
+        fs::write(&path, "").unwrap();
+
+        let modified = ree_format::format_ree_file(&path, format::Mode::Check);
+        assert!(!modified, "Check mode should return false for empty file");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_mode_via_format_file_dispatcher() {
+        let dir = env::temp_dir().join("reefmt_test_file_check");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.ree");
+        let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
+        fs::write(&path, unformatted).unwrap();
+
+        let config = ReeConfig::default();
+        let modified = format::format_file(&path, format::Mode::Check, &config);
+        assert!(modified, "format_file Check should detect unformatted .ree file");
+        let content_after = fs::read_to_string(&path).unwrap();
+        assert_eq!(content_after, unformatted, "format_file Check should not modify the file");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn diff_mode_via_format_file_dispatcher() {
+        let dir = env::temp_dir().join("reefmt_test_file_diff");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.ree");
+        let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
+        fs::write(&path, unformatted).unwrap();
+
+        let config = ReeConfig::default();
+        let modified = format::format_file(&path, format::Mode::Diff, &config);
+        assert!(modified, "format_file Diff should detect unformatted .ree file");
+        let content_after = fs::read_to_string(&path).unwrap();
+        assert_eq!(content_after, unformatted, "format_file Diff should not modify the file");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn skip_files_glob_matches_relative_path() {
+        let mut config = ReeConfig::default();
+        config.skip_files = vec!["generator/templates/**/*.ts".to_string()];
+
+        let matched = Path::new("generator/templates/ui/button.ts");
+        assert!(should_skip_file(&matched, &config));
+
+        let not_matched_ree = Path::new("generator/templates/ui/button.ree");
+        assert!(!should_skip_file(&not_matched_ree, &config));
+
+        let not_matched_outside = Path::new("src/ui/button.ts");
+        assert!(!should_skip_file(&not_matched_outside, &config));
+
+        config.skip_files = vec![];
+        let empty_skip = Path::new("generator/templates/ui/button.ts");
+        assert!(!should_skip_file(&empty_skip, &config));
+    }
+
+    #[test]
+    fn skip_files_handles_absolute_paths() {
+        let mut config = ReeConfig::default();
+        config.skip_files = vec!["templates/**/*.ts".to_string()];
+
+        let cwd = env::current_dir().unwrap();
+        let abs_path = cwd.join("templates/ui/button.ts");
+        assert!(should_skip_file(&abs_path, &config));
+
+        let outside = Path::new("/nonexistent/templates/ui/button.ts");
+        assert!(!should_skip_file(&outside, &config));
+    }
+
+    #[test]
+    fn init_template_parses_as_valid_config() {
+        let template = r#"{
+	// Directories to skip when formatting (glob patterns not needed,
+	// just directory names — any folder with this name is skipped).
+	"skipDirs": ["node_modules", "vendor", "vendors", "dist", "templates", "static"],
+
+	// Glob patterns for files to skip (e.g. "generator/templates/**/*.ts").
+	// Matches file paths relative to the project root.
+	"skipFiles": [],
+
+	// File extensions to format.
+	"extensions": ["ree", "ts", "js", "css"],
+
+	// Whether to skip dot-directories (folders starting with '.',
+	// like .git, .next, .cache, .svelte-kit, etc.).
+	"skipDotDirs": true
+}"#;
+
+        let config: ReeConfig =
+            json5::from_str(template).expect("--init template should be valid JSONC");
+
+        assert_eq!(config.skip_dirs.len(), 6);
+        assert!(config.skip_dirs.contains(&"node_modules".to_string()));
+        assert!(config.skip_dirs.contains(&"vendor".to_string()));
+        assert!(config.skip_dirs.contains(&"vendors".to_string()));
+        assert!(config.skip_dirs.contains(&"dist".to_string()));
+        assert!(config.skip_dirs.contains(&"templates".to_string()));
+        assert!(config.skip_dirs.contains(&"static".to_string()));
+
+        assert_eq!(config.extensions.len(), 4);
+        assert!(config.extensions.contains(&"ree".to_string()));
+        assert!(config.extensions.contains(&"ts".to_string()));
+        assert!(config.extensions.contains(&"js".to_string()));
+        assert!(config.extensions.contains(&"css".to_string()));
+
+        assert!(config.skip_dot_dirs);
+    }
+
+    #[test]
+    fn load_config_parses_reefmt_jsonc_from_directory() {
+        let dir = env::temp_dir().join(format!(
+            "reefmt_test_load_config_{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        let config_content = r#"{
+	"skipDirs": ["node_modules", "dist"],
+	"extensions": ["ree", "ts"],
+	"skipDotDirs": false
+}"#;
+        fs::write(dir.join("reefmt.jsonc"), config_content).unwrap();
+
+        let original_cwd = env::current_dir().unwrap();
+        env::set_current_dir(&dir).unwrap();
+
+        let config = load_config();
+
+        env::set_current_dir(&original_cwd).unwrap();
+
+        assert_eq!(config.skip_dirs.len(), 2);
+        assert!(!config.skip_dirs.contains(&"vendor".to_string()));
+
+        assert_eq!(config.extensions.len(), 2);
+        assert!(!config.extensions.contains(&"js".to_string()));
+
+        assert!(!config.skip_dot_dirs);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
