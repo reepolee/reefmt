@@ -15,7 +15,7 @@
 	"markdown": {
 		"lineWidth": 140
 	},
-	"markup_fmt": {
+	"markup": {
 		"printWidth": 140,
 		"useTabs": true,
 		"indentWidth": 1,
