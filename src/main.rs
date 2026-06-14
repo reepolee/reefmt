@@ -1,4 +1,5 @@
 use glob::glob;
+use similar::{ChangeTag, DiffOp};
 use std::{
     env, fs,
     io::{Read, Write},
@@ -861,7 +862,6 @@ fn print_diff(path: &Path, original: &str, formatted: &str) {
     println!("+++ b/{}", path_str);
 
     for op in diff.ops() {
-        use similar::{ChangeTag, DiffOp};
         match op {
             DiffOp::Equal { .. } => continue,
             _ => {
