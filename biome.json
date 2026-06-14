@@ -1,9 +1,25 @@
 {
+  "formatter": {
+    "enabled": false
+  },
   "linter": {
     "enabled": true,
     "rules": {
+      "recommended": true,
+      "correctness": {
+        "noUnusedImports": "error",
+        "noUnusedVariables": "off",
+        "noUnusedFunctionParameters": "off"
+      },
       "style": {
-        "useTemplate": "on"
+        "useTemplate": "error"
+      }
+    }
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "on"
       }
     }
   }
