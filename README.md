@@ -128,7 +128,8 @@ comments (`//` and `/* */`) for inline documentation.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `skipDirs` | `string[]` | `["node_modules", "vendor", "vendors", "dist"]` | Directories to skip when formatting. Any folder matching a name in this list is skipped, regardless of its location in the project. |
+| `skipDirs` | `string[]` | `["node_modules", "vendor", "vendors", "dist", "templates", "static"]` | Directories to skip when formatting. Any folder matching a name in this list is skipped, regardless of its location in the project. |
+| `skipFiles` | `string[]` | `[]` | Glob patterns for files to skip (e.g. `"generator/templates/**/*.ts"`). Matches file paths relative to the project root. |
 | `extensions` | `string[]` | `["ree", "ts", "js", "css"]` | File extensions to format. |
 | `skipDotDirs` | `boolean` | `true` | Skip directories whose name starts with a dot (e.g. `.git`, `.next`, `.cache`, `.svelte-kit`). |
 

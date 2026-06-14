@@ -38,6 +38,10 @@ struct ReeConfig {
     /// Directories to skip when formatting.
     #[serde(rename = "skipDirs")]
     skip_dirs: Vec<String>,
+    /// Glob patterns for files to skip (e.g. "generator/templates/**/*.ts").
+    /// Matches file paths relative to the project root.
+    #[serde(rename = "skipFiles")]
+    skip_files: Vec<String>,
     /// File extensions to format.
     extensions: Vec<String>,
     /// Whether to skip dot directories (folders starting with '.').
@@ -53,6 +57,8 @@ impl Default for ReeConfig {
                 "vendor".to_string(),
                 "vendors".to_string(),
                 "dist".to_string(),
+                "templates".to_string(),
+                "static".to_string(),
             ],
             extensions: vec![
                 "ree".to_string(),
@@ -60,6 +66,7 @@ impl Default for ReeConfig {
                 "js".to_string(),
                 "css".to_string(),
             ],
+            skip_files: vec![],
             skip_dot_dirs: true,
         }
     }
@@ -388,7 +395,7 @@ fn replace_raw_js_blocks(content: &str) -> String {
                             } else {
                                 // Single line — keep inline
                                 let trimmed = formatted.trim();
-                                result.push_str(&format!("{{ {} }}", trimmed));
+                                result.push_str(&format!("{{{{ {} }}}}", trimmed));
                             }
                         }
                         remaining = &remaining[close_end..];
@@ -623,24 +630,30 @@ fn is_ree_line(line: &str) -> bool {
 fn compute_html_tag_delta(line: &str, void_tags: &[&str]) -> (isize, isize) {
     let mut close_before = 0isize;
     let mut open_after = 0isize;
-    let mut pos = 0;
-
-    // Detect standalone '>' that closes an opening tag from a previous line.
-    // When a tag's attributes span multiple lines (e.g. <tag\n  attr="val"\n>),
-    // the '>' on its own line (or before </tag>) completes the opening tag and
-    // should increment open_after. Skip '/>' (self-closing) and '-->' (comment).
-    if let Some(first_gt) = line.find('>') {
-        let first_lt = line.find('<');
-        let is_before_any_tag = first_lt.is_none() || first_gt < first_lt.unwrap();
-        if is_before_any_tag {
-            // Check it's not '/>' and not part of '-->'
-            let not_self_close = first_gt == 0 || !line[..first_gt].ends_with('/');
-            let not_comment_close = first_gt < 2 || &line[first_gt.saturating_sub(2)..first_gt] != "--";
-            if not_self_close && not_comment_close {
-                open_after += 1;
+    let mut pos = 0;        // Detect standalone '>' that closes an opening tag from a previous line.
+        // When a tag's attributes span multiple lines (e.g. <tag\n  attr="val"\n>),
+        // the '>' on its own line (or before </tag>) completes the opening tag and
+        // should increment open_after. Skip '/>' (self-closing) and '-->' (comment).
+        // Only count if '>' is the first non-whitespace character on the line,
+        // so CSS child combinators (`.foo > div`) and inline text '>' are not
+        // mistaken for HTML tag closers.
+        if let Some(first_gt) = line.find('>') {
+            let first_lt = line.find('<');
+            let is_before_any_tag = first_lt.is_none() || first_gt < first_lt.unwrap();
+            if is_before_any_tag {
+                // Check it's not '/>' and not part of '-->'
+                let not_self_close = first_gt == 0 || !line[..first_gt].ends_with('/');
+                let not_comment_close = first_gt < 2 || &line[first_gt.saturating_sub(2)..first_gt] != "--";
+                if not_self_close && not_comment_close {
+                    // Only count if '>' is the first non-whitespace character —
+                    // avoids matching '>' inside CSS selectors or text content.
+                    let first_non_ws = line.find(|c: char| !c.is_whitespace());
+                    if first_non_ws == Some(first_gt) {
+                        open_after += 1;
+                    }
+                }
             }
         }
-    }
 
     while let Some(open_pos) = line[pos..].find('<') {
         let abs_pos = pos + open_pos;
@@ -721,17 +734,16 @@ fn normalize_inline_spacing(line: &str) -> String {
     let chars: Vec<char> = line.chars().collect();
     let len = chars.len();
     let mut i = 0;
+    // Track brace depth so we don't normalize whitespace inside Ree expressions
+    let mut brace_depth: usize = 0;
 
     while i < len {
-        if chars[i] == '>' {
-            out.push('>');
+        if chars[i] == '{' {
+            brace_depth += 1;
+            out.push('{');
             i += 1;
-            if let Some(n) = chars[i..].iter().position(|&c| !c.is_whitespace()) {
-                if chars[i + n] == '{' {
-                    i += n;
-                }
-            }
         } else if chars[i] == '}' {
+            brace_depth = brace_depth.saturating_sub(1);
             out.push('}');
             i += 1;
             if let Some(n) = chars[i..].iter().position(|&c| !c.is_whitespace()) {
@@ -739,6 +751,23 @@ fn normalize_inline_spacing(line: &str) -> String {
                     i += n;
                 }
             }
+        } else if chars[i] == '>' {
+            out.push('>');
+            i += 1;
+            if let Some(n) = chars[i..].iter().position(|&c| !c.is_whitespace()) {
+                if chars[i + n] == '{' {
+                    i += n;
+                }
+            }
+        } else if chars[i] == '/' && i + 1 < len && chars[i + 1] == '>' && brace_depth == 0 {
+            // Normalize whitespace before /> (self-closing tag marker):
+            // strip any trailing whitespace and ensure a single space.
+            let last_non_ws = out.rfind(|c: char| !c.is_whitespace());
+            if let Some(pos) = last_non_ws {
+                out.truncate(pos + 1);
+            }
+            out.push_str(" />");
+            i += 2;
         } else {
             out.push(chars[i]);
             i += 1;
@@ -757,6 +786,9 @@ fn format_html(src: &str) -> String {
     let mut out = String::new();
     let mut depth: usize = 0;
     let mut in_comment: bool = false;
+    // When an opening tag spans multiple lines (<tag\n  attr="val"\n>),
+    // attributes on intermediate lines should be indented one level deeper.
+    let mut multiline_attr_depth: Option<usize> = None;
 
     for line in src.lines() {
         let trimmed = line.trim();
@@ -836,27 +868,96 @@ fn format_html(src: &str) -> String {
             depth = depth.saturating_sub(1);
         }
 
+        // Determine if this line is an attribute continuation of a multiline opening tag.
+        // Attributes should be indented one level deeper than the tag itself.
+        // Lines that close the opening tag (with '>' or '/>') are still attribute
+        // continuations — only exclude bare '>' or '/>' lines and new/closing tags.
+        let is_attr_continuation = multiline_attr_depth.is_some()
+            && !trimmed.starts_with('<')   // not the opening <tag itself
+            && !trimmed.starts_with("</") // not a closing tag
+            && !trimmed.starts_with('>')  // not a bare '>' closer
+            && !trimmed.starts_with('/'); // not a bare '/>' self-close
+
         if !is_ree_line(trimmed) {
             let (close_before, open_after) = compute_html_tag_delta(trimmed, &void_tags);
 
             let close_before = close_before.min(1);
-            let open_after = open_after.min(1);
+            let mut open_after = open_after.min(1);
 
-            if close_before > 0 {
-                depth = depth.saturating_sub(close_before as usize);
+            // When completing a multiline opening tag where `>` is not the first
+            // non-whitespace character (e.g., `onclick="...">`), ensure the tag
+            // opening is counted so content inside the tag is at the right depth.
+            // Only fire if the `>` is not part of a self-closing tag (`/>`).
+            if multiline_attr_depth.is_some() && trimmed.contains('>') && open_after == 0 {
+                let gt_pos = trimmed.find('>').unwrap();
+                let is_self_close = gt_pos > 0 && trimmed.as_bytes()[gt_pos - 1] == b'/';
+                if !is_self_close {
+                    open_after = 1;
+                }
             }
 
-            let normalized = normalize_inline_spacing(trimmed);
-            out.push_str(&"\t".repeat(depth));
-            out.push_str(&normalized);
-            out.push('\n');
+            let write_depth = if is_attr_continuation {
+                // Attribute lines go one level deeper than the opening tag
+                multiline_attr_depth.unwrap()
+            } else {
+                depth
+            };
 
-            depth += open_after as usize;
+            if close_before > 0 && open_after > 0 {
+                // When a standalone '>' completes an opening tag from a previous line
+                // and </tag> closes it on the same line (e.g., ></auto-complete>),
+                // the close and open cancel — write at current depth, no net change.
+                let normalized = normalize_inline_spacing(trimmed);
+                out.push_str(&"\t".repeat(write_depth));
+                out.push_str(&normalized);
+                out.push('\n');
+            } else {
+                if close_before > 0 {
+                    depth = depth.saturating_sub(close_before as usize);
+                }
+
+                let normalized = normalize_inline_spacing(trimmed);
+                // For attribute continuations, use the attr depth (parent+1).
+                // Otherwise use depth (which has been adjusted for close_before).
+                let effective_depth = if is_attr_continuation {
+                    multiline_attr_depth.unwrap()
+                } else {
+                    depth
+                };
+                out.push_str(&"\t".repeat(effective_depth));
+                out.push_str(&normalized);
+                out.push('\n');
+
+                depth += open_after as usize;
+            }
         } else {
+            // Ree lines inside a multiline opening tag should be indented
+            // one level deeper (attribute continuation depth).
+            let ree_depth = multiline_attr_depth.unwrap_or(depth);
             let normalized = normalize_inline_spacing(trimmed);
-            out.push_str(&"\t".repeat(depth));
+            out.push_str(&"\t".repeat(ree_depth));
             out.push_str(&normalized);
             out.push('\n');
+        }
+
+        // Track multiline opening tag state
+        if !is_ree_line(trimmed) {
+            if trimmed.starts_with('<') && !trimmed.starts_with("<!--")
+                && !trimmed.starts_with("</") && !trimmed.contains('>')
+            {
+                // Start of a multiline opening tag — attributes go one level deeper
+                multiline_attr_depth = Some(depth + 1);
+            }
+            if trimmed.contains('>') {
+                // The opening tag has been closed — clear multiline state
+                multiline_attr_depth = None;
+            }
+        } else if trimmed.ends_with("/>") {
+            // A Ree line ending with '/>' (self-closing tag marker)
+            // closes the multiline opening tag — clear multiline state.
+            // Uses ends_with instead of contains to avoid false positives
+            // from '/>' appearing inside Ree expression strings.
+            multiline_attr_depth = None;
         }
 
         // Apply net opens after writing
@@ -1157,6 +1258,9 @@ fn format_code_file(path: &Path, mode: Mode) -> bool {
 fn format_file(path: &Path, mode: Mode, config: &ReeConfig) -> bool {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     if !config.extensions.iter().any(|e| e == ext) {
+        return false;
+    }
+    if should_skip_file(path, config) {
         return false;
     }
     match ext {
@@ -1638,7 +1742,11 @@ mod tests {
         let template = r#"{
 	// Directories to skip when formatting (glob patterns not needed,
 	// just directory names — any folder with this name is skipped).
-	"skipDirs": ["node_modules", "vendor", "vendors", "dist"],
+	"skipDirs": ["node_modules", "vendor", "vendors", "dist", "templates", "static"],
+
+	// Glob patterns for files to skip (e.g. "generator/templates/**/*.ts").
+	// Matches file paths relative to the project root.
+	"skipFiles": [],
 
 	// File extensions to format.
 	"extensions": ["ree", "ts", "js", "css"],
@@ -1651,11 +1759,13 @@ mod tests {
         let config: ReeConfig =
             json5::from_str(template).expect("--init template should be valid JSONC");
 
-        assert_eq!(config.skip_dirs.len(), 4);
+        assert_eq!(config.skip_dirs.len(), 6);
         assert!(config.skip_dirs.contains(&"node_modules".to_string()));
         assert!(config.skip_dirs.contains(&"vendor".to_string()));
         assert!(config.skip_dirs.contains(&"vendors".to_string()));
         assert!(config.skip_dirs.contains(&"dist".to_string()));
+        assert!(config.skip_dirs.contains(&"templates".to_string()));
+        assert!(config.skip_dirs.contains(&"static".to_string()));
 
         assert_eq!(config.extensions.len(), 4);
         assert!(config.extensions.contains(&"ree".to_string()));
@@ -1664,6 +1774,61 @@ mod tests {
         assert!(config.extensions.contains(&"css".to_string()));
 
         assert!(config.skip_dot_dirs);
+    }
+
+    #[test]
+    fn ree_attribute_in_multiline_tag_uses_continuation_depth() {
+        // When a multiline opening tag has a Ree line as part of its
+        // attributes (e.g. {#if ...}checked{/if} />), the Ree line should
+        // be indented one level deeper than the opening tag.
+        let src = "<label class=\"filter-option\">\n\t<input type=\"checkbox\"\n\t{#if def.checked_values.includes(opt.option_value)}checked{/if} />\n\t{= opt.option_text }\n</label>";
+
+        let result = format_html(src);
+        let lines: Vec<&str> = result.lines().collect();
+
+        assert_eq!(lines[0], "<label class=\"filter-option\">", "opening label");
+        assert_eq!(lines[1], "\t<input type=\"checkbox\"", "input tag at depth 1");
+        assert_eq!(lines[2], "\t\t{#if def.checked_values.includes(opt.option_value)}checked{/if} />", "ree attribute continuation at depth 2");
+        assert_eq!(lines[3], "\t{= opt.option_text }", "ree expression at depth 1");
+        assert_eq!(lines[4], "</label>", "closing label at depth 0");
+    }
+
+    #[test]
+    fn skip_files_glob_matches_relative_path() {
+        let mut config = ReeConfig::default();
+        config.skip_files = vec!["generator/templates/**/*.ts".to_string()];
+
+        // Should match: file under generator/templates/
+        let matched = Path::new("generator/templates/ui/button.ts");
+        assert!(should_skip_file(&matched, &config));
+
+        // Should not match: .ree file in templates
+        let not_matched_ree = Path::new("generator/templates/ui/button.ree");
+        assert!(!should_skip_file(&not_matched_ree, &config));
+
+        // Should not match: .ts file outside templates
+        let not_matched_outside = Path::new("src/ui/button.ts");
+        assert!(!should_skip_file(&not_matched_outside, &config));
+
+        // Empty skipFiles should never match
+        config.skip_files = vec![];
+        let empty_skip = Path::new("generator/templates/ui/button.ts");
+        assert!(!should_skip_file(&empty_skip, &config));
+    }
+
+    #[test]
+    fn skip_files_handles_absolute_paths() {
+        let mut config = ReeConfig::default();
+        config.skip_files = vec!["templates/**/*.ts".to_string()];
+
+        // Absolute paths should be made relative to CWD
+        let cwd = env::current_dir().unwrap();
+        let abs_path = cwd.join("templates/ui/button.ts");
+        assert!(should_skip_file(&abs_path, &config));
+
+        // Paths outside CWD should not match (glob is relative)
+        let outside = Path::new("/nonexistent/templates/ui/button.ts");
+        assert!(!should_skip_file(&outside, &config));
     }
 
     #[test]
@@ -1703,6 +1868,27 @@ mod tests {
     }
 }
 
+/// Check whether a file path matches any `skipFiles` glob pattern.
+/// The path is converted to be relative to the current working directory
+/// before matching, so user-provided patterns like `"templates/**/*.ts"`
+/// work correctly regardless of whether `file_path` is absolute or relative.
+fn should_skip_file(file_path: &Path, config: &ReeConfig) -> bool {
+    if config.skip_files.is_empty() {
+        return false;
+    }
+    // Try to make the path relative to CWD so user glob patterns match.
+    let rel_path = env::current_dir()
+        .ok()
+        .and_then(|cwd| file_path.strip_prefix(&cwd).ok())
+        .unwrap_or(file_path);
+    let path_str = rel_path.to_string_lossy().replace('\\', "/");
+    config.skip_files.iter().any(|pattern| {
+        glob::Pattern::new(pattern)
+            .map(|p| p.matches(&path_str))
+            .unwrap_or(false)
+    })
+}
+
 /// Check whether a path is inside a directory that should be skipped
 /// (e.g. `node_modules`, `vendor`, `vendors`, or any dot-folder like `.git`).
 fn should_skip_path(path: &Path, config: &ReeConfig) -> bool {
@@ -1738,7 +1924,9 @@ fn collect_source_files(
                 collect_source_files(&path, files, config)?;
             } else if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
                 if config.extensions.iter().any(|e| e == ext) {
-                    files.push(path);
+                    if !should_skip_file(&path, config) {
+                        files.push(path);
+                    }
                 }
             }
         }
@@ -1825,7 +2013,11 @@ fn main() {
         let template = r##"{
 	// Directories to skip when formatting (glob patterns not needed,
 	// just directory names — any folder with this name is skipped).
-	"skipDirs": ["node_modules", "vendor", "vendors", "dist"],
+	"skipDirs": ["node_modules", "vendor", "vendors", "dist", "templates", "static"],
+
+	// Glob patterns for files to skip (e.g. "generator/templates/**/*.ts").
+	// Matches file paths relative to the project root.
+	"skipFiles": [],
 
 	// File extensions to format.
 	"extensions": ["ree", "ts", "js", "css"],
@@ -1870,7 +2062,7 @@ fn main() {
             }
             for file in files {
                 if show_progress {
-                    eprint!("\rChecking: {}", file.display());
+                    eprint!("\r\x1b[KChecking: {}", file.display());
                     let _ = std::io::stderr().flush();
                 }
                 if format_file(&file, mode, &config) {
@@ -1879,7 +2071,7 @@ fn main() {
             }
         } else if path.exists() {
             if show_progress {
-                eprint!("\rChecking: {}", path.display());
+                eprint!("\r\x1b[KChecking: {}", path.display());
                 let _ = std::io::stderr().flush();
             }
             if format_file(path, mode, &config) {
@@ -1893,7 +2085,7 @@ fn main() {
                             continue;
                         }
                         if show_progress {
-                            eprint!("\rChecking: {}", entry.display());
+                            eprint!("\r\x1b[KChecking: {}", entry.display());
                             let _ = std::io::stderr().flush();
                         }
                         if format_file(&entry, mode, &config) {
