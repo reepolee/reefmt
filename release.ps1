@@ -1,5 +1,6 @@
 # Release script for Windows.
 # Builds the native binary and publishes it as a GitHub Release.
+# Version is auto-bumped (patch) only when the tag for the current version doesn't exist yet.
 #
 # Usage: .\release.ps1 [-Draft]
 #   -Draft  Create the release as a draft (default: published)
@@ -9,9 +10,9 @@
 #   - git
 #
 # Workflow (run on each machine after pushing code):
-#   1. macOS:  bash release.sh            -> builds, creates tag + release, uploads
-#   2. Linux:  bash release.sh            -> builds, uploads to existing release
-#   3. Windows: .\release.ps1            -> builds, uploads to existing release
+#   1. macOS (first): bash release.sh     -> bumps version, creates tag + release, uploads
+#   2. Linux:          bash release.sh     -> builds, uploads to existing release
+#   3. Windows:        .\release.ps1      -> builds, uploads to existing release
 
 param(
     [switch]$Draft
@@ -36,7 +37,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # ──────────────────────────────────────────────
-# Read version from Cargo.toml
+# Read current version from Cargo.toml
 # ──────────────────────────────────────────────
 
 $cargoContent = Get-Content "Cargo.toml" -Raw
@@ -47,11 +48,36 @@ if (-not $versionMatch.Success) {
 }
 
 $version = $versionMatch.Groups[1].Value
-$tag = "v$version"
-
-Write-Host "═══ reefmt release $version for Windows ═══"
-
 $binaryName = "$AppName-windows-x64.exe"
+
+# ──────────────────────────────────────────────
+# Decide: bump version or use existing
+# ──────────────────────────────────────────────
+
+$tag = "v$version"
+$doBump = $false
+
+$tagRemote = git ls-remote --tags origin $tag 2>$null
+if ($tagRemote -match "refs/tags/$tag`$") {
+    # Tag already exists -> this is a subsequent machine. Just build and upload.
+    Write-Host "═══ reefmt release $version for Windows ═══"
+    Write-Host "  (Tag $tag already released. Uploading binary only.)"
+    $doBump = $false
+} else {
+    # Tag doesn't exist -> this is the first machine. Bump version, then build and release.
+    $parts = $version -split '\.'
+    $newVersion = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
+
+    Write-Host "═══ reefmt release $newVersion for Windows ═══"
+    Write-Host "  (Bumping from $version -> $newVersion)"
+
+    $cargoContent = $cargoContent -replace 'version = "\d+\.\d+\.\d+"', "version = `"$newVersion`""
+    Set-Content "Cargo.toml" -Value $cargoContent
+
+    $version = $newVersion
+    $tag = "v$version"
+    $doBump = $true
+}
 
 # ──────────────────────────────────────────────
 # Build
@@ -60,6 +86,17 @@ $binaryName = "$AppName-windows-x64.exe"
 Write-Host "`n→ Building $binaryName..."
 cargo build --release
 Copy-Item ".\target\release\$binaryName" ".\$binaryName"
+
+# ──────────────────────────────────────────────
+# Commit version bump (first machine only)
+# ──────────────────────────────────────────────
+
+if ($doBump) {
+    Write-Host "`n→ Committing version bump..."
+    git add "Cargo.toml"
+    git commit -m "Bump version to $version"
+    Write-Host "  Committed: Bump version to $version"
+}
 
 # ──────────────────────────────────────────────
 # Create and push git tag
@@ -75,13 +112,13 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "  Created tag $tag locally."
 }
 
-# Push the tag if it hasn't been pushed yet
-$tagRemote = git ls-remote --tags origin $tag 2>$null
-if ($tagRemote -match $tag) {
-    Write-Host "  Tag $tag already exists on origin."
-} else {
-    git push origin $tag
-    Write-Host "  Pushed tag $tag to origin."
+# Push tag and (if bumped) the version bump commit together
+Write-Host "  Pushing tag $tag to origin..."
+git push origin $tag
+
+if ($doBump) {
+    Write-Host "  Pushing version bump commit..."
+    git push origin HEAD
 }
 
 # ──────────────────────────────────────────────
