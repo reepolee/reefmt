@@ -449,12 +449,7 @@ pub(crate) fn format_ree_content(content: &str) -> String {
 
     // Format the HTML skeleton via dprint's markup_fmt plugin.
     let result = {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-
-        match crate::format::resolve_dprint_config(timestamp) {
+        match crate::format::resolve_dprint_config() {
             Some(ref path) => {
                 let dprint_result = format_ree_html_via_dprint(&result, path);
                 if path.contains("reefmt_dprint_config_") {
