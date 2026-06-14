@@ -24,6 +24,18 @@ The script detects your OS and architecture, downloads the correct binary from t
 
 Or download a binary directly from the [latest release](https://github.com/reepolee/reefmt/releases/latest).
 
+### Optional: install formatter dependencies
+
+For best results (JS/CSS formatting via dprint and lint fixes via biome):
+
+```bash
+brew install dprint biome
+# or
+bun install -g dprint biome
+```
+
+reefmt works without these — it falls back to basic indentation if they're not found.
+
 ## Development
 
 This is a Rust project. Build and install the latest local source:
