@@ -2,23 +2,23 @@
 /// Used by protect()/restore() to hide Ree template syntax
 /// from external formatters (dprint, biome).
 pub(crate) const REE_TAGS: &[(&str, &str)] = &[
-    ("{#layout", "__REE_LAYOUT__"),
-    ("{#include", "__REE_INCLUDE__"),
-    ("{#with", "__REE_WITH__"),
-    ("{#each", "__REE_EACH__"),
-    ("{#if", "__REE_IF__"),
-    ("{/with}", "__REE_END_WITH__"),
-    ("{/each}", "__REE_END_EACH__"),
-    ("{/if}", "__REE_END_IF__"),
-    ("{:else}", "__REE_ELSE__"),
-    ("{@", "__REE_COMPONENT__"),
-    ("{{", "__REE_RAW_JS_OPEN__"),
-    ("}}", "__REE_RAW_JS_CLOSE__"),
-    ("{~", "__REE_UNESCAPED__"),
-    ("{=", "__REE_ESCAPED__"),
-    ("{:", "__REE_COLON__"),
-    ("{#", "__REE_HASH__"),
-    ("{/", "__REE_SLASH__"),
+    ("{#layout", "__LY__"),
+    ("{#include", "__IN__"),
+    ("{#with", "__WI__"),
+    ("{#each", "__EA__"),
+    ("{#if", "__IF__"),
+    ("{/with}", "__EW__"),
+    ("{/each}", "__EE__"),
+    ("{/if}", "__EI__"),
+    ("{:else}", "__EL__"),
+    ("{@", "__CP__"),
+    ("{{", "__RO__"),
+    ("}}", "__RC__"),
+    ("{~", "__UN__"),
+    ("{=", "__ES__"),
+    ("{:", "__CL__"),
+    ("{#", "__HA__"),
+    ("{/", "__SL__"),
 ];
 
 /// Replace all Ree tag markers with opaque placeholders
@@ -54,7 +54,7 @@ pub(crate) fn protect_html_comments(src: &str) -> (String, Vec<String>) {
         if let Some(end) = rest[start..].find("-->") {
             let comment_end = start + end + 3;
             placeholders.push(rest[start..comment_end].to_string());
-            let placeholder = format!("__REE_HTML_COMMENT_{}__", placeholders.len() - 1);
+            let placeholder = format!("__CM{}__", placeholders.len() - 1);
             result.push_str(&placeholder);
             rest = &rest[comment_end..];
         } else {
@@ -73,7 +73,7 @@ pub(crate) fn protect_html_comments(src: &str) -> (String, Vec<String>) {
 pub(crate) fn restore_html_comments(src: &str, placeholders: &[String]) -> String {
     let mut result = src.to_string();
     for (i, comment) in placeholders.iter().enumerate() {
-        let placeholder = format!("__REE_HTML_COMMENT_{}__", i);
+        let placeholder = format!("__CM{}__", i);
         result = result.replace(&placeholder, comment);
     }
     result
@@ -95,7 +95,7 @@ pub(crate) fn protect_raw_js_blocks(src: &str) -> (String, Vec<String>) {
         if let Some(end) = after_open.find("}}") {
             let block_end = start + 2 + end + 2;
             placeholders.push(rest[start..block_end].to_string());
-            let placeholder = format!("__REE_RAW_JS_BLOCK_{}__", placeholders.len() - 1);
+            let placeholder = format!("__JB{}__", placeholders.len() - 1);
             result.push_str(&placeholder);
             rest = &rest[block_end..];
         } else {
@@ -114,7 +114,7 @@ pub(crate) fn protect_raw_js_blocks(src: &str) -> (String, Vec<String>) {
 pub(crate) fn restore_raw_js_blocks(src: &str, placeholders: &[String]) -> String {
     let mut result = src.to_string();
     for (i, content) in placeholders.iter().enumerate() {
-        let placeholder = format!("__REE_RAW_JS_BLOCK_{}__", i);
+        let placeholder = format!("__JB{}__", i);
         result = result.replace(&placeholder, content);
     }
     result
