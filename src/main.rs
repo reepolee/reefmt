@@ -262,6 +262,109 @@ fn dprint_format(src: &str, lang: &str) -> String {
         .join("\n")
 }
 
+/// Strip the `<ree-root>` wrapper added by `dprint_format_html`.
+/// Removes the first and last lines, then un-indents each remaining line
+/// by removing one leading tab.
+fn strip_ree_root_wrapper(src: &str) -> String {
+    let mut lines: Vec<&str> = src.lines().collect();
+    if lines.len() >= 2 {
+        lines.remove(0); // <ree-root>
+        lines.pop();     // </ree-root>
+    }
+    lines
+        .iter()
+        .map(|line| {
+            if line.is_empty() {
+                String::new()
+            } else {
+                line.strip_prefix('\t').unwrap_or(line).to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Insert guard `<span></span>` lines between consecutive lines where
+/// both lines contain protected Ree placeholders but no HTML tags.
+/// This prevents dprint from collapsing newlines between text-only
+/// Ree tag lines.
+fn insert_ree_guards(src: &str) -> String {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut out = String::new();
+    for i in 0..lines.len() {
+        if i > 0 {
+            let prev = lines[i - 1].trim();
+            let curr = lines[i].trim();
+            let prev_is_ree = prev.contains("__REE_") && !prev.starts_with('<');
+            let curr_is_ree = curr.contains("__REE_") && !curr.starts_with('<');
+            if prev_is_ree && curr_is_ree {
+                out.push_str("<!--R-->\n");
+            }
+        }
+        out.push_str(lines[i]);
+        out.push('\n');
+    }
+    out
+}
+
+/// Pipe Ree template content through dprint's markup_fmt plugin for HTML formatting.
+/// Protects Ree tags and HTML comments before formatting, then restores them.
+/// Falls back to returning the source unchanged if dprint is not installed.
+///
+/// Wraps content in `<ree-root>` to give dprint a proper HTML context, and
+/// inserts `<span></span>` guards between consecutive Ree-only lines to
+/// prevent dprint from collapsing newlines between text nodes.
+fn dprint_format_html(src: &str) -> String {
+    if src.trim().is_empty() {
+        return String::new();
+    }
+
+    // Protect HTML comments so content inside them is not modified
+    let (html_protected, html_comments) = protect_html_comments(src.trim());
+    // Protect Ree tags so they are not modified by dprint
+    let protected = protect(&html_protected);
+
+    // Wrap in a root element to give dprint a proper HTML context.
+    let wrapped = format!("<ree-root>\n{}\n</ree-root>", protected);
+
+    // Insert <span></span> guards between consecutive Ree-only lines
+    // to prevent dprint from collapsing newlines between them.
+    let guarded = insert_ree_guards(&wrapped);
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+
+    // Get dprint config (external or fallback default with markup_fmt)
+    let config_path = resolve_dprint_config(timestamp);
+
+    let formatted = match config_path {
+        Some(ref path) => {
+            // Pass as .html to trigger markup_fmt plugin
+            let result = pipe_dprint(&guarded, "html", path);
+            if path.contains("reefmt_dprint_config_") {
+                let _ = fs::remove_file(path);
+            }
+            result
+        }
+        None => guarded,
+    };
+
+    // Remove guard <!--R--> lines (HTML comments that dprint preserves verbatim)
+    let cleaned: String = formatted
+        .lines()
+        .filter(|l| l.trim() != "<!--R-->")
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Strip the <ree-root> wrapper and un-indent by one level
+    let unwrapped = strip_ree_root_wrapper(&cleaned);
+
+    let restored = restore(&unwrapped);
+    restore_html_comments(&restored, &html_comments)
+}
+
 fn indent_code(src: &str) -> String {
     let mut out = String::new();
     let mut depth: usize = 0;
@@ -555,35 +658,157 @@ fn collapse_blank_lines(src: &str) -> String {
     out
 }
 
-fn is_opening_html_tag(line: &str) -> bool {
-    line.starts_with('<')
-        && !line.starts_with("</")
-        && !line.starts_with("<!--")
-        && !line.starts_with("<!")
-        && line.contains('>')
+/// Adjust indentation for HTML tag depth + Ree block-level tags after dprint.
+/// dprint indents child HTML elements correctly but NOT text/Ree content.
+/// This function tracks HTML tag depth for text content and Ree block depth
+/// for {#if}/{#each}/{#with} blocks, combining both with dprint's element indentation.
+fn adjust_ree_block_depth(src: &str) -> String {
+    let void_tags = [
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
+        "source", "track", "wbr",
+    ];
+
+    let mut out = String::new();
+    let mut ree_depth: usize = 0;
+    // Track HTML depth ourselves (dprint only indents HTML elements, not text content)
+    let mut html_depth: usize = 0;
+    let mut in_comment: bool = false;
+
+    for line in src.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            out.push('\n');
+            continue;
+        }
+
+        // Track multiline HTML comment state
+        if trimmed.contains("<!--") && !trimmed.contains("-->") {
+            in_comment = true;
+        }
+        if trimmed.contains("-->") {
+            in_comment = false;
+        }
+
+        // dprint's leading tab indentation (reliable for HTML element lines)
+        let dprint_depth = line.chars().take_while(|&c| c == '\t').count();
+        let is_html_line = trimmed.starts_with('<') && !trimmed.starts_with("<!--") && !trimmed.starts_with("<!");
+
+        // Count Ree opens/closes on this line (skip if inside multiline comment)
+        let count_source = if in_comment {
+            String::new()
+        } else {
+            strip_html_comment_content(trimmed)
+        };
+        let (ree_opens, ree_closes) = if count_source.is_empty() {
+            (0, 0)
+        } else {
+            count_ree_block_tags(&count_source)
+        };
+        let is_else = !in_comment && (trimmed.starts_with("{:else") || trimmed.starts_with("{:"));
+
+        // Apply net Ree closes before writing
+        let net_ree_close = if is_else { 1 } else { (ree_closes as usize).saturating_sub(ree_opens as usize) };
+        ree_depth = ree_depth.saturating_sub(net_ree_close);
+
+        // For HTML lines, use dprint's indentation. For text/Ree lines, use tracked depth.
+        let effective_html_depth = if is_html_line { dprint_depth } else { html_depth };
+
+        // Write line at combined depth
+        out.push_str(&"\t".repeat(effective_html_depth + ree_depth));
+        out.push_str(trimmed);
+        out.push('\n');
+
+        // Apply net Ree opens after writing
+        let net_ree_open = if is_else { 1 } else { (ree_opens as usize).saturating_sub(ree_closes as usize) };
+        ree_depth += net_ree_open;
+
+        // Update tracked HTML depth for subsequent text/Ree lines
+        if is_html_line {
+            let delta = html_depth_delta(trimmed, &void_tags);
+            if delta >= 0 {
+                html_depth = effective_html_depth + delta as usize;
+            } else {
+                html_depth = effective_html_depth.saturating_sub((-delta) as usize);
+            }
+        }
+    }
+
+    collapse_blank_lines(&out)
 }
 
-fn is_self_closed(line: &str) -> bool {
-    line.trim_end().ends_with("/>")
+/// Count Ree block tags on a trimmed line. Returns (opens, closes).
+fn count_ree_block_tags(trimmed: &str) -> (u64, u64) {
+    let mut opens = 0u64;
+    let mut closes = 0u64;
+    let mut pos;
+
+    for pat in &["{#if", "{#each", "{#with"] {
+        pos = 0;
+        while let Some(idx) = trimmed[pos..].find(pat) {
+            opens += 1;
+            pos += idx + pat.len();
+        }
+    }
+    for pat in &["{/if", "{/each", "{/with"] {
+        pos = 0;
+        while let Some(idx) = trimmed[pos..].find(pat) {
+            closes += 1;
+            pos += idx + pat.len();
+        }
+    }
+    (opens, closes)
 }
 
-fn extract_tag_name(line: &str) -> String {
-    let start = if line.starts_with('<') { 1 } else { 0 };
-    let rest = &line[start..];
-    rest.split(|c: char| c.is_whitespace() || c == '>' || c == '/')
-        .next()
-        .unwrap_or("")
-        .to_lowercase()
-}
+/// Compute net HTML tag depth change for a line.
+/// Returns -1, 0, or 1 (capped).
+fn html_depth_delta(trimmed: &str, void_tags: &[&str]) -> isize {
+    let mut pos = 0;
+    let mut delta: isize = 0;
+    // Track closing tags that are paired with inline opens on this line
+    let mut skip_close: isize = 0;
 
-fn has_inline_close(line: &str, tag_name: &str) -> bool {
-    line.contains(&format!("</{}>", tag_name))
-}
+    while let Some(idx) = trimmed[pos..].find('<') {
+        let abs = pos + idx;
+        let rest = &trimmed[abs..];
 
-fn leading_tabs(s: &str) -> String {
-    s.chars().take_while(|&c| c == '\t').collect()
-}
+        if rest.starts_with("</") {
+            if skip_close > 0 {
+                skip_close -= 1;
+            } else {
+                delta -= 1;
+            }
+        } else if !rest.starts_with("<!--") && !rest.starts_with("<!") {
+            let tag_start = abs + 1;
+            let tag_name_end = trimmed[tag_start..]
+                .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+                .map(|p| tag_start + p)
+                .unwrap_or(trimmed.len());
+            let tag_name = &trimmed[tag_start..tag_name_end];
 
+            if !void_tags.contains(&tag_name) {
+                if let Some(close) = rest.find('>') {
+                    let is_self_closed = rest[..close].ends_with('/');
+                    let after_tag = &trimmed[abs + close + 1..];
+                    let has_inline = after_tag.contains(&format!("</{}>", tag_name));
+                    if !is_self_closed && !has_inline {
+                        delta += 1;
+                    }
+                    if has_inline {
+                        skip_close += 1;
+                    }
+                }
+            }
+        }
+
+        if let Some(close) = rest.find('>') {
+            pos = abs + close + 1;
+        } else {
+            break;
+        }
+    }
+
+    if delta > 0 { 1 } else if delta < 0 { -1 } else { 0 }
+}
 
 /// Strip content between HTML comment markers (`<!-- ... -->`) from a line,
 /// replacing it with a space so tokens don't merge. This prevents Ree tags
@@ -616,396 +841,11 @@ fn strip_html_comment_content(s: &str) -> String {
     result
 }
 
-fn is_ree_line(line: &str) -> bool {
-    line.starts_with('{')
-}
-
-fn compute_html_tag_delta(line: &str, void_tags: &[&str]) -> (isize, isize) {
-    let mut close_before = 0isize;
-    let mut open_after = 0isize;
-    let mut pos = 0;
-
-    // Detect standalone '>' that closes an opening tag from a previous line.
-    // When a tag's attributes span multiple lines (e.g. <tag\n  attr="val"\n>),
-    // the '>' on its own line (or before </tag>) completes the opening tag and
-    // should increment open_after. Skip '/>' (self-closing) and '-->' (comment).
-    if let Some(first_gt) = line.find('>') {
-        let first_lt = line.find('<');
-        let is_before_any_tag = first_lt.is_none() || first_gt < first_lt.unwrap();
-        if is_before_any_tag {
-            // If this standalone '>' is followed by a closing tag (e.g., "></confirm-dialog>"),
-            // it's completing a multiline opening tag that closes on the same line.
-            // Don't increment open_after — the close will balance the open that
-            // was already counted when the multiline tag started.
-            let completes_multiline_then_closes = first_lt.is_some()
-                && line[first_lt.unwrap()..].starts_with("</");
-
-            if !completes_multiline_then_closes {
-                // Check it's not '/>' and not part of '-->'
-                let not_self_close = first_gt == 0 || !line[..first_gt].ends_with('/');
-                let not_comment_close = first_gt < 2 || &line[first_gt.saturating_sub(2)..first_gt] != "--";
-                if not_self_close && not_comment_close {
-                    open_after += 1;
-                }
-            }
-        }
-    }
-
-    while let Some(open_pos) = line[pos..].find('<') {
-        let abs_pos = pos + open_pos;
-        let rest = &line[abs_pos..];
-
-        if rest.starts_with("</") {
-            let tag_start = abs_pos + 2;
-            let tag_name_end = line[tag_start..]
-                .find(|c: char| c.is_whitespace() || c == '>')
-                .map(|p| tag_start + p)
-                .unwrap_or(line.len());
-            let tag_name = &line[tag_start..tag_name_end];
-            if !void_tags.contains(&tag_name) {
-                close_before += 1;
-            }
-            if let Some(close) = rest.find('>') {
-                pos = abs_pos + close + 1;
-            } else {
-                break;
-            }
-            continue;
-        }
-
-        if rest.starts_with("<!--") {
-            // HTML comment - find the closing --> marker
-            if let Some(close) = rest.find("-->") {
-                pos = abs_pos + close + 3;
-            } else {
-                break;
-            }
-            continue;
-        }
-
-        if rest.starts_with("<!") || rest.starts_with("<?") {
-            // Doctype, CDATA, processing instructions - find the first >
-            if let Some(close) = rest.find('>') {
-                pos = abs_pos + close + 1;
-            } else {
-                break;
-            }
-            continue;
-        }
-
-        let tag_start = abs_pos + 1;
-        let tag_name_end = line[tag_start..]
-            .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
-            .map(|p| tag_start + p)
-            .unwrap_or(line.len());
-        let tag_name = &line[tag_start..tag_name_end];
-
-        if let Some(close) = rest.find('>') {
-            let tag_len = close + 1;
-            let is_self_closed = rest[..close].ends_with('/');
-
-            let close_tag = format!("</{}>", tag_name);
-            let after_tag = &line[abs_pos + tag_len..];
-            let has_inline = after_tag.contains(&close_tag);
-
-            if !void_tags.contains(&tag_name) && !is_self_closed && !has_inline {
-                open_after += 1;
-            }
-
-            if has_inline {
-                close_before -= 1;
-            }
-
-            pos = abs_pos + tag_len;
-        } else {
-            break;
-        }
-    }
-
-    (close_before, open_after)
-}
-
-fn normalize_inline_spacing(line: &str) -> String {
-    let mut out = String::new();
-    let chars: Vec<char> = line.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
-
-    while i < len {
-        if chars[i] == '>' {
-            out.push('>');
-            i += 1;
-            if let Some(n) = chars[i..].iter().position(|&c| !c.is_whitespace()) {
-                if chars[i + n] == '{' {
-                    i += n;
-                }
-            }
-        } else if chars[i] == '}' {
-            out.push('}');
-            i += 1;
-            if let Some(n) = chars[i..].iter().position(|&c| !c.is_whitespace()) {
-                if chars[i + n] == '<' {
-                    i += n;
-                }
-            }
-        } else {
-            out.push(chars[i]);
-            i += 1;
-        }
-    }
-
-    out
-}
-
 fn format_html(src: &str) -> String {
-    let void_tags = [
-        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
-        "source", "track", "wbr",
-    ];
-
-    let mut out = String::new();
-    let mut depth: usize = 0;
-    let mut in_comment: bool = false;
-
-    for line in src.lines() {
-        let trimmed = line.trim();
-
-        if trimmed.is_empty() {
-            out.push('\n');
-            continue;
-        }
-
-        // Track whether we're inside a multiline HTML comment.
-        // Ree template directives inside comments should not affect depth.
-        if trimmed.contains("<!--") && !trimmed.contains("-->") {
-            in_comment = true;
-        }
-        if trimmed.contains("-->") {
-            in_comment = false;
-        }
-
-        // Count Ree open and close occurrences on this full line, so inline
-        // usage like {#if cond}content{/if} doesn't mis-track depth.
-        // Strip HTML comment content so Ree tags inside <!-- ... --> (both
-        // single-line and multiline) are not counted. {#include} and
-        // {#layout} don't match {#if}/{#each}/{#with} so they're safe.
-        let count_source = if in_comment {
-            String::new()
-        } else {
-            strip_html_comment_content(trimmed)
-        };
-        let (ree_opens, ree_closes) = if !count_source.is_empty() {
-            let mut opens = 0usize;
-            let mut closes = 0usize;
-            let mut pos = 0;
-            while let Some(idx) = count_source[pos..].find("{#if") {
-                opens += 1;
-                pos += idx + 4;
-            }
-            pos = 0;
-            while let Some(idx) = count_source[pos..].find("{#each") {
-                opens += 1;
-                pos += idx + 6;
-            }
-            pos = 0;
-            while let Some(idx) = count_source[pos..].find("{#with") {
-                opens += 1;
-                pos += idx + 6;
-            }
-            pos = 0;
-            while let Some(idx) = count_source[pos..].find("{/if") {
-                closes += 1;
-                pos += idx + 4;
-            }
-            pos = 0;
-            while let Some(idx) = count_source[pos..].find("{/each") {
-                closes += 1;
-                pos += idx + 6;
-            }
-            pos = 0;
-            while let Some(idx) = count_source[pos..].find("{/with") {
-                closes += 1;
-                pos += idx + 6;
-            }
-            (opens, closes)
-        } else {
-            (0, 0)
-        };
-
-        // Adjust depth for net Ree open/close balance
-        let ree_net_close = ree_closes.saturating_sub(ree_opens);
-        let ree_net_open = ree_opens.saturating_sub(ree_closes);
-
-        // Apply closes before writing
-        depth = depth.saturating_sub(ree_net_close);
-
-        let is_else = !in_comment
-            && (trimmed.starts_with("{:else") || trimmed.starts_with("{:"));
-        if is_else {
-            depth = depth.saturating_sub(1);
-        }
-
-        if !is_ree_line(trimmed) {
-            let (close_before, open_after) = compute_html_tag_delta(trimmed, &void_tags);
-
-            let close_before = close_before.min(1);
-            let mut open_after = open_after.min(1);
-
-            // Handle multiline opening tags: if a line starts an opening tag
-            // (like <confirm-dialog) without '>', the tag's attributes continue
-            // on subsequent lines. Increment depth so they indent properly.
-            if open_after == 0 && trimmed.starts_with('<')
-                && !trimmed.starts_with("</")
-                && !trimmed.starts_with("<!--")
-                && !trimmed.starts_with("<!")
-                && !trimmed.contains('>')
-            {
-                let tag_name = extract_tag_name(trimmed);
-                if !void_tags.contains(&tag_name.as_str()) {
-                    open_after += 1;
-                }
-            }
-
-            if close_before > 0 {
-                depth = depth.saturating_sub(close_before as usize);
-            }
-
-            let normalized = normalize_inline_spacing(trimmed);
-            out.push_str(&"\t".repeat(depth));
-            out.push_str(&normalized);
-            out.push('\n');
-
-            depth += open_after as usize;
-        } else {
-            let normalized = normalize_inline_spacing(trimmed);
-            out.push_str(&"\t".repeat(depth));
-            out.push_str(&normalized);
-            out.push('\n');
-        }
-
-        // Apply net opens after writing
-        depth += ree_net_open;
-
-        if is_else {
-            depth += 1;
-        }
-    }
-
-    collapse_blank_lines(&out)
-}
-
-/// After format_html, collapse HTML tags that fit on one line.
-/// Handles:
-///   1. Multiline opening tags (attributes on separate lines) — merge to one line
-///   2. <tag>\n  content\n</tag> — collapse to <tag>content</tag>
-///   3. <tag>\n</tag> — collapse to <tag></tag>
-fn collapse_fitting_tags(src: &str) -> String {
-    const LINE_WIDTH: usize = 120;
-    let lines: Vec<&str> = src.lines().collect();
-    let len = lines.len();
-    let mut out: Vec<String> = Vec::new();
-    let mut i = 0;
-
-    while i < len {
-        let line_i = lines[i];
-        let trimmed_i = line_i.trim();
-        let indent_i = leading_tabs(line_i);
-
-        // --- 1. Multiline opening/self-closing tag ---
-        // If a line starts with '<' (but not '<!--' or '</') and doesn't
-        // contain '>' or '/>', the tag continues on the next line.
-        // Also handle: <input ... attr="..."
-        //                     {#if cond}checked{/if} />
-        if trimmed_i.starts_with('<') && !trimmed_i.starts_with("<!--")
-            && !trimmed_i.starts_with("</") && !trimmed_i.contains('>')
-        {
-            let mut merged = trimmed_i.to_string();
-            let mut j = i + 1;
-            while j < len {
-                let tj = lines[j].trim();
-                merged.push(' ');
-                merged.push_str(tj);
-                j += 1;
-                if tj.contains('>') || tj.ends_with("/>") {
-                    break;
-                }
-            }
-            // Only collapse if the merged line fits
-            if merged.len() + indent_i.len() <= LINE_WIDTH {
-                out.push(format!("{}{}", indent_i, merged));
-                i = j;
-                continue;
-            }
-            // Keep original lines
-            out.extend(lines[i..j.min(len)].iter().map(|l| l.to_string()));
-            i = j;
-            continue;
-        }
-
-        // --- 2. Opening tag followed by content and closing tag ---
-        // Pattern: <tag ...>\n  content\n</tag>
-        // Only for Ree/non-HTML content that fits on one line.
-        if is_opening_html_tag(trimmed_i) && !is_self_closed(trimmed_i) {
-            let tag_name = extract_tag_name(trimmed_i);
-            let close_str = format!("</{}>", tag_name);
-
-            if !has_inline_close(trimmed_i, &tag_name) {
-                // Skip blank lines after opening tag
-                let mut j = i + 1;
-                while j < len && lines[j].trim().is_empty() {
-                    j += 1;
-                }
-
-                if j < len {
-                    let body = lines[j].trim();
-                    // Only collapse if body is a Ree expression or short text (not an HTML tag)
-                    if !body.starts_with('<') {
-                        // Skip blank lines after content
-                        let mut k = j + 1;
-                        while k < len && lines[k].trim().is_empty() {
-                            k += 1;
-                        }
-
-                        if k < len && lines[k].trim() == close_str {
-                            // Try collapsing: <tag>content</tag> (with space)
-                            let collapsed = format!("{}{} {}{}", indent_i, trimmed_i, body, close_str);
-                            if collapsed.len() <= LINE_WIDTH {
-                                out.push(collapsed);
-                                i = k + 1;
-                                continue;
-                            }
-                            // Try without space: <tag>content</tag>
-                            let collapsed_tight = format!("{}{}{}{}", indent_i, trimmed_i, body, close_str);
-                            if collapsed_tight.len() <= LINE_WIDTH {
-                                out.push(collapsed_tight);
-                                i = k + 1;
-                                continue;
-                            }
-                        }
-                    }
-                }
-
-                // --- 3. Empty element: <tag>\n</tag> ---
-                let mut j = i + 1;
-                while j < len && lines[j].trim().is_empty() {
-                    j += 1;
-                }
-                if j < len && lines[j].trim() == close_str {
-                    let collapsed = format!("{}{}{}", indent_i, trimmed_i, close_str);
-                    if collapsed.len() <= LINE_WIDTH {
-                        out.push(collapsed);
-                        i = j + 1;
-                        continue;
-                    }
-                }
-            }
-        }
-
-        out.push(line_i.to_string());
-        i += 1;
-    }
-
-    out.join("\n")
+    // Step 1: Pipe through dprint's markup_fmt plugin for HTML formatting
+    let formatted = dprint_format_html(src);
+    // Step 2: Adjust indentation for Ree block-level tags
+    adjust_ree_block_depth(&formatted)
 }
 
 /// Operating mode: write files, check-only (list files), or diff (show changes).
@@ -1053,7 +893,6 @@ fn format_ree_content(content: &str) -> String {
     let normalized = content.replace("\r\n", "\n");
     let result = normalize_ree_spacing(&normalized);
     let result = format_html(&result);
-    let result = collapse_fitting_tags(&result);
     let result = replace_raw_js_blocks(&result);
     let result = replace_script_style(&result, "script", "js");
     let result = replace_script_style(&result, "style", "css");
