@@ -1,6 +1,6 @@
 {
 	"incremental": true,
-	"lineWidth": 120,
+	"lineWidth": 140,
 	"indentWidth": 4,
 	"useTabs": true,
 	"typescript": {
@@ -13,10 +13,10 @@
 		"useTabs": true
 	},
 	"markdown": {
-		"lineWidth": 120
+		"lineWidth": 140
 	},
 	"markup_fmt": {
-		"printWidth": 120,
+		"printWidth": 140,
 		"useTabs": true,
 		"indentWidth": 1,
 		"whitespaceSensitivity": "css"
