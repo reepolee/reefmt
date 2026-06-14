@@ -3,7 +3,7 @@ use std::{
     env, fs,
     io::Write,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 const REE_TAGS: &[(&str, &str)] = &[
@@ -42,42 +42,157 @@ fn restore(src: &str) -> String {
     out
 }
 
-fn biome_format(src: &str, lang: &str) -> String {
+/// Run biome lint --fix on the protected JS/CSS fragment (via temp file)
+/// to apply refactoring rules (e.g. prefer-template). Falls back to
+/// returning the source unchanged if biome is not installed.
+fn run_biome_lint(src: &str, ext: &str, timestamp: u128) -> String {
+    let dir = env::temp_dir().join(format!("reefmt_biome_{}", timestamp));
+    if fs::create_dir_all(&dir).is_err() {
+        return src.to_string();
+    }
+
+    let tmp_path = dir.join(format!("input.{}", ext));
+    let config_path = dir.join("biome.json");
+
+    let biome_config = r#"{
+  "formatter": {
+    "enabled": false
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "correctness": {
+        "noUnusedImports": "error"
+      },
+      "style": {
+        "useTemplate": "on"
+      }
+    }
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  }
+}"#;
+
+    if fs::write(&config_path, biome_config).is_err()
+        || fs::write(&tmp_path, src).is_err()
+    {
+        let _ = fs::remove_dir_all(&dir);
+        return src.to_string();
+    }
+
+    // Biome discovers config from the CWD, not via --config.
+    // Set current_dir to the temp dir so it finds the biome.json we wrote there.
+    let filename = format!("input.{}", ext);
+    let result = Command::new("biome")
+        .current_dir(&dir)
+        .args([
+            "lint",
+            "--write",
+            "--unsafe",
+            &filename,
+        ])
+        .output();
+
+    let output = match result {
+        Ok(_) => match fs::read_to_string(&tmp_path) {
+            Ok(content) => content,
+            Err(_) => src.to_string(),
+        },
+        Err(_) => src.to_string(),
+    };
+
+    let _ = fs::remove_dir_all(&dir);
+    output
+}
+
+fn dprint_format(src: &str, lang: &str) -> String {
     let ext = if lang == "css" { "css" } else { "js" };
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis();
-    let tmp_path = env::temp_dir()
-        .join(format!("reefmt_{}.{}", timestamp, ext))
-        .to_string_lossy()
-        .into_owned();
 
     // Protect HTML comments so content inside them is not modified
     let (html_protected, html_comments) = protect_html_comments(src.trim());
     let protected = protect(&html_protected);
 
-    let mut tmp = fs::File::create(&tmp_path).expect("create tmp");
-    tmp.write_all(protected.as_bytes()).expect("write tmp");
-    drop(tmp);
+    // Step 1: Join multiline concatenation so biome's useTemplate can detect it
+    let flattened = flatten_concat(&protected);
 
-    let output = Command::new("biome")
-        .args(["format", "--indent-style=tab", "--write", &tmp_path])
-        .output();
+    // Step 2: Run biome lint --fix on the fragment (refactoring like prefer-template)
+    let after_lint = run_biome_lint(&flattened, ext, timestamp);
 
-    let formatted = match output {
-        Ok(_) => match fs::read_to_string(&tmp_path) {
-            Ok(content) => {
-                let restored = restore(&content);
-                let restored = restore_html_comments(&restored, &html_comments);
-                indent_code(&restored)
-            }
-            Err(_) => indent_code(src),
-        },
-        Err(_) => indent_code(src),
+    // Step 2: Pipe through dprint for formatting
+    let config_path = env::temp_dir()
+        .join(format!("reefmt_dprint_config_{}.json", timestamp))
+        .to_string_lossy()
+        .into_owned();
+
+    let dprint_config = r#"{
+  "incremental": true,
+  "lineWidth": 120,
+  "indentWidth": 4,
+  "useTabs": true,
+  "typescript": {
+    "quoteStyle": "preferDouble",
+    "semiColons": "always",
+    "trailingCommas": "onlyMultiLine"
+  },
+  "json": {
+    "indentWidth": 4,
+    "useTabs": true
+  },
+  "markdown": {
+    "lineWidth": 120
+  },
+  "plugins": [
+    "https://plugins.dprint.dev/typescript-0.90.3.wasm",
+    "https://plugins.dprint.dev/json-0.19.0.wasm",
+    "https://plugins.dprint.dev/markdown-0.17.8.wasm",
+    "https://plugins.dprint.dev/g-plane/malva-v0.16.0.wasm"
+  ]
+}"#;
+
+    if fs::write(&config_path, dprint_config).is_err() {
+        return indent_code(src);
+    }
+
+    let mut child = match Command::new("dprint")
+        .args(["fmt", "--stdin", &format!("file.{}", ext), "--config", &config_path])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => {
+            let _ = fs::remove_file(&config_path);
+            return indent_code(src);
+        }
     };
 
-    let _ = fs::remove_file(&tmp_path);
+    // Write lint-fixed content to stdin and close the pipe so dprint can start
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(after_lint.as_bytes());
+    }
+
+    let formatted = match child.wait_with_output() {
+        Ok(output) if output.status.success() => {
+            let content = String::from_utf8_lossy(&output.stdout);
+            let restored = restore(&content);
+            let restored = restore_html_comments(&restored, &html_comments);
+            indent_code(&restored)
+        }
+        _ => indent_code(src),
+    };
+
+    let _ = fs::remove_file(&config_path);
 
     formatted
         .trim()
@@ -120,6 +235,36 @@ fn indent_code(src: &str) -> String {
         depth += opens;
     }
 
+    out
+}
+
+/// Flatten multiline string concatenation into single lines so biome's
+/// `useTemplate` rule can detect and convert it. Only joins lines where
+/// the continuation line starts with `+` (after trimming), which is the
+/// standard pattern for multiline string concatenation in JS.
+fn flatten_concat(src: &str) -> String {
+    let mut out = String::new();
+    let mut prev_line = String::new();
+    let mut has_prev = false;
+
+    for line in src.lines() {
+        let trimmed = line.trim();
+        if has_prev && trimmed.starts_with('+') {
+            // Join continuation line to previous: remove the newline and leading whitespace
+            prev_line.push(' ');
+            prev_line.push_str(trimmed);
+        } else {
+            if has_prev {
+                out.push_str(&prev_line);
+                out.push('\n');
+            }
+            prev_line = line.to_string();
+            has_prev = true;
+        }
+    }
+    if has_prev {
+        out.push_str(&prev_line);
+    }
     out
 }
 
@@ -171,7 +316,7 @@ fn replace_script_style(content: &str, tag_name: &str, lang: &str) -> String {
                             result.push_str(open_tag);
                             result.push_str(close_tag);
                         } else {
-                            let formatted = biome_format(body, lang);
+                            let formatted = dprint_format(body, lang);
                             let indent_content = format!("{}\t", line_indent);
                             let indented = formatted
                                 .lines()
@@ -306,31 +451,36 @@ fn leading_tabs(s: &str) -> String {
     s.chars().take_while(|&c| c == '\t').collect()
 }
 
-fn was_inline_in_original(original: &str, open_tag: &str, body: &str, close_tag: &str) -> bool {
-    let open_trimmed = open_tag.trim();
-    let close_trimmed = close_tag.trim();
-    let body_trimmed = body.trim();
 
-    for line in original.lines() {
-        let line = line.trim();
-        if let Some(open_pos) = line.find(open_trimmed) {
-            let after_open = &line[open_pos + open_trimmed.len()..];
-            if let Some(body_pos) = after_open.find(body_trimmed) {
-                let after_body = &after_open[body_pos + body_trimmed.len()..];
-                if after_body.contains(close_trimmed) {
-                    return true;
+/// Strip content between HTML comment markers (`<!-- ... -->`) from a line,
+/// replacing it with a space so tokens don't merge. This prevents Ree tags
+/// like `{#if}` inside comments from affecting depth tracking.
+fn strip_html_comment_content(s: &str) -> String {
+    let mut result = String::new();
+    let mut rest = s;
+    loop {
+        match rest.find("<!--") {
+            None => {
+                result.push_str(rest);
+                break;
+            }
+            Some(start) => {
+                result.push_str(&rest[..start]);
+                match rest[start..].find("-->") {
+                    None => {
+                        // Unterminated comment — push the rest as-is
+                        result.push_str(&rest[start..]);
+                        break;
+                    }
+                    Some(end) => {
+                        rest = &rest[start + end + 3..];
+                        result.push(' '); // keep token separation
+                    }
                 }
             }
         }
     }
-    false
-}
-
-fn is_ree_inline_only(s: &str) -> bool {
-    let t = s.trim();
-    (t.starts_with("{=") || t.starts_with("{~") || t.starts_with("{{"))
-        && t.ends_with('}')
-        && !t.contains('\n')
+    result
 }
 
 fn is_ree_line(line: &str) -> bool {
@@ -475,14 +625,62 @@ fn format_html(src: &str) -> String {
             in_comment = false;
         }
 
-        if !in_comment {
-            if trimmed.starts_with("{/if")
-                || trimmed.starts_with("{/each")
-                || trimmed.starts_with("{/with")
-            {
-                if depth > 0 {
-                    depth -= 1;
-                }
+        // Count Ree open and close occurrences on this full line, so inline
+        // usage like {#if cond}content{/if} doesn't mis-track depth.
+        // Strip HTML comment content so Ree tags inside <!-- ... --> (both
+        // single-line and multiline) are not counted. {#include} and
+        // {#layout} don't match {#if}/{#each}/{#with} so they're safe.
+        let count_source = if in_comment {
+            String::new()
+        } else {
+            strip_html_comment_content(trimmed)
+        };
+        let (ree_opens, ree_closes) = if !count_source.is_empty() {
+            let mut opens = 0usize;
+            let mut closes = 0usize;
+            let mut pos = 0;
+            while let Some(idx) = count_source[pos..].find("{#if") {
+                opens += 1;
+                pos += idx + 4;
+            }
+            pos = 0;
+            while let Some(idx) = count_source[pos..].find("{#each") {
+                opens += 1;
+                pos += idx + 6;
+            }
+            pos = 0;
+            while let Some(idx) = count_source[pos..].find("{#with") {
+                opens += 1;
+                pos += idx + 6;
+            }
+            pos = 0;
+            while let Some(idx) = count_source[pos..].find("{/if") {
+                closes += 1;
+                pos += idx + 4;
+            }
+            pos = 0;
+            while let Some(idx) = count_source[pos..].find("{/each") {
+                closes += 1;
+                pos += idx + 6;
+            }
+            pos = 0;
+            while let Some(idx) = count_source[pos..].find("{/with") {
+                closes += 1;
+                pos += idx + 6;
+            }
+            (opens, closes)
+        } else {
+            (0, 0)
+        };
+
+        // Adjust depth for net Ree open/close balance
+        let ree_net_close = ree_closes.saturating_sub(ree_opens);
+        let ree_net_open = ree_opens.saturating_sub(ree_closes);
+
+        // Apply closes before writing
+        for _ in 0..ree_net_close {
+            if depth > 0 {
+                depth -= 1;
             }
         }
 
@@ -519,63 +717,127 @@ fn format_html(src: &str) -> String {
             out.push('\n');
         }
 
-        if !in_comment {
-            if (trimmed.starts_with("{#if")
-                || trimmed.starts_with("{#each")
-                || trimmed.starts_with("{#with"))
-                && !trimmed.starts_with("{#include")
-                && !trimmed.starts_with("{#layout")
-            {
-                depth += 1;
-            }
+        // Apply net opens after writing
+        depth += ree_net_open;
 
-            if is_else {
-                depth += 1;
-            }
+        if is_else {
+            depth += 1;
         }
     }
 
     collapse_blank_lines(&out)
 }
 
-fn collapse_inline_tags(src: &str, original: &str) -> String {
+/// After format_html, collapse HTML tags that fit on one line.
+/// Handles:
+///   1. Multiline opening tags (attributes on separate lines) — merge to one line
+///   2. <tag>\n  content\n</tag> — collapse to <tag>content</tag>
+///   3. <tag>\n</tag> — collapse to <tag></tag>
+fn collapse_fitting_tags(src: &str) -> String {
+    const LINE_WIDTH: usize = 120;
     let lines: Vec<&str> = src.lines().collect();
+    let len = lines.len();
     let mut out: Vec<String> = Vec::new();
     let mut i = 0;
 
-    while i < lines.len() {
-        let line = lines[i].trim();
+    while i < len {
+        let line_i = lines[i];
+        let trimmed_i = line_i.trim();
+        let indent_i = leading_tabs(line_i);
 
-        if is_opening_html_tag(line) && !is_self_closed(line) {
-            let tag_name = extract_tag_name(line);
-            let close = format!("</{}>", tag_name);
+        // --- 1. Multiline opening/self-closing tag ---
+        // If a line starts with '<' (but not '<!--' or '</') and doesn't
+        // contain '>' or '/>', the tag continues on the next line.
+        // Also handle: <input ... attr="..."
+        //                     {#if cond}checked{/if} />
+        if trimmed_i.starts_with('<') && !trimmed_i.starts_with("<!--")
+            && !trimmed_i.starts_with("</") && !trimmed_i.contains('>')
+        {
+            let mut merged = trimmed_i.to_string();
+            let mut j = i + 1;
+            while j < len {
+                let tj = lines[j].trim();
+                merged.push(' ');
+                merged.push_str(tj);
+                j += 1;
+                if tj.contains('>') || tj.ends_with("/>") {
+                    break;
+                }
+            }
+            // Only collapse if the merged line fits
+            if merged.len() + indent_i.len() <= LINE_WIDTH {
+                out.push(format!("{}{}", indent_i, merged));
+                i = j;
+                continue;
+            }
+            // Keep original lines
+            for k in i..j.min(len) {
+                out.push(lines[k].to_string());
+            }
+            i = j;
+            continue;
+        }
 
-            if !has_inline_close(line, &tag_name) {
+        // --- 2. Opening tag followed by content and closing tag ---
+        // Pattern: <tag ...>\n  content\n</tag>
+        // Only for Ree/non-HTML content that fits on one line.
+        if is_opening_html_tag(trimmed_i) && !is_self_closed(trimmed_i) {
+            let tag_name = extract_tag_name(trimmed_i);
+            let close_str = format!("</{}>", tag_name);
+
+            if !has_inline_close(trimmed_i, &tag_name) {
+                // Skip blank lines after opening tag
                 let mut j = i + 1;
-                while j < lines.len() && lines[j].trim().is_empty() {
+                while j < len && lines[j].trim().is_empty() {
                     j += 1;
                 }
-                let mut k = j + 1;
-                while k < lines.len() && lines[k].trim().is_empty() {
-                    k += 1;
+
+                if j < len {
+                    let body = lines[j].trim();
+                    // Only collapse if body is a Ree expression or short text (not an HTML tag)
+                    if !body.starts_with('<') {
+                        // Skip blank lines after content
+                        let mut k = j + 1;
+                        while k < len && lines[k].trim().is_empty() {
+                            k += 1;
+                        }
+
+                        if k < len && lines[k].trim() == close_str {
+                            // Try collapsing: <tag>content</tag> (with space)
+                            let collapsed = format!("{}{} {}{}", indent_i, trimmed_i, body, close_str);
+                            if collapsed.len() <= LINE_WIDTH {
+                                out.push(collapsed);
+                                i = k + 1;
+                                continue;
+                            }
+                            // Try without space: <tag>content</tag>
+                            let collapsed_tight = format!("{}{}{}{}", indent_i, trimmed_i, body, close_str);
+                            if collapsed_tight.len() <= LINE_WIDTH {
+                                out.push(collapsed_tight);
+                                i = k + 1;
+                                continue;
+                            }
+                        }
+                    }
                 }
 
-                if j < lines.len()
-                    && k < lines.len()
-                    && is_ree_inline_only(lines[j].trim())
-                    && lines[k].trim() == close
-                {
-                    if was_inline_in_original(original, line, lines[j].trim(), &close) {
-                        let indent = leading_tabs(lines[i]);
-                        out.push(format!("{}{}{}{}", indent, line, lines[j].trim(), close));
-                        i = k + 1;
+                // --- 3. Empty element: <tag>\n</tag> ---
+                let mut j = i + 1;
+                while j < len && lines[j].trim().is_empty() {
+                    j += 1;
+                }
+                if j < len && lines[j].trim() == close_str {
+                    let collapsed = format!("{}{}{}", indent_i, trimmed_i, close_str);
+                    if collapsed.len() <= LINE_WIDTH {
+                        out.push(collapsed);
+                        i = j + 1;
                         continue;
                     }
                 }
             }
         }
 
-        out.push(lines[i].to_string());
+        out.push(line_i.to_string());
         i += 1;
     }
 
@@ -596,7 +858,7 @@ fn format_file(path: &Path) {
 
     let result = normalize_ree_spacing(&normalized);
     let result = format_html(&result);
-    let result = collapse_inline_tags(&result, &normalized);
+    let result = collapse_fitting_tags(&result);
     let result = replace_script_style(&result, "script", "js");
     let result = replace_script_style(&result, "style", "css");
 
