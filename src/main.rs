@@ -328,6 +328,79 @@ fn flatten_concat(src: &str) -> String {
     out
 }
 
+/// Format raw JS blocks ({{ ... }}) in a Ree template.
+/// Extracts JS code between `{{` and `}}` markers,
+/// formats it through biome lint-fix + dprint (same as `<script>` content),
+/// and re-indents properly.
+fn replace_raw_js_blocks(content: &str) -> String {
+    let mut result = String::new();
+    let mut remaining = content;
+
+    loop {
+        match remaining.find("{{") {
+            None => {
+                result.push_str(remaining);
+                break;
+            }
+            Some(start) => {
+                result.push_str(&remaining[..start]);
+                let before_block = &remaining[..start];
+                let line_indent = match before_block.rfind('\n') {
+                    Some(pos) => &before_block[pos + 1..],
+                    None => before_block,
+                };
+                remaining = &remaining[start..];
+
+                // Find closing }}
+                match remaining[2..].find("}}") {
+                    None => {
+                        result.push_str(remaining);
+                        break;
+                    }
+                    Some(end) => {
+                        let body = &remaining[2..end + 2]; // between {{ and }}
+                        let close_end = end + 4;
+
+                        if body.trim().is_empty() {
+                            result.push_str("{{");
+                            result.push_str("}}");
+                        } else {
+                            let is_multiline = body.contains('\n');
+                            let formatted = dprint_format(body, "js");
+
+                            if is_multiline {
+                                // Multiline block — expand like <script>...</script>
+                                let indent_content = format!("{}\t", line_indent);
+                                let indented = formatted
+                                    .lines()
+                                    .map(|l| {
+                                        let stripped = l.strip_prefix('\t').unwrap_or(l);
+                                        format!("{}{}", indent_content, stripped)
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                result.push_str("{{");
+                                result.push('\n');
+                                result.push_str(&indented);
+                                result.push('\n');
+                                result.push_str(line_indent);
+                                result.push_str("}}");
+                            } else {
+                                // Single line — keep inline
+                                let trimmed = formatted.trim();
+                                result.push_str(&format!("{{ {} }}", trimmed));
+                            }
+                        }
+                        remaining = &remaining[close_end..];
+                    }
+                }
+            }
+        }
+    }
+
+    result
+}
+
 fn replace_script_style(content: &str, tag_name: &str, lang: &str) -> String {
     let open_marker = format!("<{}", tag_name);
     let close_marker = format!("</{}>", tag_name);
@@ -957,6 +1030,7 @@ fn format_ree_content(content: &str) -> String {
     let result = normalize_ree_spacing(&normalized);
     let result = format_html(&result);
     let result = collapse_fitting_tags(&result);
+    let result = replace_raw_js_blocks(&result);
     let result = replace_script_style(&result, "script", "js");
     let result = replace_script_style(&result, "style", "css");
     if !result.is_empty() && !result.ends_with('\n') {
