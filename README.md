@@ -40,6 +40,8 @@ reefmt works without these — it falls back to basic indentation if they're not
 
 reefmt formats `.ree` template files and can also format `.ts`, `.js`, and `.css` files by piping them through dprint (formatting) and biome (lint fixes) in a single pass — a convenient unified formatter for your projects.
 
+reefmt also supports formatting from stdin with the `--stdin` flag, which is useful for editor integrations and pipe workflows.
+
 ### Format all supported files in the current directory (recursive):
 
 ```bash
@@ -83,6 +85,27 @@ reefmt --check
 reefmt --dry-run
 reefmt -c
 ```
+
+### Diff mode:
+
+Show a unified diff of the changes that would be made without modifying any files:
+
+```bash
+reefmt --diff
+```
+
+### Stdin mode:
+
+Format input from stdin and write the result to stdout:
+
+```bash
+cat file.ree | reefmt --stdin        # default: format as Ree
+cat file.ts  | reefmt --stdin .ts    # format as TypeScript
+cat file.js  | reefmt --stdin .js    # format as JavaScript
+cat file.css | reefmt --stdin .css   # format as CSS
+```
+
+If no extension argument is given, reefmt defaults to `.ree`.
 
 > 📘 For detailed documentation, examples, and configuration reference, visit [reepolee.com/reefmt/docs](https://www.reepolee.com/reefmt/docs/).
 
