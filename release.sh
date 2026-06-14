@@ -3,8 +3,10 @@
 # Builds the native binary for the current platform and publishes it as a GitHub Release.
 # Version is auto-bumped (patch) only when the tag for the current version doesn't exist yet.
 #
-# Usage: bash release.sh [--draft]
+# Usage: bash release.sh [--draft] [--minor] [--force]
 #   --draft  Create the release as a draft (default: published)
+#   --minor  Bump the minor version instead of the patch version (default: patch)
+#   --force  Skip version mismatch check (use when pushing ahead of remote)
 #
 # Prerequisites:
 #   - gh CLI (https://cli.github.com) — authenticated via `gh auth login`
@@ -34,10 +36,36 @@ if ! gh auth status &>/dev/null; then
 fi
 
 # ──────────────────────────────────────────────
+# Parse flags
+# ──────────────────────────────────────────────
+
+draft_flag=""
+minor_bump=false
+force_flag=false
+
+for arg in "$@"; do
+	case "$arg" in
+		--draft) draft_flag="--draft" ;;
+		--minor) minor_bump=true ;;
+		--force) force_flag=true ;;
+	esac
+done
+
+if [ -n "$draft_flag" ]; then
+	echo "  (Draft mode)"
+fi
+if [ "$minor_bump" = true ]; then
+	echo "  (Minor bump)"
+fi
+if [ "$force_flag" = true ]; then
+	echo "  (Force mode — version mismatch check skipped)"
+fi
+
+# ──────────────────────────────────────────────
 # Read current version from Cargo.toml
 # ──────────────────────────────────────────────
 
-bump_version() {
+bump_patch() {
 	local current="$1"
 	local major="${current%%.*}"
 	local rest="${current#*.}"
@@ -45,6 +73,15 @@ bump_version() {
 	local patch="${rest#*.}"
 	local new_patch=$((patch + 1))
 	echo "$major.$minor.$new_patch"
+}
+
+bump_minor() {
+	local current="$1"
+	local major="${current%%.*}"
+	local rest="${current#*.}"
+	local minor="${rest%%.*}"
+	local new_minor=$((minor + 1))
+	echo "$major.$new_minor.0"
 }
 
 version=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
@@ -93,9 +130,13 @@ if [ -n "$latest_tag" ]; then
 	# If you run the release script without pulling first, versions will diverge.
 	tag_version="${latest_tag#v}"
 	if [ "$tag_version" != "$version" ]; then
-		echo "ERROR: Local version ($version) differs from latest tag ($tag_version)." >&2
-		echo "  Run 'git pull' first to sync, then try again." >&2
-		exit 1
+		if [ "$force_flag" = true ]; then
+			echo "  (Warning: local version $version differs from latest tag $tag_version, proceeding with --force)"
+		else
+			echo "ERROR: Local version ($version) differs from latest tag ($tag_version)." >&2
+			echo "  Run 'git pull' first to sync, or use --force to override." >&2
+			exit 1
+		fi
 	fi
 
 	new_commits=$(git rev-list HEAD "^$latest_tag" --count 2>/dev/null || echo "0")
@@ -108,9 +149,15 @@ tag="v$version"
 
 if [ "$new_commits" -gt 0 ]; then
 	# Code has changed since last release → bump version
-	new_version=$(bump_version "$version")
+	if [ "${minor_bump:-false}" = true ]; then
+		new_version=$(bump_minor "$version")
+		bump_type="minor"
+	else
+		new_version=$(bump_patch "$version")
+		bump_type="patch"
+	fi
 	echo "═══ reefmt release $new_version for $os ($arch) ═══"
-	echo "  (Bumping from $version → $new_version, $new_commits commits since $latest_tag)"
+	echo "  (Bumping $bump_type from $version → $new_version, $new_commits commits since $latest_tag)"
 
 	# Update Cargo.toml
 	sed -i '' "s/version = \"$version\"/version = \"$new_version\"/" Cargo.toml 2>/dev/null || \
@@ -177,12 +224,6 @@ fi
 
 echo ""
 echo "→ Publishing release $tag..."
-
-draft_flag=""
-if [ "${1:-}" = "--draft" ]; then
-	draft_flag="--draft"
-	echo "  (Draft mode)"
-fi
 
 asset_path="./$binary_name"
 asset_name="$binary_name"

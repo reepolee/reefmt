@@ -544,6 +544,144 @@ fn normalize_ree_spacing(src: &str) -> String {
     restore_html_comments(&out, &comment_placeholders)
 }
 
+// ── Fake HTML elements (for dprint markup_fmt integration) ────────────────
+
+/// One entry in the fake-element map. Each `<ree-N>` / `</ree-N>` pair in the
+/// fake HTML corresponds to one FakeEntry at index N-1.
+struct FakeEntry {
+    /// What `<ree-N>` (or `<ree-N />`) restores to.
+    open_text: String,
+    /// What `</ree-N>` restores to. Empty string = synthetic close emitted for
+    /// an {:else} boundary; the tag is simply deleted on restore.
+    close_text: String,
+}
+
+/// Find the position just past the balanced closing `}` starting from the
+/// opening `{`. Handles nested braces (e.g. `{#if obj.items.find(x => x)}`).
+fn find_ree_block_end(src: &str) -> usize {
+    let mut depth = 0usize;
+    for (i, c) in src.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return i + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    src.len()
+}
+
+/// Convert Ree block-control tags to paired fake HTML elements so dprint's
+/// HTML formatter understands the nesting structure.
+///
+/// Only handles structural tags: {#if}, {#each}, {#with}, their closers, and
+/// {:else}/{:else if}. All other Ree syntax is passed through unchanged and
+/// will be handled by the existing protect()/restore() calls that wrap this.
+///
+/// {:else} emits `</ree-N><ree-M>`:
+///   - `</ree-N>` maps to "" (synthetic, deleted on restore)
+///   - `<ree-M>` maps to the {:else...} tag
+///   - `</ree-M>` is set when the matching {/if} is found → maps to "{/if}"
+fn ree_to_fake_html(src: &str) -> (String, Vec<FakeEntry>) {
+    let mut out = String::new();
+    let mut entries: Vec<FakeEntry> = Vec::new();
+    let mut stack: Vec<usize> = Vec::new(); // indices into entries for open blocks
+    let mut rest = src;
+
+    while !rest.is_empty() {
+        let Some(pos) = rest.find('{') else {
+            out.push_str(rest);
+            break;
+        };
+
+        let after = &rest[pos..];
+
+        // Categorise the tag at this position.
+        let is_if_open   = after.starts_with("{#if}")
+                        || matches!(after.as_bytes().get(4), Some(b' ' | b'\t' | b'\r' | b'\n'))
+                           && after.starts_with("{#if");
+        let is_each_open = after.starts_with("{#each}")
+                        || matches!(after.as_bytes().get(6), Some(b' ' | b'\t' | b'\r' | b'\n'))
+                           && after.starts_with("{#each");
+        let is_with_open = after.starts_with("{#with}")
+                        || matches!(after.as_bytes().get(6), Some(b' ' | b'\t' | b'\r' | b'\n'))
+                           && after.starts_with("{#with");
+
+        let is_if_close   = after.starts_with("{/if}");
+        let is_each_close = after.starts_with("{/each}");
+        let is_with_close = after.starts_with("{/with}");
+
+        // {:else} and {:else if ...} — but NOT {:param} or other colon-tags
+        let is_else = after.starts_with("{:else}") || after.starts_with("{:else ");
+
+        if is_if_open || is_each_open || is_with_open {
+            out.push_str(&rest[..pos]);
+            let end = find_ree_block_end(after);
+            let tag = after[..end].to_string();
+            let idx = entries.len();
+            entries.push(FakeEntry { open_text: tag, close_text: String::new() });
+            stack.push(idx);
+            out.push_str(&format!("<ree-{}>", idx + 1));
+            rest = &after[end..];
+
+        } else if is_if_close || is_each_close || is_with_close {
+            out.push_str(&rest[..pos]);
+            let end = find_ree_block_end(after);
+            let tag = after[..end].to_string();
+            match stack.pop() {
+                Some(idx) => {
+                    entries[idx].close_text = tag;
+                    out.push_str(&format!("</ree-{}>", idx + 1));
+                }
+                None => out.push_str(&tag), // unmatched closer — pass through
+            }
+            rest = &after[end..];
+
+        } else if is_else {
+            out.push_str(&rest[..pos]);
+            let end = find_ree_block_end(after);
+            let tag = after[..end].to_string();
+
+            // Synthetically close the current open block (close_text stays "")
+            if let Some(prev_idx) = stack.pop() {
+                out.push_str(&format!("</ree-{}>", prev_idx + 1));
+            }
+
+            // Open a new block entry for the else branch
+            let idx = entries.len();
+            entries.push(FakeEntry { open_text: tag, close_text: String::new() });
+            stack.push(idx);
+            out.push_str(&format!("<ree-{}>", idx + 1));
+            rest = &after[end..];
+
+        } else {
+            // Not a block-control tag — pass through the `{` and advance
+            out.push_str(&rest[..pos + 1]);
+            rest = &rest[pos + 1..];
+        }
+    }
+
+    (out, entries)
+}
+
+/// Restore fake HTML elements back to original Ree tags.
+/// Empty close_text (synthetic {:else} closes) simply vanishes, leaving at
+/// most a blank line which collapse_blank_lines() cleans up.
+fn fake_html_to_ree(src: &str, entries: &[FakeEntry]) -> String {
+    let mut result = src.to_string();
+    // Replace from highest N → lowest to avoid ree-1 matching inside ree-10, ree-11, etc.
+    for (i, entry) in entries.iter().enumerate().rev() {
+        let n = i + 1;
+        result = result.replace(&format!("<ree-{}>", n), &entry.open_text);
+        result = result.replace(&format!("</ree-{}>", n), &entry.close_text);
+    }
+    collapse_blank_lines(&result)
+}
+
 fn collapse_blank_lines(src: &str) -> String {
     let mut out = String::new();
     let mut blank_count = 0usize;
@@ -1126,11 +1264,65 @@ fn print_diff(path: &Path, original: &str, formatted: &str) {
 }
 
 /// Format Ree template content, returning the formatted string.
+/// Format the HTML skeleton of a Ree template via dprint's markup_fmt plugin.
+///
+/// Pipeline:
+///   protect_html_comments
+///   → ree_to_fake_html        (block tags → <ree-N> pairs, {:else} → split)
+///   → protect                 (remaining inline Ree syntax → __REE_*__ strings)
+///   → pipe_dprint html        (markup_fmt sees valid HTML with real structure)
+///   → restore                 (inline syntax back)
+///   → fake_html_to_ree        (block tags back)
+///   → restore_html_comments
+///
+/// Returns None if dprint produced no change (plugin not installed).
+fn format_ree_html_via_dprint(src: &str, config_path: &str) -> Option<String> {
+    let (after_comments, html_comments) = protect_html_comments(src.trim());
+    let (after_blocks, entries) = ree_to_fake_html(&after_comments);
+    let protected = protect(&after_blocks);
+
+    let formatted = pipe_dprint(&protected, "html", config_path);
+
+    if formatted.trim() == protected.trim() {
+        return None;
+    }
+
+    let restored = restore(&formatted);
+    let restored = fake_html_to_ree(&restored, &entries);
+    Some(restore_html_comments(&restored, &html_comments))
+}
+
 fn format_ree_content(content: &str) -> String {
     let normalized = content.replace("\r\n", "\n");
     let result = normalize_ree_spacing(&normalized);
-    let result = format_html(&result);
-    let result = collapse_fitting_tags(&result);
+
+    // Try dprint HTML formatting with fake Ree elements first.
+    // Falls back to the custom format_html() + collapse_fitting_tags()
+    // when dprint or its markup_fmt plugin is not installed.
+    let result = {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+
+        match resolve_dprint_config(timestamp) {
+            Some(ref path) => {
+                let dprint_result = format_ree_html_via_dprint(&result, path);
+                if path.contains("reefmt_dprint_config_") {
+                    let _ = fs::remove_file(path);
+                }
+                dprint_result.unwrap_or_else(|| {
+                    let html = format_html(&result);
+                    collapse_fitting_tags(&html)
+                })
+            }
+            None => {
+                let html = format_html(&result);
+                collapse_fitting_tags(&html)
+            }
+        }
+    };
+
     let result = replace_raw_js_blocks(&result);
     let result = replace_script_style(&result, "script", "js");
     let result = replace_script_style(&result, "style", "css");
@@ -1829,6 +2021,115 @@ mod tests {
         // Paths outside CWD should not match (glob is relative)
         let outside = Path::new("/nonexistent/templates/ui/button.ts");
         assert!(!should_skip_file(&outside, &config));
+    }
+
+    /// Format using the old custom-only pipeline (no dprint HTML formatting).
+    /// Used for comparison with the new dprint-based path.
+    fn format_ree_content_custom_only(content: &str) -> String {
+        let normalized = content.replace("\r\n", "\n");
+        let result = normalize_ree_spacing(&normalized);
+        let result = format_html(&result);
+        let result = collapse_fitting_tags(&result);
+        let result = replace_raw_js_blocks(&result);
+        let result = replace_script_style(&result, "script", "js");
+        let result = replace_script_style(&result, "style", "css");
+        if !result.is_empty() && !result.ends_with('\n') {
+            format!("{}\n", result)
+        } else {
+            result
+        }
+    }
+
+    /// Compare dprint vs custom formatter outputs on a set of fixtures.
+    /// Prints differences when they occur so you can see what changed.
+    #[test]
+    fn compare_dprint_vs_custom_formatter() {
+        let fixtures = vec![
+            // 1. Simple if block
+            "{#if show}\n<div>\n{=title}\n</div>\n{/if}",
+            // 2. Nested blocks
+            "{#if a}\n<div>\n{#if b}\n<span>text</span>\n{/if}\n</div>\n{/if}",
+            // 3. If-else
+            "{#if cond}\n<p>yes</p>\n{:else}\n<p>no</p>\n{/if}",
+            // 4. If-else if
+            "{#if a}\n<p>a</p>\n{:else if b}\n<p>b</p>\n{:else}\n<p>c</p>\n{/if}",
+            // 5. Each block
+            "{#each items}\n<li>\n{=item}\n</li>\n{/each}",
+            // 6. With block
+            "{#with user}\n<span>\n{=name}\n</span>\n{/with}",
+            // 7. Mixed HTML + Ree
+            "{#if show}\n<ul>\n{#each items}\n<li class=\"{=cls}\">\n{=item}\n</li>\n{/each}\n</ul>\n{/if}",
+            // 8. Multiline attributes
+            "<div\n  class=\"foo\"\n  id=\"bar\"\n>\ncontent\n</div>",
+            // 9. Self-closing tags
+            "<div>\n<input type=\"text\" />\n<br />\n<hr/>\n</div>",
+            // 10. Ree attribute inside multiline tag
+            "<label class=\"filter-option\">\n\t<input type=\"checkbox\"\n\t{#if def.checked}checked{/if} />\n\t{= opt.text }\n</label>",
+            // 11. Plain HTML (no Ree tags)
+            "<ul>\n<li>first</li>\n<li>second</li>\n</ul>",
+            // 12. With script/style blocks
+            "<div>\n<script>\nlet x = 1;\nlet y = 2;\n</script>\n<style>\n.c { color: red; }\n</style>\n</div>",
+            // 13. Raw JS blocks
+            "<div>\n{{ const x = 1; }}\n</div>",
+            // 14. With HTML comments
+            "<div>\n<!-- comment -->\n<p>text</p>\n</div>",
+            // 15. Ree tag inside HTML comment (should not affect depth)
+            "<div>\n<!--\n{#if debug}\n-->\n<p>visible</p>\n</div>",
+        ];
+
+        let mut any_diff = false;
+
+        for (i, fixture) in fixtures.iter().enumerate() {
+            let dprint_output = format_ree_content(fixture);
+            let custom_output = format_ree_content_custom_only(fixture);
+
+            if dprint_output != custom_output {
+                any_diff = true;
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                println!("Fixture #{} — DIFFERS", i + 1);
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                println!("--- Input ---");
+                for line in fixture.lines() {
+                    println!("  {}", line);
+                }
+                println!();
+                println!("--- DPRINT output ({} chars) ---", dprint_output.len());
+                for line in dprint_output.lines() {
+                    println!("  {}", line);
+                }
+                println!();
+                println!("--- CUSTOM output ({} chars) ---", custom_output.len());
+                for line in custom_output.lines() {
+                    println!("  {}", line);
+                }
+                println!();
+
+                // Show a character-by-character diff indicator
+                let diff = similar::TextDiff::from_lines(&dprint_output, &custom_output);
+                println!("--- unified diff (dprint → custom) ---");
+                for change in diff.iter_all_changes() {
+                    let sign = match change.tag() {
+                        similar::ChangeTag::Delete => "-",
+                        similar::ChangeTag::Insert => "+",
+                        similar::ChangeTag::Equal => " ",
+                    };
+                    print!("{}{}", sign, change.value());
+                }
+                println!();
+            } else {
+                println!("Fixture #{} — OK (identical)", i + 1);
+            }
+        }
+
+        if any_diff {
+            println!();
+            println!("⚠️  Some fixtures produce different output between dprint and custom formatters.");
+        } else {
+            println!();
+            println!("✅ All fixtures produce identical output between dprint and custom formatters.");
+        }
+
+        // This is informational — we don't assert so it doesn't block CI
     }
 
     #[test]
