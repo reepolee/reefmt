@@ -107,6 +107,45 @@ cat file.css | reefmt --stdin .css   # format as CSS
 
 If no extension argument is given, reefmt defaults to `.ree`.
 
+### Init mode:
+
+Generate a `reefmt.jsonc` config file with comments explaining each option:
+
+```bash
+reefmt --init
+```
+
+This creates a commented config file in the current directory that you can
+edit to customize skip directories, file extensions, and dot-folder behavior.
+
+## Configuration
+
+reefmt can be configured with a `reefmt.jsonc` file in your project root.
+Create one with `reefmt --init`, then edit it. The file supports JSON
+comments (`//` and `/* */`) for inline documentation.
+
+### Available options:
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `skipDirs` | `string[]` | `["node_modules", "vendor", "vendors", "dist"]` | Directories to skip when formatting. Any folder matching a name in this list is skipped, regardless of its location in the project. |
+| `extensions` | `string[]` | `["ree", "ts", "js", "css"]` | File extensions to format. |
+| `skipDotDirs` | `boolean` | `true` | Skip directories whose name starts with a dot (e.g. `.git`, `.next`, `.cache`, `.svelte-kit`). |
+
+### Example config:
+
+```jsonc
+{
+	"skipDirs": ["node_modules", "vendor", "dist", ".output"],
+	"extensions": ["ree", "ts", "js", "css", "jsx"],
+	"skipDotDirs": true
+}
+```
+
+If no `reefmt.jsonc` is found, reefmt uses sensible defaults (same values
+shown above). If the file is present but invalid, a warning is printed and
+defaults are used.
+
 > 📘 For detailed documentation, examples, and configuration reference, visit [reepolee.com/reefmt/docs](https://www.reepolee.com/reefmt/docs/).
 
 ## Development
