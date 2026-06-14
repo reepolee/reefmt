@@ -10,7 +10,7 @@
         "noUnusedImports": "error"
       },
       "style": {
-        "useTemplate": "on"
+        "useTemplate": "error"
       }
     }
   },
