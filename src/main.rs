@@ -1,4 +1,5 @@
 use glob::glob;
+use serde::Deserialize;
 use similar::{ChangeTag, DiffOp};
 use std::{
     env, fs,
@@ -27,11 +28,66 @@ const REE_TAGS: &[(&str, &str)] = &[
     ("{/", "__REE_SLASH__"),
 ];
 
-const SUPPORTED_EXTENSIONS: &[&str] = &["ree", "ts", "js", "css"];
-
 // Default configs are embedded from standalone files at build time.
 const DPRINT_CONFIG: &str = include_str!("../dprint.default.json");
 const BIOME_CONFIG: &str = include_str!("../biome.default.json");
+/// Reefmt configuration — loaded from `reefmt.jsonc` in the project root.
+#[derive(Deserialize)]
+#[serde(default)]
+struct ReeConfig {
+    /// Directories to skip when formatting.
+    #[serde(rename = "skipDirs")]
+    skip_dirs: Vec<String>,
+    /// File extensions to format.
+    extensions: Vec<String>,
+    /// Whether to skip dot directories (folders starting with '.').
+    #[serde(rename = "skipDotDirs")]
+    skip_dot_dirs: bool,
+}
+
+impl Default for ReeConfig {
+    fn default() -> Self {
+        Self {
+            skip_dirs: vec![
+                "node_modules".to_string(),
+                "vendor".to_string(),
+                "vendors".to_string(),
+                "dist".to_string(),
+            ],
+            extensions: vec![
+                "ree".to_string(),
+                "ts".to_string(),
+                "js".to_string(),
+                "css".to_string(),
+            ],
+            skip_dot_dirs: true,
+        }
+    }
+}
+
+/// Load reefmt config from `reefmt.jsonc` in the current directory.
+/// Falls back to hardcoded defaults if the file doesn't exist or is invalid.
+fn load_config() -> ReeConfig {
+    if let Ok(cwd) = env::current_dir() {
+        let config_path = cwd.join("reefmt.jsonc");
+        if config_path.exists() {
+            match fs::read_to_string(&config_path) {
+                Ok(content) => match json5::from_str(&content) {
+                    Ok(config) => return config,
+                    Err(e) => eprintln!(
+                        "Warning: invalid reefmt.jsonc: {}, using defaults",
+                        e
+                    ),
+                },
+                Err(e) => eprintln!(
+                    "Warning: could not read reefmt.jsonc: {}, using defaults",
+                    e
+                ),
+            }
+        }
+    }
+    ReeConfig::default()
+}
 
 fn protect(src: &str) -> String {
     let mut out = src.to_string();
@@ -1003,8 +1059,11 @@ fn format_code_file(path: &Path, mode: Mode) -> bool {
 
 /// Dispatch to the correct formatter based on file extension.
 /// Returns `true` if the file was (or would be) modified.
-fn format_file(path: &Path, mode: Mode) -> bool {
+fn format_file(path: &Path, mode: Mode, config: &ReeConfig) -> bool {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    if !config.extensions.iter().any(|e| e == ext) {
+        return false;
+    }
     match ext {
         "ree" => format_ree_file(path, mode),
         "ts" | "js" | "css" => format_code_file(path, mode),
@@ -1320,7 +1379,8 @@ mod tests {
         let path = dir.join("test.txt");
         fs::write(&path, "hello world").unwrap();
 
-        let modified = format_file(&path, Mode::Write);
+        let config = ReeConfig::default();
+        let modified = format_file(&path, Mode::Write, &config);
         assert!(!modified, "format_file should return false for unsupported extension");
 
         let _ = fs::remove_dir_all(&dir);
@@ -1367,7 +1427,8 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = format_file(&path, Mode::Check);
+        let config = ReeConfig::default();
+        let modified = format_file(&path, Mode::Check, &config);
         assert!(modified, "format_file Check should detect unformatted .ree file");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, unformatted, "format_file Check should not modify the file");
@@ -1384,7 +1445,8 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = format_file(&path, Mode::Diff);
+        let config = ReeConfig::default();
+        let modified = format_file(&path, Mode::Diff, &config);
         assert!(modified, "format_file Diff should detect unformatted .ree file");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, unformatted, "format_file Diff should not modify the file");
@@ -1435,7 +1497,8 @@ mod tests {
         let path = dir.join("test.txt");
         fs::write(&path, "hello world").unwrap();
 
-        let modified = format_file(&path, Mode::Check);
+        let config = ReeConfig::default();
+        let modified = format_file(&path, Mode::Check, &config);
         assert!(!modified, "format_file Check should return false for unsupported extension");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, "hello world", "Check mode should not modify the file");
@@ -1473,17 +1536,113 @@ mod tests {
         let modified = format_code_file(path, Mode::Diff);
         assert!(!modified, "format_code_file Diff should return false for missing file");
     }
+
+    #[test]
+    fn init_template_parses_as_valid_config() {
+        // The exact template produced by `reefmt --init` (must match main())
+        let template = r#"{
+	// Directories to skip when formatting (glob patterns not needed,
+	// just directory names — any folder with this name is skipped).
+	"skipDirs": ["node_modules", "vendor", "vendors", "dist"],
+
+	// File extensions to format.
+	"extensions": ["ree", "ts", "js", "css"],
+
+	// Whether to skip dot-directories (folders starting with '.',
+	// like .git, .next, .cache, .svelte-kit, etc.).
+	"skipDotDirs": true
+}"#;
+
+        let config: ReeConfig =
+            json5::from_str(template).expect("--init template should be valid JSONC");
+
+        assert_eq!(config.skip_dirs.len(), 4);
+        assert!(config.skip_dirs.contains(&"node_modules".to_string()));
+        assert!(config.skip_dirs.contains(&"vendor".to_string()));
+        assert!(config.skip_dirs.contains(&"vendors".to_string()));
+        assert!(config.skip_dirs.contains(&"dist".to_string()));
+
+        assert_eq!(config.extensions.len(), 4);
+        assert!(config.extensions.contains(&"ree".to_string()));
+        assert!(config.extensions.contains(&"ts".to_string()));
+        assert!(config.extensions.contains(&"js".to_string()));
+        assert!(config.extensions.contains(&"css".to_string()));
+
+        assert!(config.skip_dot_dirs);
+    }
+
+    #[test]
+    fn load_config_parses_reefmt_jsonc_from_directory() {
+        let dir = env::temp_dir().join(format!(
+            "reefmt_test_load_config_{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        // Write a reefmt.jsonc with custom values
+        let config_content = r#"{
+	"skipDirs": ["node_modules", "dist"],
+	"extensions": ["ree", "ts"],
+	"skipDotDirs": false
+}"#;
+        fs::write(dir.join("reefmt.jsonc"), config_content).unwrap();
+
+        // Save current dir, change to temp dir, load config, restore
+        let original_cwd = env::current_dir().unwrap();
+        env::set_current_dir(&dir).unwrap();
+
+        let config = load_config();
+
+        env::set_current_dir(&original_cwd).unwrap();
+
+        // Verify custom values were loaded
+        assert_eq!(config.skip_dirs.len(), 2);
+        assert!(!config.skip_dirs.contains(&"vendor".to_string()));
+
+        assert_eq!(config.extensions.len(), 2);
+        assert!(!config.extensions.contains(&"js".to_string()));
+
+        assert!(!config.skip_dot_dirs);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
-fn collect_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+/// Check whether a path is inside a directory that should be skipped
+/// (e.g. `node_modules`, `vendor`, `vendors`, or any dot-folder like `.git`).
+fn should_skip_path(path: &Path, config: &ReeConfig) -> bool {
+    path.components().any(|c| {
+        if let std::path::Component::Normal(s) = c {
+            if let Some(name) = s.to_str() {
+                if config.skip_dirs.iter().any(|d| d == name) {
+                    return true;
+                }
+                if config.skip_dot_dirs && name.starts_with(".") && name != "." {
+                    return true;
+                }
+            }
+        }
+        false
+    })
+}
+
+fn collect_source_files(
+    dir: &Path,
+    files: &mut Vec<PathBuf>,
+    config: &ReeConfig,
+) -> std::io::Result<()> {
     if dir.is_dir() {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
-                collect_source_files(&path, files)?;
+                // Skip vendor / dependency directories
+                if should_skip_path(&path, config) {
+                    continue;
+                }
+                collect_source_files(&path, files, config)?;
             } else if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-                if SUPPORTED_EXTENSIONS.contains(&ext) {
+                if config.extensions.iter().any(|e| e == ext) {
                     files.push(path);
                 }
             }
@@ -1554,11 +1713,53 @@ fn main() {
         return;
     }
 
+    // Check for --init flag (generate config template)
+    if args.iter().any(|a| a == "--init") {
+        let cwd = env::current_dir().unwrap_or_else(|_| {
+            eprintln!("Error: could not determine current directory");
+            std::process::exit(1);
+        });
+        let config_path = cwd.join("reefmt.jsonc");
+        if config_path.exists() {
+            eprintln!(
+                "Error: {} already exists in this directory",
+                config_path.display()
+            );
+            std::process::exit(1);
+        }
+        let template = r##"{
+	// Directories to skip when formatting (glob patterns not needed,
+	// just directory names — any folder with this name is skipped).
+	"skipDirs": ["node_modules", "vendor", "vendors", "dist"],
+
+	// File extensions to format.
+	"extensions": ["ree", "ts", "js", "css"],
+
+	// Whether to skip dot-directories (folders starting with '.',
+	// like .git, .next, .cache, .svelte-kit, etc.).
+	"skipDotDirs": true
+}
+"##;
+        match fs::write(&config_path, template.trim_start()) {
+            Ok(_) => {
+                println!("Created: {}", config_path.display());
+                println!("Edit this file to configure reefmt formatting behavior.");
+            }
+            Err(e) => {
+                eprintln!("Error writing {}: {}", config_path.display(), e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     let targets: Vec<String> = if args.is_empty() {
         vec![".".to_string()]
     } else {
         args
     };
+
+    let config = load_config();
 
     let mut any_modified = false;
 
@@ -1567,24 +1768,27 @@ fn main() {
 
         if path.is_dir() {
             let mut files = Vec::new();
-            if let Err(e) = collect_source_files(path, &mut files) {
+            if let Err(e) = collect_source_files(path, &mut files, &config) {
                 eprintln!("Error reading directory {}: {}", target, e);
                 continue;
             }
             for file in files {
-                if format_file(&file, mode) {
+                if format_file(&file, mode, &config) {
                     any_modified = true;
                 }
             }
         } else if path.exists() {
-            if format_file(path, mode) {
+            if format_file(path, mode, &config) {
                 any_modified = true;
             }
         } else {
             match glob(&target) {
                 Ok(paths) => {
                     for entry in paths.flatten() {
-                        if format_file(&entry, mode) {
+                        if should_skip_path(&entry, &config) {
+                            continue;
+                        }
+                        if format_file(&entry, mode, &config) {
                             any_modified = true;
                         }
                     }
