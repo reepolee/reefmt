@@ -552,6 +552,23 @@ fn compute_html_tag_delta(line: &str, void_tags: &[&str]) -> (isize, isize) {
     let mut open_after = 0isize;
     let mut pos = 0;
 
+    // Detect standalone '>' that closes an opening tag from a previous line.
+    // When a tag's attributes span multiple lines (e.g. <tag\n  attr="val"\n>),
+    // the '>' on its own line (or before </tag>) completes the opening tag and
+    // should increment open_after. Skip '/>' (self-closing) and '-->' (comment).
+    if let Some(first_gt) = line.find('>') {
+        let first_lt = line.find('<');
+        let is_before_any_tag = first_lt.is_none() || first_gt < first_lt.unwrap();
+        if is_before_any_tag {
+            // Check it's not '/>' and not part of '-->'
+            let not_self_close = first_gt == 0 || !line[..first_gt].ends_with('/');
+            let not_comment_close = first_gt < 2 || &line[first_gt.saturating_sub(2)..first_gt] != "--";
+            if not_self_close && not_comment_close {
+                open_after += 1;
+            }
+        }
+    }
+
     while let Some(open_pos) = line[pos..].find('<') {
         let abs_pos = pos + open_pos;
         let rest = &line[abs_pos..];
