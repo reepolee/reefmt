@@ -82,21 +82,26 @@ case "$os" in
 esac
 
 # ──────────────────────────────────────────────
-# Decide: bump version or use existing
+# Detect code changes since last release
 # ──────────────────────────────────────────────
+
+git fetch --tags 2>/dev/null || true
+latest_tag=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo "")
+
+if [ -n "$latest_tag" ]; then
+	new_commits=$(git rev-list HEAD "^$latest_tag" --count 2>/dev/null || echo "0")
+else
+	# No prior tag → this is the first release ever
+	new_commits=1
+fi
 
 tag="v$version"
 
-if gh release view "$tag" >/dev/null 2>&1; then
-	# Release already exists → this is a subsequent machine. Just build and upload.
-	echo "═══ reefmt release $version for $os ($arch) ═══"
-	echo "  (Tag $tag already released. Uploading binary only.)"
-	do_bump=false
-else
-	# No release yet → this is the first machine. Bump version, then build and release.
+if [ "$new_commits" -gt 0 ]; then
+	# Code has changed since last release → bump version
 	new_version=$(bump_version "$version")
 	echo "═══ reefmt release $new_version for $os ($arch) ═══"
-	echo "  (Bumping from $version → $new_version)"
+	echo "  (Bumping from $version → $new_version, $new_commits commits since $latest_tag)"
 
 	# Update Cargo.toml
 	sed -i '' "s/version = \"$version\"/version = \"$new_version\"/" Cargo.toml 2>/dev/null || \
@@ -105,6 +110,11 @@ else
 	version="$new_version"
 	tag="v$version"
 	do_bump=true
+else
+	# No code changes → just upload the binary
+	echo "═══ reefmt release $version for $os ($arch) ═══"
+	echo "  (No new commits since $latest_tag. Uploading binary only.)"
+	do_bump=false
 fi
 
 # ──────────────────────────────────────────────

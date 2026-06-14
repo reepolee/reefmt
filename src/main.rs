@@ -682,16 +682,12 @@ fn format_html(src: &str) -> String {
         let ree_net_open = ree_opens.saturating_sub(ree_closes);
 
         // Apply closes before writing
-        for _ in 0..ree_net_close {
-            if depth > 0 {
-                depth -= 1;
-            }
-        }
+        depth = depth.saturating_sub(ree_net_close);
 
         let is_else = !in_comment
             && (trimmed.starts_with("{:else") || trimmed.starts_with("{:"));
-        if is_else && depth > 0 {
-            depth -= 1;
+        if is_else {
+            depth = depth.saturating_sub(1);
         }
 
         if !is_ree_line(trimmed) {
@@ -701,11 +697,7 @@ fn format_html(src: &str) -> String {
             let open_after = open_after.min(1);
 
             if close_before > 0 {
-                for _ in 0..close_before as usize {
-                    if depth > 0 {
-                        depth -= 1;
-                    }
-                }
+                depth = depth.saturating_sub(close_before as usize);
             }
 
             let normalized = normalize_inline_spacing(trimmed);
@@ -775,9 +767,7 @@ fn collapse_fitting_tags(src: &str) -> String {
                 continue;
             }
             // Keep original lines
-            for k in i..j.min(len) {
-                out.push(lines[k].to_string());
-            }
+            out.extend(lines[i..j.min(len)].iter().map(|l| l.to_string()));
             i = j;
             continue;
         }
@@ -1526,15 +1516,15 @@ fn main() {
 
     // Parse --stdin flag (consumes an optional extension argument)
     let stdin_mode = args.iter().position(|a| a == "--stdin");
-    let stdin_ext: Option<String> = stdin_mode.map(|pos| {
+    let stdin_ext: Option<String> = stdin_mode.and_then(|pos| {
         args.remove(pos);
         // If the next argument is an extension (starts with '.'), consume it
-        if args.first().map_or(false, |a| a.starts_with('.')) {
+        if args.first().is_some_and(|a| a.starts_with('.')) {
             Some(args.remove(0))
         } else {
             None
         }
-    }).flatten();
+    });
 
     if stdin_mode.is_some() {
         let mut input = String::new();
