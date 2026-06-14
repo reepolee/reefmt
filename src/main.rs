@@ -969,12 +969,12 @@ fn format_ree_file(path: &Path, mode: Mode) -> bool {
     match mode {
         Mode::Write => {
             match fs::write(path, &write_content) {
-                Ok(_) => println!("Formatted: {}", path.display()),
+                Ok(_) => eprintln!("Formatted: {}", path.display()),
                 Err(e) => eprintln!("Error writing {}: {}", path.display(), e),
             }
         }
         Mode::Check => {
-            println!("Would format: {}", path.display());
+            eprintln!("Would format: {}", path.display());
         }
         Mode::Diff => {
             print_diff(path, &normalized, &write_content);
@@ -995,8 +995,12 @@ fn format_code_content(content: &str, ext: &str) -> String {
         .unwrap()
         .as_millis();
 
-    // Step 1: biome lint --fix (uses external biome.json if available)
-    let after_lint = run_biome_lint(&normalized, ext, timestamp);
+    // Step 1: Flatten multiline string concatenation so biome's useTemplate
+    // rule can detect and convert it to template literals.
+    let flattened = flatten_concat(&normalized);
+
+    // Step 2: biome lint --fix (uses external biome.json if available)
+    let after_lint = run_biome_lint(&flattened, ext, timestamp);
 
     // Step 2: dprint format (uses external dprint.json if available)
     let formatted = match resolve_dprint_config(timestamp) {
@@ -1042,12 +1046,12 @@ fn format_code_file(path: &Path, mode: Mode) -> bool {
     match mode {
         Mode::Write => {
             match fs::write(path, &write_content) {
-                Ok(_) => println!("Formatted: {}", path.display()),
+                Ok(_) => eprintln!("Formatted: {}", path.display()),
                 Err(e) => eprintln!("Error writing {}: {}", path.display(), e),
             }
         }
         Mode::Check => {
-            println!("Would format: {}", path.display());
+            eprintln!("Would format: {}", path.display());
         }
         Mode::Diff => {
             print_diff(path, &normalized, &write_content);
@@ -1762,6 +1766,7 @@ fn main() {
     let config = load_config();
 
     let mut any_modified = false;
+    let show_progress = mode == Mode::Write;
 
     for target in targets {
         let path = Path::new(&target);
@@ -1773,11 +1778,19 @@ fn main() {
                 continue;
             }
             for file in files {
+                if show_progress {
+                    eprint!("\rChecking: {}", file.display());
+                    let _ = std::io::stderr().flush();
+                }
                 if format_file(&file, mode, &config) {
                     any_modified = true;
                 }
             }
         } else if path.exists() {
+            if show_progress {
+                eprint!("\rChecking: {}", path.display());
+                let _ = std::io::stderr().flush();
+            }
             if format_file(path, mode, &config) {
                 any_modified = true;
             }
@@ -1788,6 +1801,10 @@ fn main() {
                         if should_skip_path(&entry, &config) {
                             continue;
                         }
+                        if show_progress {
+                            eprint!("\rChecking: {}", entry.display());
+                            let _ = std::io::stderr().flush();
+                        }
                         if format_file(&entry, mode, &config) {
                             any_modified = true;
                         }
@@ -1796,6 +1813,12 @@ fn main() {
                 Err(e) => eprintln!("Invalid glob {}: {}", target, e),
             }
         }
+    }
+
+    // Clear the progress line
+    if show_progress {
+        eprint!("\r\x1b[K");
+        let _ = std::io::stderr().flush();
     }
 
     if mode != Mode::Write && any_modified {
