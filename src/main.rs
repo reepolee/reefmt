@@ -1,7 +1,7 @@
 use glob::glob;
 use std::{
     env, fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -847,8 +847,64 @@ fn collapse_fitting_tags(src: &str) -> String {
     out.join("\n")
 }
 
+/// Operating mode: write files, check-only (list files), or diff (show changes).
+#[derive(Clone, Copy, PartialEq)]
+enum Mode { Write, Check, Diff }
+
+/// Print a unified diff between original and formatted content.
+/// Uses the `similar` crate (Myers diff algorithm) for proper hunk detection.
+fn print_diff(path: &Path, original: &str, formatted: &str) {
+    let path_str = path.to_string_lossy();
+    let diff = similar::TextDiff::from_lines(original, formatted);
+
+    println!("--- a/{}", path_str);
+    println!("+++ b/{}", path_str);
+
+    for op in diff.ops() {
+        use similar::{ChangeTag, DiffOp};
+        match op {
+            DiffOp::Equal { .. } => continue,
+            _ => {
+                let old_range = op.old_range();
+                let new_range = op.new_range();
+                let old_count = old_range.end - old_range.start;
+                let new_count = new_range.end - new_range.start;
+                println!(
+                    "@@ -{},{} +{},{} @@",
+                    old_range.start + 1,
+                    if old_count == 0 { 1 } else { old_count },
+                    new_range.start + 1,
+                    if new_count == 0 { 1 } else { new_count },
+                );
+                for change in diff.iter_changes(op) {
+                    match change.tag() {
+                        ChangeTag::Delete => print!("-{}", change.value()),
+                        ChangeTag::Insert => print!("+{}", change.value()),
+                        ChangeTag::Equal => print!(" {}", change.value()),
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Format Ree template content, returning the formatted string.
+fn format_ree_content(content: &str) -> String {
+    let normalized = content.replace("\r\n", "\n");
+    let result = normalize_ree_spacing(&normalized);
+    let result = format_html(&result);
+    let result = collapse_fitting_tags(&result);
+    let result = replace_script_style(&result, "script", "js");
+    let result = replace_script_style(&result, "style", "css");
+    if !result.is_empty() && !result.ends_with('\n') {
+        format!("{}\n", result)
+    } else {
+        result
+    }
+}
+
 /// Format a Ree template file. Returns `true` if the file was (or would be) modified.
-fn format_ree_file(path: &Path, check_mode: bool) -> bool {
+fn format_ree_file(path: &Path, mode: Mode) -> bool {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -857,52 +913,37 @@ fn format_ree_file(path: &Path, check_mode: bool) -> bool {
         }
     };
 
-    // Normalize line endings so comparison with formatted output is fair
     let normalized = content.replace("\r\n", "\n");
-
-    let result = normalize_ree_spacing(&normalized);
-    let result = format_html(&result);
-    let result = collapse_fitting_tags(&result);
-    let result = replace_script_style(&result, "script", "js");
-    let result = replace_script_style(&result, "style", "css");
-
-    let write_content = if !result.is_empty() && !result.ends_with('\n') {
-        format!("{}\n", result)
-    } else {
-        result
-    };
+    let write_content = format_ree_content(&normalized);
 
     if write_content == normalized {
         return false;
     }
 
-    if check_mode {
-        println!("Would format: {}", path.display());
-    } else {
-        match fs::write(path, &write_content) {
-            Ok(_) => println!("Formatted: {}", path.display()),
-            Err(e) => eprintln!("Error writing {}: {}", path.display(), e),
+    match mode {
+        Mode::Write => {
+            match fs::write(path, &write_content) {
+                Ok(_) => println!("Formatted: {}", path.display()),
+                Err(e) => eprintln!("Error writing {}: {}", path.display(), e),
+            }
+        }
+        Mode::Check => {
+            println!("Would format: {}", path.display());
+        }
+        Mode::Diff => {
+            print_diff(path, &normalized, &write_content);
         }
     }
 
     true
 }
 
-/// Format a standalone code file (TS, JS, CSS) by piping through
+/// Format standalone code content (TS/JS/CSS) by piping through
 /// biome lint-fix then dprint formatting. No Ree-specific processing.
 /// Falls back to lint-only if dprint is not installed.
-/// Returns `true` if the file was (or would be) modified.
-fn format_code_file(path: &Path, check_mode: bool) -> bool {
-    let content = match fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Error reading {}: {}", path.display(), e);
-            return false;
-        }
-    };
+fn format_code_content(content: &str, ext: &str) -> String {
     let normalized = content.replace("\r\n", "\n");
 
-    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -921,25 +962,49 @@ fn format_code_file(path: &Path, check_mode: bool) -> bool {
             }
             result
         }
-        None => after_lint.clone(),
+        None => after_lint,
     };
 
-    let write_content = if !formatted.is_empty() && !formatted.ends_with('\n') {
+    if !formatted.is_empty() && !formatted.ends_with('\n') {
         format!("{}\n", formatted)
     } else {
         formatted
+    }
+}
+
+/// Format a standalone code file (TS, JS, CSS) by piping through
+/// biome lint-fix then dprint formatting. No Ree-specific processing.
+/// Falls back to lint-only if dprint is not installed.
+/// Returns `true` if the file was (or would be) modified.
+fn format_code_file(path: &Path, mode: Mode) -> bool {
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path.display(), e);
+            return false;
+        }
     };
+
+    let normalized = content.replace("\r\n", "\n");
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let write_content = format_code_content(&normalized, ext);
 
     if write_content == normalized {
         return false;
     }
 
-    if check_mode {
-        println!("Would format: {}", path.display());
-    } else {
-        match fs::write(path, &write_content) {
-            Ok(_) => println!("Formatted: {}", path.display()),
-            Err(e) => eprintln!("Error writing {}: {}", path.display(), e),
+    match mode {
+        Mode::Write => {
+            match fs::write(path, &write_content) {
+                Ok(_) => println!("Formatted: {}", path.display()),
+                Err(e) => eprintln!("Error writing {}: {}", path.display(), e),
+            }
+        }
+        Mode::Check => {
+            println!("Would format: {}", path.display());
+        }
+        Mode::Diff => {
+            print_diff(path, &normalized, &write_content);
         }
     }
 
@@ -948,11 +1013,11 @@ fn format_code_file(path: &Path, check_mode: bool) -> bool {
 
 /// Dispatch to the correct formatter based on file extension.
 /// Returns `true` if the file was (or would be) modified.
-fn format_file(path: &Path, check_mode: bool) -> bool {
+fn format_file(path: &Path, mode: Mode) -> bool {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     match ext {
-        "ree" => format_ree_file(path, check_mode),
-        "ts" | "js" | "css" => format_code_file(path, check_mode),
+        "ree" => format_ree_file(path, mode),
+        "ts" | "js" | "css" => format_code_file(path, mode),
         _ => false,
     }
 }
@@ -1188,6 +1253,97 @@ mod tests {
     }
 
     #[test]
+    fn check_mode_does_not_modify_ree_file() {
+        let dir = env::temp_dir().join("reefmt_test_check_mode");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.ree");
+        let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
+        fs::write(&path, unformatted).unwrap();
+
+        // Check mode should report change without modifying the file
+        let modified = format_ree_file(&path, Mode::Check);
+        assert!(modified, "Check mode should return true when file would change");
+        let content_after = fs::read_to_string(&path).unwrap();
+        assert_eq!(content_after, unformatted, "Check mode should not modify the file");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_mode_reports_no_change_for_formatted_ree_file() {
+        // Use simple content that is idempotent through the full pipeline
+        let dir = env::temp_dir().join(format!("reefmt_test_check_fmt_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.ree");
+        let content = "<span>text</span>\n";
+        fs::write(&path, content).unwrap();
+
+        // Check mode should report no change for already-formatted file
+        let modified = format_ree_file(&path, Mode::Check);
+        assert!(!modified, "Check mode should return false for already-formatted file (modified={})", modified);
+
+        // Also verify the file was not modified
+        let content_after = fs::read_to_string(&path).unwrap();
+        assert_eq!(content_after, content, "Check mode should not modify the file");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn diff_mode_does_not_modify_ree_file() {
+        let dir = env::temp_dir().join("reefmt_test_diff_mode");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.ree");
+        let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
+        fs::write(&path, unformatted).unwrap();
+
+        // Diff mode should report change without modifying the file
+        let modified = format_ree_file(&path, Mode::Diff);
+        assert!(modified, "Diff mode should return true when file would change");
+        let content_after = fs::read_to_string(&path).unwrap();
+        assert_eq!(content_after, unformatted, "Diff mode should not modify the file");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_mode_modifies_ree_file() {
+        let dir = env::temp_dir().join("reefmt_test_write_mode");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.ree");
+        let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
+        fs::write(&path, unformatted).unwrap();
+
+        // Write mode should format the file
+        let modified = format_ree_file(&path, Mode::Write);
+        assert!(modified, "Write mode should return true when file changes");
+        let content_after = fs::read_to_string(&path).unwrap();
+        assert_ne!(content_after, unformatted, "Write mode should modify the file");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn format_file_unsupported_extension_returns_false() {
+        let dir = env::temp_dir().join("reefmt_test_unsupported");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.txt");
+        fs::write(&path, "hello world").unwrap();
+
+        let modified = format_file(&path, Mode::Write);
+        assert!(!modified, "format_file should return false for unsupported extension");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_mode_ree_file_missing_returns_false() {
+        let path = Path::new("/tmp/nonexistent_file_reefmt_test.ree");
+        let modified = format_ree_file(path, Mode::Check);
+        assert!(!modified, "format_ree_file should return false for missing file");
+    }
+
+    #[test]
     fn comment_does_not_affect_sibling_indentation() {
         // A comment with nested tag-looking content should not affect
         // indentation of subsequent sibling elements.
@@ -1211,6 +1367,122 @@ mod tests {
         // </ul> should be at depth 0
         assert_eq!(lines[4], "</ul>", "closing ul indented correctly");
     }
+
+    #[test]
+    fn check_mode_via_format_file_dispatcher() {
+        // format_file should delegate to format_ree_file for .ree files
+        let dir = env::temp_dir().join("reefmt_test_file_check");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.ree");
+        let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
+        fs::write(&path, unformatted).unwrap();
+
+        let modified = format_file(&path, Mode::Check);
+        assert!(modified, "format_file Check should detect unformatted .ree file");
+        let content_after = fs::read_to_string(&path).unwrap();
+        assert_eq!(content_after, unformatted, "format_file Check should not modify the file");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn diff_mode_via_format_file_dispatcher() {
+        // format_file should delegate to format_ree_file for .ree files
+        let dir = env::temp_dir().join("reefmt_test_file_diff");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.ree");
+        let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
+        fs::write(&path, unformatted).unwrap();
+
+        let modified = format_file(&path, Mode::Diff);
+        assert!(modified, "format_file Diff should detect unformatted .ree file");
+        let content_after = fs::read_to_string(&path).unwrap();
+        assert_eq!(content_after, unformatted, "format_file Diff should not modify the file");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn diff_mode_formatted_ree_file_returns_false() {
+        // Diff mode on already-formatted content should return false
+        let dir = env::temp_dir().join(format!("reefmt_test_diff_fmt_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.ree");
+        let content = "<span>text</span>\n";
+        fs::write(&path, content).unwrap();
+
+        let modified = format_ree_file(&path, Mode::Diff);
+        assert!(!modified, "Diff mode should return false for already-formatted file (modified={})", modified);
+        let content_after = fs::read_to_string(&path).unwrap();
+        assert_eq!(content_after, content, "Diff mode should not modify the file");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_mode_code_file_does_not_modify() {
+        // Check mode on a code file should not modify the file,
+        // regardless of whether external tools are installed.
+        // The return value depends on whether tools are available to format.
+        let dir = env::temp_dir().join("reefmt_test_code_check");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.ts");
+        let content = "const x = 1;\n";
+        fs::write(&path, content).unwrap();
+
+        let _modified = format_code_file(&path, Mode::Check);
+        let content_after = fs::read_to_string(&path).unwrap();
+        assert_eq!(content_after, content, "Check mode should not modify the code file");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn format_file_check_mode_unsupported_extension() {
+        // format_file with Check mode on unsupported extension
+        let dir = env::temp_dir().join("reefmt_test_unsupported_check");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.txt");
+        fs::write(&path, "hello world").unwrap();
+
+        let modified = format_file(&path, Mode::Check);
+        assert!(!modified, "format_file Check should return false for unsupported extension");
+        let content_after = fs::read_to_string(&path).unwrap();
+        assert_eq!(content_after, "hello world", "Check mode should not modify the file");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_mode_empty_ree_file_returns_false() {
+        // An empty file is already "formatted" as far as the pipeline is concerned
+        let dir = env::temp_dir().join("reefmt_test_empty_check");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("empty.ree");
+        fs::write(&path, "").unwrap();
+
+        let modified = format_ree_file(&path, Mode::Check);
+        assert!(!modified, "Check mode should return false for empty file");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn format_ree_content_idempotent() {
+        // The Ree formatting pipeline should be idempotent:
+        // formatting already-formatted content should produce the same output.
+        // Use simple idempotent content that the full pipeline doesn't transform.
+        let src = "<span>text</span>\n";
+        let result = format_ree_content(src);
+        assert_eq!(result, src, "format_ree_content should be idempotent for already-formatted content");
+    }
+
+    #[test]
+    fn diff_mode_code_file_missing_returns_false() {
+        let path = Path::new("/tmp/nonexistent_file_reefmt_diff_test.ts");
+        let modified = format_code_file(path, Mode::Diff);
+        assert!(!modified, "format_code_file Diff should return false for missing file");
+    }
 }
 
 fn collect_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
@@ -1233,13 +1505,59 @@ fn collect_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result
 fn main() {
     let mut args: Vec<String> = env::args().skip(1).collect();
 
-    // Parse --check / --dry-run / -c flag
-    let check_mode = if let Some(pos) = args.iter().position(|a| a == "--check" || a == "--dry-run" || a == "-c") {
-        args.remove(pos);
-        true
+    // Parse mode flags
+    let diff_mode = args.iter().position(|a| a == "--diff").is_some();
+    if diff_mode {
+        args.retain(|a| a != "--diff");
+    }
+
+    let check_mode = args.iter().position(|a| a == "--check" || a == "--dry-run" || a == "-c").is_some();
+    if check_mode {
+        args.retain(|a| a != "--check" && a != "--dry-run" && a != "-c");
+    }
+
+    let mode = if diff_mode {
+        Mode::Diff
+    } else if check_mode {
+        Mode::Check
     } else {
-        false
+        Mode::Write
     };
+
+    // Parse --stdin flag (consumes an optional extension argument)
+    let stdin_mode = args.iter().position(|a| a == "--stdin");
+    let stdin_ext: Option<String> = stdin_mode.map(|pos| {
+        args.remove(pos);
+        // If the next argument is an extension (starts with '.'), consume it
+        if args.first().map_or(false, |a| a.starts_with('.')) {
+            Some(args.remove(0))
+        } else {
+            None
+        }
+    }).flatten();
+
+    if stdin_mode.is_some() {
+        let mut input = String::new();
+        if let Err(e) = std::io::stdin().read_to_string(&mut input) {
+            eprintln!("Error reading stdin: {}", e);
+            std::process::exit(1);
+        }
+
+        let ext = stdin_ext.as_deref().unwrap_or(".ree");
+        let ext = ext.trim_start_matches('.');
+
+        let formatted = match ext {
+            "ree" => format_ree_content(&input),
+            "ts" | "js" | "css" => format_code_content(&input, ext),
+            _ => {
+                eprintln!("Unsupported extension for --stdin: .{}", ext);
+                std::process::exit(1);
+            }
+        };
+
+        print!("{}", formatted);
+        return;
+    }
 
     if args.len() == 1 && (args[0] == "-v" || args[0] == "--version") {
         println!("reefmt v{}", env!("CARGO_PKG_VERSION"));
@@ -1264,19 +1582,19 @@ fn main() {
                 continue;
             }
             for file in files {
-                if format_file(&file, check_mode) {
+                if format_file(&file, mode) {
                     any_modified = true;
                 }
             }
         } else if path.exists() {
-            if format_file(path, check_mode) {
+            if format_file(path, mode) {
                 any_modified = true;
             }
         } else {
             match glob(&target) {
                 Ok(paths) => {
                     for entry in paths.flatten() {
-                        if format_file(&entry, check_mode) {
+                        if format_file(&entry, mode) {
                             any_modified = true;
                         }
                     }
@@ -1286,7 +1604,7 @@ fn main() {
         }
     }
 
-    if check_mode && any_modified {
+    if mode != Mode::Write && any_modified {
         std::process::exit(1);
-    }
+}
 }
