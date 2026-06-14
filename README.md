@@ -2,7 +2,7 @@
 
 A formatter for Ree Templates.
 
-Used by https://marketplace.visualstudio.com/items?itemName=reepolee.ree-templates VSCode extension-
+Used by https://marketplace.visualstudio.com/items?itemName=reepolee.ree-templates VSCode extension  
 
 Check out https://www.reepolee.com for more information.
 
@@ -35,6 +35,56 @@ bun install -g dprint biome
 ```
 
 reefmt works without these — it falls back to basic indentation if they're not found.
+
+## Usage
+
+reefmt formats `.ree` template files and can also format `.ts`, `.js`, and `.css` files by piping them through dprint (formatting) and biome (lint fixes) in a single pass — a convenient unified formatter for your projects.
+
+### Format all supported files in the current directory (recursive):
+
+```bash
+reefmt
+```
+
+### Format a specific file:
+
+```bash
+reefmt path/to/template.ree
+reefmt path/to/component.ts
+reefmt path/to/styles.css
+```
+
+### Format a specific directory:
+
+```bash
+reefmt src/
+```
+
+### Format files matching a glob pattern:
+
+```bash
+reefmt "**/*.ree"
+reefmt "src/**/*.ts"
+reefmt "src/**/*.{ts,js,css}"
+```
+
+### Print the version:
+
+```bash
+reefmt --version
+```
+
+### Check mode (dry-run for CI):
+
+Report which files would be reformatted without modifying them. Exits with code 1 if any file would change (useful for CI pipelines):
+
+```bash
+reefmt --check
+reefmt --dry-run
+reefmt -c
+```
+
+> 📘 For detailed documentation, examples, and configuration reference, visit [reepolee.com/reefmt/docs](https://www.reepolee.com/reefmt/docs/).
 
 ## Development
 

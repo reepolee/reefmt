@@ -26,6 +26,12 @@ const REE_TAGS: &[(&str, &str)] = &[
     ("{/", "__REE_SLASH__"),
 ];
 
+const SUPPORTED_EXTENSIONS: &[&str] = &["ree", "ts", "js", "css"];
+
+// Default configs are embedded from standalone files at build time.
+const DPRINT_CONFIG: &str = include_str!("../dprint.default.json");
+const BIOME_CONFIG: &str = include_str!("../biome.default.json");
+
 fn protect(src: &str) -> String {
     let mut out = src.to_string();
     for (tag, placeholder) in REE_TAGS {
@@ -42,9 +48,39 @@ fn restore(src: &str) -> String {
     out
 }
 
-/// Run biome lint --fix on the protected JS/CSS fragment (via temp file)
-/// to apply refactoring rules (e.g. prefer-template). Falls back to
-/// returning the source unchanged if biome is not installed.
+/// Resolve the dprint config path. If a `dprint.json` exists in the current
+/// directory, use it directly. Otherwise, write the hardcoded defaults to a
+/// temp file and return that path.
+fn resolve_dprint_config(timestamp: u128) -> Option<String> {
+    // Check for external config in CWD
+    if let Ok(cwd) = env::current_dir() {
+        let external = cwd.join("dprint.json");
+        if external.exists() {
+            return Some(external.to_string_lossy().into_owned());
+        }
+        let external_jsonc = cwd.join("dprint.jsonc");
+        if external_jsonc.exists() {
+            return Some(external_jsonc.to_string_lossy().into_owned());
+        }
+    }
+
+    // Fall back to hardcoded defaults
+    let config_path = env::temp_dir()
+        .join(format!("reefmt_dprint_config_{}.json", timestamp))
+        .to_string_lossy()
+        .into_owned();
+
+    if fs::write(&config_path, DPRINT_CONFIG).is_ok() {
+        Some(config_path)
+    } else {
+        None
+    }
+}
+
+/// Run biome lint --fix on the JS/CSS/TS fragment (via temp file)
+/// to apply refactoring rules. Uses an external `biome.json`/`biome.jsonc`
+/// from the current directory if available, otherwise falls back to the
+/// hardcoded defaults. Returns the source unchanged if biome is not installed.
 fn run_biome_lint(src: &str, ext: &str, timestamp: u128) -> String {
     let dir = env::temp_dir().join(format!("reefmt_biome_{}", timestamp));
     if fs::create_dir_all(&dir).is_err() {
@@ -54,30 +90,23 @@ fn run_biome_lint(src: &str, ext: &str, timestamp: u128) -> String {
     let tmp_path = dir.join(format!("input.{}", ext));
     let config_path = dir.join("biome.json");
 
-    let biome_config = r#"{
-  "formatter": {
-    "enabled": false
-  },
-  "linter": {
-    "enabled": true,
-    "rules": {
-      "preset": "recommended",
-      "correctness": {
-        "noUnusedImports": "error"
-      },
-      "style": {
-        "useTemplate": "on"
-      }
-    }
-  },
-  "assist": {
-    "actions": {
-      "source": {
-        "organizeImports": "on"
-      }
-    }
-  }
-}"#;
+    // Use external biome.json from CWD if it exists, otherwise use hardcoded defaults
+    let biome_config = env::current_dir()
+        .ok()
+        .and_then(|cwd| {
+            let path = cwd.join("biome.json");
+            if path.exists() {
+                fs::read_to_string(&path).ok()
+            } else {
+                let path = cwd.join("biome.jsonc");
+                if path.exists() {
+                    fs::read_to_string(&path).ok()
+                } else {
+                    None
+                }
+            }
+        })
+        .unwrap_or_else(|| BIOME_CONFIG.to_string());
 
     if fs::write(&config_path, biome_config).is_err()
         || fs::write(&tmp_path, src).is_err()
@@ -86,17 +115,11 @@ fn run_biome_lint(src: &str, ext: &str, timestamp: u128) -> String {
         return src.to_string();
     }
 
-    // Biome discovers config from the CWD, not via --config.
-    // Set current_dir to the temp dir so it finds the biome.json we wrote there.
+    // Set current_dir to the temp dir so biome finds the config we wrote there
     let filename = format!("input.{}", ext);
     let result = Command::new("biome")
         .current_dir(&dir)
-        .args([
-            "lint",
-            "--write",
-            "--unsafe",
-            &filename,
-        ])
+        .args(["lint", "--write", "--unsafe", &filename])
         .output();
 
     let output = match result {
@@ -109,6 +132,33 @@ fn run_biome_lint(src: &str, ext: &str, timestamp: u128) -> String {
 
     let _ = fs::remove_dir_all(&dir);
     output
+}
+
+/// Pipe content through dprint for formatting. Returns the formatted output
+/// unchanged (no Ree-specific processing, no extra indentation).
+/// Falls back to returning the source unchanged if dprint is not installed.
+fn pipe_dprint(src: &str, ext: &str, config_path: &str) -> String {
+    let mut child = match Command::new("dprint")
+        .args(["fmt", "--stdin", &format!("file.{}", ext), "--config", config_path])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return src.to_string(),
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(src.as_bytes());
+    }
+
+    match child.wait_with_output() {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).to_string()
+        }
+        _ => src.to_string(),
+    }
 }
 
 fn dprint_format(src: &str, lang: &str) -> String {
@@ -128,73 +178,26 @@ fn dprint_format(src: &str, lang: &str) -> String {
     // Step 2: Run biome lint --fix on the fragment (refactoring like prefer-template)
     let after_lint = run_biome_lint(&flattened, ext, timestamp);
 
-    // Step 2: Pipe through dprint for formatting
-    let config_path = env::temp_dir()
-        .join(format!("reefmt_dprint_config_{}.json", timestamp))
-        .to_string_lossy()
-        .into_owned();
+    // Step 3: Pipe through dprint for formatting (with external config if available)
+    let config_path = resolve_dprint_config(timestamp);
 
-    let dprint_config = r#"{
-  "incremental": true,
-  "lineWidth": 120,
-  "indentWidth": 4,
-  "useTabs": true,
-  "typescript": {
-    "quoteStyle": "preferDouble",
-    "semiColons": "always",
-    "trailingCommas": "onlyMultiLine"
-  },
-  "json": {
-    "indentWidth": 4,
-    "useTabs": true
-  },
-  "markdown": {
-    "lineWidth": 120
-  },
-  "plugins": [
-    "https://plugins.dprint.dev/typescript-0.90.3.wasm",
-    "https://plugins.dprint.dev/json-0.19.0.wasm",
-    "https://plugins.dprint.dev/markdown-0.17.8.wasm",
-    "https://plugins.dprint.dev/g-plane/malva-v0.16.0.wasm"
-  ]
-}"#;
-
-    if fs::write(&config_path, dprint_config).is_err() {
-        return indent_code(src);
-    }
-
-    let mut child = match Command::new("dprint")
-        .args(["fmt", "--stdin", &format!("file.{}", ext), "--config", &config_path])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => {
-            let _ = fs::remove_file(&config_path);
-            return indent_code(src);
+    let formatted = match config_path {
+        Some(ref path) => {
+            let result = pipe_dprint(&after_lint, ext, path);
+            // Only clean up temp configs — never delete an external dprint.json!
+            if path.contains("reefmt_dprint_config_") {
+                let _ = fs::remove_file(path);
+            }
+            result
         }
+        None => indent_code(src),
     };
 
-    // Write lint-fixed content to stdin and close the pipe so dprint can start
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(after_lint.as_bytes());
-    }
+    let restored = restore(&formatted);
+    let restored = restore_html_comments(&restored, &html_comments);
+    let indented = indent_code(&restored);
 
-    let formatted = match child.wait_with_output() {
-        Ok(output) if output.status.success() => {
-            let content = String::from_utf8_lossy(&output.stdout);
-            let restored = restore(&content);
-            let restored = restore_html_comments(&restored, &html_comments);
-            indent_code(&restored)
-        }
-        _ => indent_code(src),
-    };
-
-    let _ = fs::remove_file(&config_path);
-
-    formatted
+    indented
         .trim()
         .lines()
         .map(|l| format!("\t{}", l))
@@ -844,12 +847,13 @@ fn collapse_fitting_tags(src: &str) -> String {
     out.join("\n")
 }
 
-fn format_file(path: &Path) {
+/// Format a Ree template file. Returns `true` if the file was (or would be) modified.
+fn format_ree_file(path: &Path, check_mode: bool) -> bool {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Error reading {}: {}", path.display(), e);
-            return;
+            return false;
         }
     };
 
@@ -869,12 +873,87 @@ fn format_file(path: &Path) {
     };
 
     if write_content == normalized {
-        return;
+        return false;
     }
 
-    match fs::write(path, &write_content) {
-        Ok(_) => println!("Formatted: {}", path.display()),
-        Err(e) => eprintln!("Error writing {}: {}", path.display(), e),
+    if check_mode {
+        println!("Would format: {}", path.display());
+    } else {
+        match fs::write(path, &write_content) {
+            Ok(_) => println!("Formatted: {}", path.display()),
+            Err(e) => eprintln!("Error writing {}: {}", path.display(), e),
+        }
+    }
+
+    true
+}
+
+/// Format a standalone code file (TS, JS, CSS) by piping through
+/// biome lint-fix then dprint formatting. No Ree-specific processing.
+/// Falls back to lint-only if dprint is not installed.
+/// Returns `true` if the file was (or would be) modified.
+fn format_code_file(path: &Path, check_mode: bool) -> bool {
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path.display(), e);
+            return false;
+        }
+    };
+    let normalized = content.replace("\r\n", "\n");
+
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+
+    // Step 1: biome lint --fix (uses external biome.json if available)
+    let after_lint = run_biome_lint(&normalized, ext, timestamp);
+
+    // Step 2: dprint format (uses external dprint.json if available)
+    let formatted = match resolve_dprint_config(timestamp) {
+        Some(ref config_path) => {
+            let result = pipe_dprint(&after_lint, ext, config_path);
+            // Only clean up if it was a temp config (not an external one in CWD)
+            if config_path.contains("reefmt_dprint_config_") {
+                let _ = fs::remove_file(config_path);
+            }
+            result
+        }
+        None => after_lint.clone(),
+    };
+
+    let write_content = if !formatted.is_empty() && !formatted.ends_with('\n') {
+        format!("{}\n", formatted)
+    } else {
+        formatted
+    };
+
+    if write_content == normalized {
+        return false;
+    }
+
+    if check_mode {
+        println!("Would format: {}", path.display());
+    } else {
+        match fs::write(path, &write_content) {
+            Ok(_) => println!("Formatted: {}", path.display()),
+            Err(e) => eprintln!("Error writing {}: {}", path.display(), e),
+        }
+    }
+
+    true
+}
+
+/// Dispatch to the correct formatter based on file extension.
+/// Returns `true` if the file was (or would be) modified.
+fn format_file(path: &Path, check_mode: bool) -> bool {
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    match ext {
+        "ree" => format_ree_file(path, check_mode),
+        "ts" | "js" | "css" => format_code_file(path, check_mode),
+        _ => false,
     }
 }
 
@@ -1134,15 +1213,17 @@ mod tests {
     }
 }
 
-fn collect_ree_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+fn collect_source_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
     if dir.is_dir() {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
-                collect_ree_files(&path, files)?;
-            } else if path.extension().and_then(|s| s.to_str()) == Some("ree") {
-                files.push(path);
+                collect_source_files(&path, files)?;
+            } else if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                if SUPPORTED_EXTENSIONS.contains(&ext) {
+                    files.push(path);
+                }
             }
         }
     }
@@ -1150,7 +1231,15 @@ fn collect_ree_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()
 }
 
 fn main() {
-    let args: Vec<String> = env::args().skip(1).collect();
+    let mut args: Vec<String> = env::args().skip(1).collect();
+
+    // Parse --check / --dry-run / -c flag
+    let check_mode = if let Some(pos) = args.iter().position(|a| a == "--check" || a == "--dry-run" || a == "-c") {
+        args.remove(pos);
+        true
+    } else {
+        false
+    };
 
     if args.len() == 1 && (args[0] == "-v" || args[0] == "--version") {
         println!("reefmt v{}", env!("CARGO_PKG_VERSION"));
@@ -1163,29 +1252,41 @@ fn main() {
         args
     };
 
+    let mut any_modified = false;
+
     for target in targets {
         let path = Path::new(&target);
 
         if path.is_dir() {
             let mut files = Vec::new();
-            if let Err(e) = collect_ree_files(path, &mut files) {
+            if let Err(e) = collect_source_files(path, &mut files) {
                 eprintln!("Error reading directory {}: {}", target, e);
                 continue;
             }
             for file in files {
-                format_file(&file);
+                if format_file(&file, check_mode) {
+                    any_modified = true;
+                }
             }
         } else if path.exists() {
-            format_file(path);
+            if format_file(path, check_mode) {
+                any_modified = true;
+            }
         } else {
             match glob(&target) {
                 Ok(paths) => {
                     for entry in paths.flatten() {
-                        format_file(&entry);
+                        if format_file(&entry, check_mode) {
+                            any_modified = true;
+                        }
                     }
                 }
                 Err(e) => eprintln!("Invalid glob {}: {}", target, e),
             }
         }
+    }
+
+    if check_mode && any_modified {
+        std::process::exit(1);
     }
 }
