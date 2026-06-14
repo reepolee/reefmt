@@ -969,7 +969,7 @@ fn format_ree_file(path: &Path, mode: Mode) -> bool {
     match mode {
         Mode::Write => {
             match fs::write(path, &write_content) {
-                Ok(_) => eprintln!("Formatted: {}", path.display()),
+                Ok(_) => eprintln!("\r\x1b[KFormatted: {}", path.display()),
                 Err(e) => eprintln!("Error writing {}: {}", path.display(), e),
             }
         }
@@ -1046,7 +1046,7 @@ fn format_code_file(path: &Path, mode: Mode) -> bool {
     match mode {
         Mode::Write => {
             match fs::write(path, &write_content) {
-                Ok(_) => eprintln!("Formatted: {}", path.display()),
+                Ok(_) => eprintln!("\r\x1b[KFormatted: {}", path.display()),
                 Err(e) => eprintln!("Error writing {}: {}", path.display(), e),
             }
         }
