@@ -95,4 +95,5 @@ if ! echo ":$PATH:" | grep -q ":$INSTALL_DIR:"; then
 fi
 
 echo ""
-echo "✅ reefmt installed! Run: reefmt --version"
+echo "✅ reefmt installed!"
+"$INSTALL_DIR/$APP" --version

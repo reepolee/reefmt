@@ -64,4 +64,5 @@ if ($paths -notcontains $InstallDir) {
 }
 
 Write-Host ""
-Write-Host "✅ reefmt installed! Run: $AppName --version"
+Write-Host "✅ reefmt installed!"
+& $target --version
