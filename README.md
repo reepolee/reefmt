@@ -1,3 +1,5 @@
+<img src="/github-reepolee.svg" style="margin-bottom:1rem; width:200px">
+
 # reefmt
 
 A formatter for Ree Templates.
