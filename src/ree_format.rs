@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::ree_tags::{protect, restore, protect_html_comments, restore_html_comments, protect_raw_js_blocks, restore_raw_js_blocks};
+use crate::ree_tags::{protect, restore, protect_html_comments, restore_html_comments, protect_raw_js_blocks, restore_raw_js_blocks, protect_script_style_content, restore_script_style_content};
 
 /// Re-indent code based on brace depth.
 pub(crate) fn indent_code(src: &str) -> String {
@@ -266,20 +266,23 @@ fn fix_raw_js_line_breaks(formatted: &str, own_line: &[bool]) -> String {
 ///
 /// Pipeline:
 ///   protect_html_comments
-///   → protect_raw_js_blocks   ({{ ... }} → __REE_RAW_JS_BLOCK_N__)
-///   → ree_to_fake_html        (block tags → <ree-N> pairs, {:else} → split)
-///   → protect                 (remaining inline Ree syntax → __REE_*__ strings)
-///   → pipe_dprint html        (markup_fmt sees valid HTML with real structure)
-///   → restore                 (inline syntax back)
-///   → fake_html_to_ree        (block tags back)
-///   → restore_raw_js_blocks   (raw JS blocks back)
+///   → protect_raw_js_blocks           ({{ ... }} → __REE_RAW_JS_BLOCK_N__)
+///   → protect_script_style_content    (<script>/<style> content → __SS_N__)
+///   → ree_to_fake_html                (block tags → <ree-N> pairs, {:else} → split)
+///   → protect                         (remaining inline Ree syntax → __REE_*__ strings)
+///   → pipe_dprint html                (markup_fmt sees valid HTML with real structure)
+///   → restore                         (inline syntax back)
+///   → fake_html_to_ree                (block tags back)
+///   → restore_script_style_content    (script/style content back)
+///   → restore_raw_js_blocks           (raw JS blocks back)
 ///   → restore_html_comments
 ///
 /// Returns None if dprint produced no change.
 pub(crate) fn format_ree_html_via_dprint(src: &str, config_path: &str) -> Option<String> {
     let (after_comments, html_comments) = protect_html_comments(src.trim());
     let (after_raw_js, raw_js_blocks, raw_js_own_line) = protect_raw_js_blocks(&after_comments);
-    let (after_block_tags, entries) = ree_to_fake_html(&after_raw_js);
+    let (after_script_style, script_style_bodies) = protect_script_style_content(&after_raw_js);
+    let (after_block_tags, entries) = ree_to_fake_html(&after_script_style);
     let protected = protect(&after_block_tags);
 
     let formatted = crate::format::pipe_dprint(&protected, "html", config_path);
@@ -296,6 +299,7 @@ pub(crate) fn format_ree_html_via_dprint(src: &str, config_path: &str) -> Option
 
     let restored = restore(&formatted);
     let restored = fake_html_to_ree(&restored, &entries);
+    let restored = restore_script_style_content(&restored, &script_style_bodies);
     let restored = restore_raw_js_blocks(&restored, &raw_js_blocks);
     Some(restore_html_comments(&restored, &html_comments))
 }

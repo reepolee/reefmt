@@ -120,6 +120,81 @@ pub(crate) fn protect_raw_js_blocks(src: &str) -> (String, Vec<String>, Vec<bool
     (result, placeholders, own_line)
 }
 
+/// Protect the content inside `<script>` and `<style>` tags with opaque placeholders
+/// before Ree→fake-HTML conversion. This prevents Ree block tags (`{#if}`, `{#each}`,
+/// `{#with}`) that appear inside `<script>` or `<style>` content from being converted
+/// to fake HTML elements (`<ree-N>`), which would cause dprint's markup_fmt to fail
+/// since HTML elements are not valid inside `<script>` or `<style>` content.
+///
+/// Returns (protected_string, placeholders) where placeholders[i] is the original
+/// content that was inside the script/style tag.
+pub(crate) fn protect_script_style_content(src: &str) -> (String, Vec<String>) {
+    let mut result = String::new();
+    let mut placeholders: Vec<String> = Vec::new();
+    let mut rest = src;
+
+    while let Some(start) = rest.find('<') {
+        // Check if this is a <script or <style opening tag
+        let after_open = &rest[start..];
+        let is_script = after_open.starts_with("<script");
+        let is_style = after_open.starts_with("<style");
+
+        if !is_script && !is_style {
+            result.push_str(&rest[..start + 1]);
+            rest = &rest[start + 1..];
+            continue;
+        }
+
+        // Find the end of the opening tag (the closing >)
+        let tag_start = start;
+        let _tag_prefix = if is_script { "<script" } else { "<style" };
+        let close_tag = if is_script { "</script>" } else { "</style>" };
+
+        let Some(open_tag_end) = rest[tag_start..].find('>') else {
+            result.push_str(&rest[..start + 1]);
+            rest = &rest[start + 1..];
+            continue;
+        };
+        let open_tag_close = tag_start + open_tag_end + 1;
+
+        // Find the closing </script> or </style>
+        let content_start = open_tag_close;
+        let after_content = &rest[content_start..];
+        let Some(close_pos) = after_content.find(close_tag) else {
+            result.push_str(&rest[..start + 1]);
+            rest = &rest[start + 1..];
+            continue;
+        };
+        let content_end = content_start + close_pos;
+        let close_end = content_end + close_tag.len();
+
+        // Push the open tag
+        result.push_str(&rest[..open_tag_close]);
+
+        // Extract the content and replace with placeholder
+        let content = rest[content_start..content_end].to_string();
+        placeholders.push(content);
+        let ph = format!("__SS{}__", placeholders.len() - 1);
+        result.push_str(&ph);
+        result.push_str(close_tag);
+
+        rest = &rest[close_end..];
+    }
+
+    result.push_str(rest);
+    (result, placeholders)
+}
+
+/// Restore script/style tag content from their placeholders.
+pub(crate) fn restore_script_style_content(src: &str, placeholders: &[String]) -> String {
+    let mut result = src.to_string();
+    for (i, content) in placeholders.iter().enumerate() {
+        let placeholder = format!("__SS{}__", i);
+        result = result.replace(&placeholder, content);
+    }
+    result
+}
+
 /// Restore raw JS blocks from their placeholders.
 pub(crate) fn restore_raw_js_blocks(src: &str, placeholders: &[String]) -> String {
     let mut result = src.to_string();
