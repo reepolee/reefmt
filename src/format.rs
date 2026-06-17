@@ -42,6 +42,19 @@ fn preprocess_for_swc(code: &str) -> (String, Vec<Placeholder>) {
     (pass2, placeholders)
 }
 
+/// Copy a single UTF-8 character from position `i` in `code` to `out`.
+/// Advances `i` past the consumed bytes.
+fn copy_utf8_char(code: &str, bytes: &[u8], out: &mut String, i: &mut usize) {
+    if *i < bytes.len() && bytes[*i] & 0x80 == 0 {
+        out.push(bytes[*i] as char);
+        *i += 1;
+    } else {
+        let ch = code[*i..].chars().next().unwrap();
+        out.push(ch);
+        *i += ch.len_utf8();
+    }
+}
+
 /// Scan character-by-character to find block comments on their own line
 /// and replace them with `// __REEFMT_BLOCK_N__` placeholders.
 /// Properly skips string literals, template literals, and single-line comments.
@@ -52,22 +65,6 @@ fn extract_block_comments(code: &str, placeholders: &mut Vec<Placeholder>, id: &
     let mut i = 0;
 
     while i < len {
-        // Helper: copy a single UTF-8 character from position i to out.
-        // Returns the number of bytes consumed.
-        macro_rules! copy_char {
-            () => {{
-                if bytes[i] & 0x80 == 0 {
-                    // ASCII byte — push directly
-                    out.push(bytes[i] as char);
-                    i += 1
-                } else {
-                    // Multi-byte UTF-8 — read the full char from the str slice
-                    let ch = code[i..].chars().next().unwrap();
-                    out.push(ch);
-                    i += ch.len_utf8()
-                }
-            }};
-        }
 
         // Skip double-quoted strings
         if bytes[i] == b'"' {
@@ -78,13 +75,13 @@ fn extract_block_comments(code: &str, placeholders: &mut Vec<Placeholder>, id: &
                 if b == b'\\' && i + 1 < len {
                     out.push('\\');
                     i += 1;
-                    copy_char!();
+                    copy_utf8_char(code, bytes, &mut out, &mut i);
                 } else if b == b'"' {
                     out.push('"');
                     i += 1;
                     break;
                 } else {
-                    copy_char!();
+                    copy_utf8_char(code, bytes, &mut out, &mut i);
                 }
             }
             continue;
@@ -99,13 +96,13 @@ fn extract_block_comments(code: &str, placeholders: &mut Vec<Placeholder>, id: &
                 if b == b'\\' && i + 1 < len {
                     out.push('\\');
                     i += 1;
-                    copy_char!();
+                    copy_utf8_char(code, bytes, &mut out, &mut i);
                 } else if b == b'\'' {
                     out.push('\'');
                     i += 1;
                     break;
                 } else {
-                    copy_char!();
+                    copy_utf8_char(code, bytes, &mut out, &mut i);
                 }
             }
             continue;
@@ -136,7 +133,7 @@ fn extract_block_comments(code: &str, placeholders: &mut Vec<Placeholder>, id: &
                     i += 1;
                     break;
                 } else {
-                    copy_char!();
+                    copy_utf8_char(code, bytes, &mut out, &mut i);
                 }
             }
             continue;
@@ -145,7 +142,7 @@ fn extract_block_comments(code: &str, placeholders: &mut Vec<Placeholder>, id: &
         // Skip single-line `//` comments
         if bytes[i] == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
             while i < len && bytes[i] != b'\n' {
-                copy_char!();
+                copy_utf8_char(code, bytes, &mut out, &mut i);
             }
             if i < len {
                 out.push('\n');
@@ -190,7 +187,7 @@ fn extract_block_comments(code: &str, placeholders: &mut Vec<Placeholder>, id: &
         }
 
         // Regular character (or start of multi-byte UTF-8)
-        copy_char!();
+        copy_utf8_char(code, bytes, &mut out, &mut i);
     }
 
     out
