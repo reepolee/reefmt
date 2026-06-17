@@ -1,6 +1,5 @@
 mod ree_format;
 mod format;
-mod cache;
 mod ree_parser;
 mod swc_format;
 
@@ -222,11 +221,6 @@ fn main() {
         args.retain(|a| a != "--check" && a != "--dry-run" && a != "-c");
     }
 
-    let no_cache = args.iter().position(|a| a == "--no-cache").is_some();
-    if no_cache {
-        args.retain(|a| a != "--no-cache");
-    }
-
     let git_mode = args.iter().position(|a| a == "--git").is_some();
     if git_mode {
         args.retain(|a| a != "--git");
@@ -298,7 +292,7 @@ fn main() {
 	"skipDirs": ["node_modules", "vendor", "vendors", "dist", "templates", "static"],
 
 	// Glob patterns for files to skip.
-	"skipFiles": [".reefmt-cache"],
+	"skipFiles": [],
 
 	// File extensions to format.
 	"extensions": ["ree", "ts", "js", "css"],
@@ -364,32 +358,11 @@ fn main() {
         return; // No uncommitted changes — nothing to do
     }
 
-    if no_cache {
-        all_files.par_iter().for_each(|file| {
-            if format::format_file(file, mode, &config) {
-                any_modified.store(true, Ordering::SeqCst);
-            }
-        });
-    } else {
-        let mut cache = cache::FormatCache::load();
-        let uncached: Vec<PathBuf> = all_files
-            .into_iter()
-            .filter(|f| !cache.is_fresh(f))
-            .collect();
-
-        if !uncached.is_empty() {
-            uncached.par_iter().for_each(|file| {
-                if format::format_file(file, mode, &config) {
-                    any_modified.store(true, Ordering::SeqCst);
-                }
-            });
-
-            for file in &uncached {
-                cache.mark_fresh(file);
-            }
-            cache.save();
+    all_files.par_iter().for_each(|file| {
+        if format::format_file(file, mode, &config) {
+            any_modified.store(true, Ordering::SeqCst);
         }
-    }
+    });
 
     if mode != format::Mode::Write && any_modified.load(Ordering::SeqCst) {
         std::process::exit(1);

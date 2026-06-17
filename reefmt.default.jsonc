@@ -6,13 +6,12 @@
 		"vendor",
 		"vendors",
 		"dist",
-		"static"
+		"static",
+		"templates"
 	],
 	// Glob patterns for files to skip (e.g. "generator/templates/**/*.ts").
 	// Matches file paths relative to the project root.
-	"skipFiles": [
-		"templates/**/*.ts"
-	],
+	"skipFiles": [],
 	// File extensions to format. Only files with these extensions will be
 	// picked up during recursive directory walks or glob matching.
 	"extensions": [
