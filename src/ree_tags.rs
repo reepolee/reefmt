@@ -130,6 +130,72 @@ pub(crate) fn restore_raw_js_blocks(src: &str, placeholders: &[String]) -> Strin
     result
 }
 
+/// Find the position just past the balanced closing `}` starting from
+/// the opening `{`. Handles nested braces.
+fn find_balanced_brace_end(src: &str) -> usize {
+    let mut depth = 0usize;
+    for (i, c) in src.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return i + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    src.len()
+}
+
+/// Protect entire Ree inline expressions by replacing the full `{...}` pair
+/// with an opaque placeholder. This prevents dprint's markup_fmt from seeing
+/// stray `}` characters that it interprets as template syntax errors.
+///
+/// Must be called AFTER `ree_to_fake_html` and BEFORE `protect()`.
+pub(crate) fn protect_ree_expressions(src: &str) -> (String, Vec<String>) {
+    let mut result = String::new();
+    let mut placeholders: Vec<String> = Vec::new();
+    let mut rest = src;
+
+    while let Some(pos) = rest.find('{') {
+        let after = &rest[pos..];
+
+        let is_ree = after.starts_with("{=")
+            || after.starts_with("{~")
+            || after.starts_with("{@")
+            || after.starts_with("{#layout")
+            || after.starts_with("{#include");
+
+        if is_ree {
+            result.push_str(&rest[..pos]);
+            let end = find_balanced_brace_end(after);
+            let expr = &after[..end];
+            placeholders.push(expr.to_string());
+            let ph = format!("__RIP{}__", placeholders.len() - 1);
+            result.push_str(&ph);
+            rest = &after[end..];
+        } else {
+            result.push_str(&rest[..pos + 1]);
+            rest = &rest[pos + 1..];
+        }
+    }
+
+    result.push_str(rest);
+    (result, placeholders)
+}
+
+/// Restore Ree inline expressions from their placeholders.
+pub(crate) fn restore_ree_expressions(src: &str, placeholders: &[String]) -> String {
+    let mut result = src.to_string();
+    for (i, expr) in placeholders.iter().enumerate() {
+        let placeholder = format!("__RIP{}__", i);
+        result = result.replace(&placeholder, expr);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
