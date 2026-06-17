@@ -280,7 +280,7 @@ fn main() {
 
         let formatted = match ext {
             "ree" => ree_format::format_ree_content(&input, config.wrap_width),
-            "ts" | "js" | "css" => format::format_code_content(&input, ext),
+            "ts" | "js" | "css" => format::format_code_content(&input, ext, config.wrap_width),
             _ => {
                 eprintln!("Unsupported extension for --stdin: .{}", ext);
                 std::process::exit(1);
