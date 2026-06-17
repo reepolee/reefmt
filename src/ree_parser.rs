@@ -187,7 +187,7 @@ fn find_next_special_in_raw(input: &str, close_marker: &str) -> usize {
 fn parse_token(input: &str) -> (Option<Node>, &str) {
     if input.starts_with("<!--") {
         parse_comment(input)
-    } else if input.starts_with("<!DOCTYPE") || input.starts_with("<!doctype") {
+    } else if input.to_ascii_lowercase().starts_with("<!doctype") {
         // DOCTYPE is a special SGML declaration, not an HTML element.
         // Emit it as raw text up to (and including) the closing >.
         if let Some(end) = input.find('>') {
@@ -210,22 +210,36 @@ fn parse_token(input: &str) -> (Option<Node>, &str) {
         parse_ree_block_open(input)
     } else if input.starts_with("{#layout") || input.starts_with("{#include") {
         parse_ree_directive(input)
+    } else if input.starts_with("{/if") || input.starts_with("{/each") || input.starts_with("{/with") {
+        parse_ree_block_close(input)
     } else if input.starts_with("{:else") {
         let end = find_brace_end(input);
         if end > 0 {
             (Some(Node::Text(input[..end].to_string())), &input[end..])
         } else {
-            (Some(Node::Text(input[..1].to_string())), &input[1..])
+            // UTF-8 safe single character fallback
+            let ch = input.chars().next().unwrap();
+            let next = &input[ch.len_utf8()..];
+            (Some(Node::Text(ch.to_string())), next)
         }
     } else if input.starts_with("{=") {
         parse_ree_inline(input, 2, true)
     } else if input.starts_with("{~") {
-        parse_ree_inline(input, 2, false)            } else if input.starts_with("{{") {
-                parse_ree_raw_js(input)
-            } else if let Some(rest) = input.strip_prefix('{') {
-		(Some(Node::Text(input[..1].to_string())), rest)
-	} else {
-        (Some(Node::Text(input[..1].to_string())), &input[1..])
+        parse_ree_inline(input, 2, false)
+    } else if input.starts_with("{{") {
+        parse_ree_raw_js(input)
+    } else if let Some(rest) = input.strip_prefix('{') {
+        // UTF-8 safe single character fallback for rogue braces
+        let ch = input.chars().next().unwrap();
+        (Some(Node::Text(ch.to_string())), rest)
+    } else {
+        // UTF-8 safe character slicing for text consumption
+        let mut chars = input.chars();
+        if let Some(ch) = chars.next() {
+            (Some(Node::Text(ch.to_string())), chars.as_str())
+        } else {
+            (None, "")
+        }
     }
 }
 
@@ -481,6 +495,20 @@ fn skip_ree_close<'a>(input: &'a str, keyword: &str) -> &'a str {
         &input[offset + c2.len()..]
     } else {
         input
+    }
+}
+
+// ── Ree Block Close ──────────────────────────────────────────
+
+fn parse_ree_block_close(input: &str) -> (Option<Node>, &str) {
+    let end = find_brace_end(input);
+    if end > 0 {
+        (Some(Node::Text(input[..end].to_string())), &input[end..])
+    } else {
+        // UTF-8 safe fallback for unclosed `{/...`
+        let ch = input.chars().next().unwrap();
+        let next = &input[ch.len_utf8()..];
+        (Some(Node::Text(ch.to_string())), next)
     }
 }
 

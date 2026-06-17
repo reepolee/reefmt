@@ -558,6 +558,12 @@ fn collapse_inline_type_literals(code: &str, max_width: usize, max_members: usiz
     result
 }
 
+/// Check if a trimmed line is a simple identifier (alphanumeric, _, $, .)
+/// Used to validate object literal shorthand properties like `width, height`.
+fn is_simple_ident(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$' || c == '.')
+}
+
 /// Check if a trimmed line is a block opener like `if (cond) {` or `for (;;) {`
 fn is_block_opener(trimmed: &str) -> bool {
     // Must end with `{` and the character before must be `)`
@@ -646,6 +652,121 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, max_members: u
             }
         }
 
+        // ---- Standalone object literal: `return { key: val }`, `const x = { key: val }` ----
+        // Detects lines ending with `{` that are NOT block openers (if/for/while)
+        // and NOT function call arguments.
+        if i + 2 < lines.len() && trimmed.ends_with('{') && !is_block_opener(trimmed) && !is_obj_lit_opener(trimmed) {
+            let mut depth = 1u32;
+            let mut closing = None;
+            for j in i + 1..lines.len() {
+                for (byte_pos, ch) in lines[j].char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => { depth -= 1; if depth == 0 { closing = Some((j, byte_pos + 1)); break; } }
+                        _ => {}
+                    }
+                }
+                if closing.is_some() { break; }
+            }
+
+            if let Some((end_idx, after_close)) = closing {
+                let body: Vec<&str> = (i + 1..end_idx)
+                    .map(|j| lines[j].trim())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+
+                // Validate: body must contain no statements (no `;`), and each line
+                // must be a key:value pair, shorthand identifier, or spread operator.
+                let is_valid_obj = !body.is_empty() && body.len() <= max_members && body.iter().all(|l| {
+                    let cleaned = l.trim_end_matches(',').trim();
+                    // No statements (`;`), no nested un-collapsed braces (`{`, `}`)
+                    !cleaned.contains(';') && !cleaned.contains('{') && !cleaned.contains('}')
+                        && (cleaned.contains(':') || cleaned.starts_with("...") || is_simple_ident(cleaned))
+                });
+
+                if is_valid_obj {
+                    let prefix = &line[..line.len() - trimmed.len()];
+                    let before_brace = trimmed.strip_suffix('{').unwrap_or(trimmed);
+                    let after_close_str = &lines[end_idx][after_close..];
+                    let members: Vec<&str> = body.iter()
+                        .map(|l| l.trim_end_matches(',').trim()).collect();
+
+                    let collapsed = format!(
+                        "{}{}{{ {} }}{}",
+                        prefix, before_brace, members.join(", "), after_close_str
+                    );
+
+                    if collapsed.len() <= max_width {
+                        out.push_str(&collapsed);
+                        out.push('\n');
+                        i = end_idx + 1;
+                        modified = true;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // ---- Array literal: `const arr = [...vals]`, `fn([...args], ...)` ----
+        // Detects lines ending with `[` that look like array literals
+        // (not bracket access like `arr[`). The char before `[` must not
+        // be alphanumeric, `_`, `)`, or `]` — which would indicate
+        // property/index access.
+        if i + 2 < lines.len() && trimmed.ends_with('[') {
+            let before = trimmed[..trimmed.len() - 1].trim_end();
+            let is_bracket_access = before.chars().last().is_some_and(|c| {
+                c.is_alphanumeric() || c == '_' || c == ')' || c == ']'
+            });
+            if !is_bracket_access {
+                let mut depth = 1u32;
+                let mut closing = None;
+                for j in i + 1..lines.len() {
+                    for (byte_pos, ch) in lines[j].char_indices() {
+                        match ch {
+                            '[' => depth += 1,
+                            ']' => { depth -= 1; if depth == 0 { closing = Some((j, byte_pos + 1)); break; } }
+                            _ => {}
+                        }
+                    }
+                    if closing.is_some() { break; }
+                }
+
+                if let Some((end_idx, after_close)) = closing {
+                    let body: Vec<&str> = (i + 1..end_idx)
+                        .map(|j| lines[j].trim())
+                        .filter(|l| !l.is_empty())
+                        .collect();
+
+                    // Validate: body must contain no statements (no `;`), no nested arrays
+                    let is_valid_arr = !body.is_empty() && body.len() <= max_members && body.iter().all(|l| {
+                        let cleaned = l.trim_end_matches(',').trim();
+                        !cleaned.contains(';') && !cleaned.contains('[') && !cleaned.contains(']')
+                    });
+
+                    if is_valid_arr {
+                        let prefix = &line[..line.len() - trimmed.len()];
+                        let before_bracket = trimmed.strip_suffix('[').unwrap_or(trimmed);
+                        let after_close_str = &lines[end_idx][after_close..];
+                        let members: Vec<&str> = body.iter()
+                            .map(|l| l.trim_end_matches(',').trim()).collect();
+
+                        let collapsed = format!(
+                            "{}{}[{}]{}",
+                            prefix, before_bracket, members.join(", "), after_close_str
+                        );
+
+                        if collapsed.len() <= max_width {
+                            out.push_str(&collapsed);
+                            out.push('\n');
+                            i = end_idx + 1;
+                            modified = true;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
         out.push_str(line);
         out.push('\n');
         i += 1;
@@ -674,9 +795,9 @@ pub(crate) fn collapse_single_stmt_blocks(code: &str, max_width: usize, max_memb
 }
 
 /// Check if a trimmed line represents a function call with an object literal
-/// as an argument, e.g. `foo({` or `foo(arg, {`.
+/// as an argument, e.g. `foo({`, `foo(arg, {`, or `foo([...], {`.
 /// Must end with `{` (after trimming), must not be a block opener like
-/// `if (cond) {`, and must have a `(` somewhere before the `{`.
+/// `if (cond) {`, and must have `(`, `,`, or `]` before the `{`.
 fn is_obj_lit_opener(trimmed: &str) -> bool {
     if !trimmed.ends_with('{') {
         return false;
@@ -684,8 +805,11 @@ fn is_obj_lit_opener(trimmed: &str) -> bool {
     if is_block_opener(trimmed) {
         return false;
     }
-    // Must have a `(` before the `{`, indicating a function call.
-    trimmed[..trimmed.len() - 1].contains('(')
+    // Check the character just before `{` (after trimming whitespace).
+    // `(` means direct call `foo({`, `,` means after another arg `foo(a, {`,
+    // `]` means after an array literal `foo([...], {`.
+    let before_brace = trimmed[..trimmed.len() - 1].trim_end();
+    before_brace.ends_with('(') || before_brace.ends_with(',') || before_brace.ends_with(']')
 }
 
 /// Ensures proper spacing around arrow function `=>` tokens:
@@ -1230,6 +1354,86 @@ mod tests {
         let src = "\tif (cond) {\n\t\tfn(veryLongFunctionName, extremelyLongArgumentThatExceedsFiftyCharacters);\n\t}\n";
         let result = collapse_single_stmt_blocks(src, 50, 3);
         assert_eq!(result, src, "Should stay multi-line if collapsed line exceeds max_width");
+    }
+
+    #[test]
+    fn collapse_array_simple() {
+        // Simple array literal should collapse
+        let src = "\tconst arr = [\n\t\t\"vipsheader\",\n\t\tsafe_path\n\t];\n";
+        let result = collapse_single_stmt_blocks(src, 180, 3);
+        assert_eq!(
+            result,
+            "\tconst arr = [\"vipsheader\", safe_path];\n"
+        );
+    }
+
+    #[test]
+    fn collapse_array_already_collapsed() {
+        let src = "\tconst arr = [\"a\", \"b\"];\n";
+        let result = collapse_single_stmt_blocks(src, 180, 3);
+        assert_eq!(result, src);
+    }
+
+    #[test]
+    fn collapse_array_too_wide() {
+        let src = "\tconst arr = [\n\t\tone,\n\t\ttwo\n\t];\n";
+        // "\tconst arr = [one, two];" = 24 chars, so at width 23 it should NOT collapse
+        let result = collapse_single_stmt_blocks(src, 23, 3);
+        assert_eq!(result, src);
+    }
+
+    #[test]
+    fn collapse_array_with_obj_lit_after() {
+        // Both the array and the obj literal should collapse
+        let src = "\tconst proc = Bun.spawn([\n\t\t\"vipsheader\",\n\t\tsafe_path\n\t], {\n\t\twindowsHide: true\n\t});\n";
+        let result = collapse_single_stmt_blocks(src, 180, 3);
+        assert_eq!(
+            result,
+            "\tconst proc = Bun.spawn([\"vipsheader\", safe_path], { windowsHide: true });\n"
+        );
+    }
+
+    #[test]
+    fn collapse_standalone_return_obj_lit() {
+        // `return { width, height }` should collapse. Then the function body becomes
+        // a single statement, so the entire `function foo() { return { ... }; }` collapses.
+        let src = "\tfunction foo() {\n\t\treturn {\n\t\t\twidth,\n\t\t\theight\n\t\t};\n\t}\n";
+        let result = collapse_single_stmt_blocks(src, 180, 3);
+        assert_eq!(
+            result,
+            "\tfunction foo() { return { width, height }; }\n"
+        );
+    }
+
+    #[test]
+    fn collapse_standalone_const_obj_lit() {
+        // `const x = { a: 1, b: 2 }` should collapse when it fits.
+        let src = "\tconst x = {\n\t\ta: 1,\n\t\tb: 2\n\t};\n";
+        let result = collapse_single_stmt_blocks(src, 180, 3);
+        assert_eq!(
+            result,
+            "\tconst x = { a: 1, b: 2 };\n"
+        );
+    }
+
+    #[test]
+    fn collapse_standalone_obj_too_wide_stays_multi() {
+        // Should stay multi-line when collapsed line exceeds max_width
+        let src = "\treturn {\n\t\twidth,\n\t\theight\n\t};\n";
+        // "\treturn { width, height };" = 26 chars, so at width 25 it should NOT collapse
+        let result = collapse_single_stmt_blocks(src, 25, 3);
+        assert_eq!(result, src);
+    }
+
+    #[test]
+    fn collapse_standalone_obj_with_spread() {
+        // Object literal with spread should collapse
+        let src = "\treturn {\n\t\t...obj,\n\t\tkey: val\n\t};\n";
+        let result = collapse_single_stmt_blocks(src, 180, 3);
+        assert_eq!(
+            result,
+            "\treturn { ...obj, key: val };\n"
+        );
     }
 
     // ─── Narrow wrapWidth boundary tests ──────────────────────────
