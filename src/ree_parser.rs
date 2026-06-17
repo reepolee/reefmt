@@ -134,14 +134,7 @@ fn find_next_special(input: &str) -> usize {
         }
         match bytes[i] {
             b'<' => {
-                if i + 3 < len && bytes[i+1] == b'!' && bytes[i+2] == b'-' && bytes[i+3] == b'-' {
-                    if let Some(end) = input[i+4..].find("-->") {
-                        i += end + 4 + 3;
-                        continue;
-                    } else {
-                        return len;
-                    }
-                }
+                // Don't skip HTML comments — return the position so parse_token handles them
                 return i;
             }
             b'{' => {
@@ -192,14 +185,7 @@ fn find_next_special_in_raw(input: &str, close_marker: &str) -> usize {
                 continue;
             }
             b'<' => {
-                if i + 3 < len && bytes[i+1] == b'!' && bytes[i+2] == b'-' && bytes[i+3] == b'-' {
-                    if let Some(end) = input[i+4..].find("-->") {
-                        i += end + 4 + 3;
-                        continue;
-                    } else {
-                        return len;
-                    }
-                }
+                // Don't skip HTML comments inside script/style — return position
                 return i;
             }
             _ => {}
@@ -321,6 +307,14 @@ fn parse_html_tag(input: &str) -> (Option<Node>, &str) {
 
     if remaining.starts_with('>') {
         let after_gt = &remaining[1..];
+
+        // Void elements (input, br, hr, etc.) don't have children — treat as self-closing
+        if is_void_element(&tag) {
+            return (
+                Some(Node::Element { tag, attrs, children: vec![], self_closing: true }),
+                after_gt,
+            );
+        }
 
         if tag.eq_ignore_ascii_case("script") || tag.eq_ignore_ascii_case("style") {
             let close = format!("</{}", tag.to_lowercase());
@@ -693,12 +687,13 @@ fn print_node(node: &Node, depth: usize, out: &mut String) {
             if trimmed.is_empty() {
                 // Preserve blank lines (2+ newlines) but skip single newlines
                 // since block element formatting already adds newlines.
+                // Example: \n\n (2 newlines) -> 1 blank line; \n (1 newline) -> no blank line
                 let blank_lines = text.matches('\n').count().saturating_sub(1);
                 for _ in 0..blank_lines {
                     out.push('\n');
                 }
             } else if trimmed.contains('\n') {
-                // Multi-line text (e.g. raw JS/CSS): indent every line
+                // Multi-line text: indent every non-empty line
                 let lines: Vec<&str> = trimmed.lines().collect();
                 for (i, line) in lines.iter().enumerate() {
                     let t = line.trim();
@@ -710,7 +705,11 @@ fn print_node(node: &Node, depth: usize, out: &mut String) {
                         out.push('\n');
                     }
                 }
-                out.push('\n');
+                // Don't add trailing newline — parent element handles it
+                // unless there are trailing newlines in the text itself
+                if trimmed.ends_with('\n') {
+                    out.push('\n');
+                }
             } else {
                 out.push_str(&"\t".repeat(depth));
                 out.push_str(trimmed);
@@ -792,24 +791,24 @@ fn print_inline_element(tag: &str, attrs: &[String], children: &[Node], depth: u
     let closing = format!("</{}>", tag);
     let total = format!("{}{}{}", tag_open, content, closing);
 
-    if total.len() <= 140 {
+    if total.len() <= 160 {
         out.push_str(&"\t".repeat(depth));
         out.push_str(&total);
         out.push('\n');
-    } else if attrs.len() >= 3 && tag_open.len() > 80 {
+    } else if attrs.len() >= 4 && tag_open.len() > 150 {
         // Many/long attributes — split each onto its own line
         out.push_str(&"\t".repeat(depth));
         out.push('<');
         out.push_str(tag);
         out.push('\n');
-        for attr in attrs {
+        for (i, attr) in attrs.iter().enumerate() {
             out.push_str(&"\t".repeat(depth + 1));
             out.push_str(attr);
+            if i == attrs.len() - 1 {
+                out.push_str(">");
+            }
             out.push('\n');
         }
-        out.push_str(&"\t".repeat(depth));
-        out.push('>');
-        out.push('\n');
         out.push_str(&"\t".repeat(depth + 1));
         out.push_str(content.trim());
         out.push('\n');
@@ -866,7 +865,7 @@ fn print_block_element(tag: &str, attrs: &[String], children: &[Node], depth: us
 }
 
 fn is_text_only(children: &[Node]) -> bool {
-    children.iter().all(|n| matches!(n, Node::Text(_) | Node::ReeExpr(_) | Node::ReeCall(_)))
+    children.iter().all(|n| matches!(n, Node::Text(_) | Node::ReeExpr(_) | Node::ReeCall(_) | Node::Comment(_)))
 }
 
 fn is_script_or_style(tag: &str) -> bool {
@@ -887,6 +886,7 @@ fn render_children_text(children: &[Node]) -> String {
             Node::Text(t) => parts.push(t.trim().to_string()),
             Node::ReeExpr(e) => parts.push(format!("{{= {}}}", e)),
             Node::ReeCall(e) => parts.push(format!("{{~ {}}}", e)),
+            Node::Comment(c) => parts.push(c.trim().to_string()),
             _ => parts.push("[complex]".to_string()),
         }
     }
