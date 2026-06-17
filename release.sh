@@ -278,6 +278,15 @@ fi
 echo "  Installed to $install_dir/$APP"
 
 # ──────────────────────────────────────────────
+# Cleanup copied binary from project root
+# ──────────────────────────────────────────────
+
+echo ""
+echo "→ Cleaning up..."
+rm "./$binary_name"
+echo "  Removed ./$binary_name"
+
+# ──────────────────────────────────────────────
 # Done
 # ──────────────────────────────────────────────
 
