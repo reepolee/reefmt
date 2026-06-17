@@ -14,6 +14,8 @@ use std::{
 use glob::glob;
 use rayon::prelude::*;
 
+fn default_true() -> bool { true }
+
 /// Reefmt configuration — loaded from `reefmt.jsonc` in the project root.
 /// Run `reefmt --init` to create one.
 #[derive(Deserialize)]
@@ -32,6 +34,10 @@ pub(crate) struct ReeConfig {
     /// Maximum line width before elements are broken onto multiple lines.
     #[serde(rename = "wrapWidth")]
     wrap_width: usize,
+    /// When true, single-statement blocks and object literal function params
+    /// are collapsed onto one line when they fit within wrapWidth.
+    #[serde(rename = "collapseSingleStatementBlocks", default = "default_true")]
+    collapse_single_stmt_blocks: bool,
 }
 
 
@@ -279,8 +285,8 @@ fn main() {
         let ext = ext.trim_start_matches('.');
 
         let formatted = match ext {
-            "ree" => ree_format::format_ree_content(&input, config.wrap_width),
-            "ts" | "js" | "css" => format::format_code_content(&input, ext, config.wrap_width),
+            "ree" => ree_format::format_ree_content(&input, config.wrap_width, config.collapse_single_stmt_blocks),
+            "ts" | "js" | "css" => format::format_code_content(&input, ext, config.wrap_width, config.collapse_single_stmt_blocks),
             _ => {
                 eprintln!("Unsupported extension for --stdin: .{}", ext);
                 std::process::exit(1);
@@ -377,6 +383,7 @@ mod tests {
             extensions: vec!["ree".to_string()],
             skip_dot_dirs: false,
             wrap_width: 120,
+            collapse_single_stmt_blocks: true,
         };
         let modified = format::format_file(&path, format::Mode::Write, &config);
         assert!(!modified, "format_file should return false for unsupported extension");
@@ -392,7 +399,7 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, format::Mode::Check, 120);
+        let modified = crate::ree_format::format_ree_file(&path, format::Mode::Check, 120, true);
         assert!(modified, "Check mode should return true when file would change");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, unformatted, "Check mode should not modify the file");
@@ -426,6 +433,7 @@ mod tests {
             extensions: vec!["ts".to_string()],
             skip_dot_dirs: false,
             wrap_width: 120,
+            collapse_single_stmt_blocks: true,
         };
 
         let matched = Path::new("generator/templates/ui/button.ts");

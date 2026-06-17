@@ -123,6 +123,7 @@ The file supports JSON comments (`//` and `/* */`) for inline documentation.
 | `extensions` | `string[]` | `["ree", "ts", "js", "css"]` | File extensions to format. |
 | `skipDotDirs` | `boolean` | `true` | Skip directories whose name starts with a dot (e.g. `.git`, `.next`, `.cache`, `.svelte-kit`). |
 | `wrapWidth` | `number` | `180` | Maximum line width before elements are broken onto multiple lines. |
+| `collapseSingleStatementBlocks` | `boolean` | `true` | When enabled, single-statement blocks (`if`, `for`, `while`, etc.) and object literal function params (`fn({ key: val })`) collapse onto one line when they fit within `wrapWidth`. |
 
 ### Example config:
 
@@ -131,7 +132,8 @@ The file supports JSON comments (`//` and `/* */`) for inline documentation.
 	"skipDirs": ["node_modules", "vendor", "dist", ".output"],
 	"extensions": ["ree", "ts", "js", "css", "jsx"],
 	"skipDotDirs": true,
-	"wrapWidth": 180
+	"wrapWidth": 180,
+	"collapseSingleStatementBlocks": true
 }
 ```
 
