@@ -9,7 +9,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::Command,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
 };
 use glob::glob;
 use rayon::prelude::*;
@@ -28,6 +28,9 @@ pub(crate) struct ReeConfig {
     /// Whether to skip dot directories (folders starting with '.').
     #[serde(rename = "skipDotDirs")]
     skip_dot_dirs: bool,
+    /// Maximum line width before elements are broken onto multiple lines.
+    #[serde(rename = "wrapWidth")]
+    wrap_width: usize,
 }
 
 impl Default for ReeConfig {
@@ -49,6 +52,7 @@ impl Default for ReeConfig {
             ],
             skip_files: vec![],
             skip_dot_dirs: true,
+            wrap_width: 120,
         }
     }
 }
@@ -221,6 +225,11 @@ fn main() {
         args.retain(|a| a != "--check" && a != "--dry-run" && a != "-c");
     }
 
+    let verbose = args.iter().position(|a| a == "--verbose").is_some();
+    if verbose {
+        args.retain(|a| a != "--verbose");
+    }
+
     let git_mode = args.iter().position(|a| a == "--git").is_some();
     if git_mode {
         args.retain(|a| a != "--git");
@@ -233,6 +242,8 @@ fn main() {
     } else {
         format::Mode::Write
     };
+
+    let config = load_config();
 
     // Parse --stdin flag
     let stdin_mode = args.iter().position(|a| a == "--stdin");
@@ -256,7 +267,7 @@ fn main() {
         let ext = ext.trim_start_matches('.');
 
         let formatted = match ext {
-            "ree" => ree_format::format_ree_content(&input),
+            "ree" => ree_format::format_ree_content(&input, config.wrap_width),
             "ts" | "js" | "css" => format::format_code_content(&input, ext),
             _ => {
                 eprintln!("Unsupported extension for --stdin: .{}", ext);
@@ -298,9 +309,11 @@ fn main() {
 	"extensions": ["ree", "ts", "js", "css"],
 
 	// Whether to skip dot-directories.
-	"skipDotDirs": true
-}
-"##;
+	"skipDotDirs": true,
+
+	// Maximum line width before elements are broken onto multiple lines.
+	"wrapWidth": 120
+}"##;
         match fs::write(&config_path, template.trim_start()) {
             Ok(_) => {
                 println!("Created: {}", config_path.display());
@@ -320,8 +333,9 @@ fn main() {
         args
     };
 
-    let config = load_config();
-    let any_modified = AtomicBool::new(false);
+    let modified_count = AtomicU64::new(0);
+
+    let start = std::time::Instant::now();
 
     // Collect files to format
     let all_files: Vec<PathBuf> = if git_mode {
@@ -360,11 +374,24 @@ fn main() {
 
     all_files.par_iter().for_each(|file| {
         if format::format_file(file, mode, &config) {
-            any_modified.store(true, Ordering::SeqCst);
+            modified_count.fetch_add(1, Ordering::SeqCst);
+        } else if verbose {
+            eprintln!("Already formatted: {}", file.display());
         }
     });
 
-    if mode != format::Mode::Write && any_modified.load(Ordering::SeqCst) {
+    let elapsed = start.elapsed();
+    let file_count = all_files.len();
+    let modified = modified_count.load(Ordering::SeqCst);
+    if file_count > 0 {
+        eprintln!("Formatted {} of {} file{} in {:.2}s",
+            modified,
+            file_count,
+            if file_count == 1 { "" } else { "s" },
+            elapsed.as_secs_f64());
+    }
+
+    if mode != format::Mode::Write && modified > 0 {
         std::process::exit(1);
     }
 }
@@ -395,7 +422,7 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, format::Mode::Check);
+        let modified = crate::ree_format::format_ree_file(&path, format::Mode::Check, 120);
         assert!(modified, "Check mode should return true when file would change");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, unformatted, "Check mode should not modify the file");

@@ -33,14 +33,11 @@ pub(crate) enum Node {
 // Public API
 // ═══════════════════════════════════════════════════════════════
 
-pub(crate) fn format_ree(input: &str) -> String {
+pub(crate) fn format_ree(input: &str, wrap_width: usize) -> String {
     let normalized = input.replace("\r\n", "\n");
-    eprintln!("[ree_parser] input length: {} bytes", normalized.len());
     let nodes = parse(&normalized);
-    eprintln!("[ree_parser] parsed {} top-level nodes", nodes.len());
     let nodes = hoist_script_ree_blocks(nodes);
-    let out = print_nodes(&nodes);
-    eprintln!("[ree_parser] output length: {} bytes", out.len());
+    let out = print_nodes(&nodes, wrap_width);
     // Normalize to exactly one trailing newline
     let trimmed = out.trim_end_matches('\n');
     format!("{}\n", trimmed)
@@ -444,8 +441,6 @@ fn parse_ree_block_open(input: &str) -> (Option<Node>, &str) {
         ),
         None => (directive_stripped.to_string(), String::new()),
     };
-    eprintln!("[ree_parser] ReeBlock: '{}/{}' expr='{}' len={}", keyword, expr, expr, expr.len());
-
     let remaining = &input[end..];
     let stop = Stop::ReeClose(keyword.clone());
     let (children, remaining) = parse_nodes(remaining, stop);
@@ -509,7 +504,6 @@ fn parse_ree_inline(input: &str, open_len: usize, is_expr: bool) -> (Option<Node
         // matches the input's expression spacing (e.g. "{= expr }" stays as-is).
         let raw = &after[..pos];
         let expr = raw.trim_start().to_string();
-        eprintln!("[ree_parser] inline expr: raw='{}' -> stored='{}'", raw, expr);
         let remaining = &after[pos + 1..];
         if is_expr {
             (Some(Node::ReeExpr(expr)), remaining)
@@ -662,25 +656,15 @@ fn hoist_script_ree_blocks(nodes: Vec<Node>) -> Vec<Node> {
 // Printer
 // ═══════════════════════════════════════════════════════════════
 
-fn print_nodes(nodes: &[Node]) -> String {
+fn print_nodes(nodes: &[Node], wrap_width: usize) -> String {
     let mut out = String::new();
     for node in nodes {
-        print_node(node, 0, &mut out);
+        print_node(node, 0, &mut out, wrap_width);
     }
     out
 }
 
-fn print_node(node: &Node, depth: usize, out: &mut String) {
-    // Log for debugging — will be removed later
-    let _ = depth; // used for indent
-    match node {
-        Node::Element { tag, .. } => eprintln!("[printer] Element <{}> at depth {}", tag, depth),
-        Node::ReeBlock { keyword, .. } => eprintln!("[printer] ReeBlock {{#{}}} at depth {}", keyword, depth),
-        Node::ReeExpr(e) => eprintln!("[printer] ReeExpr '{{= {} }}' at depth {}", e.trim(), depth),
-        Node::ReeCall(e) => eprintln!("[printer] ReeCall '{{~ {} }}' at depth {}", e.trim(), depth),
-        Node::Text(t) => { let trimmed = t.trim(); if !trimmed.is_empty() { eprintln!("[printer] Text '{}' at depth {}", trimmed, depth); } }
-        _ => {}
-    }
+fn print_node(node: &Node, depth: usize, out: &mut String, wrap_width: usize) {
     match node {
         Node::Text(text) => {
             let trimmed = text.trim();
@@ -720,11 +704,11 @@ fn print_node(node: &Node, depth: usize, out: &mut String) {
             if *self_closing {
                 print_self_closing(tag, attrs, depth, out);
             } else if children.is_empty() || all_children_are_whitespace(children) {
-                print_empty_element(tag, attrs, depth, out);
+                print_empty_element(tag, attrs, depth, out, wrap_width);
             } else if is_text_only(children) && !is_script_or_style(tag) {
-                print_inline_element(tag, attrs, children, depth, out);
+                print_inline_element(tag, attrs, children, depth, out, wrap_width);
             } else {
-                print_block_element(tag, attrs, children, depth, out);
+                print_block_element(tag, attrs, children, depth, out, wrap_width);
             }
         }
         Node::ReeBlock { keyword, expr, children, else_children } => {
@@ -737,13 +721,13 @@ fn print_node(node: &Node, depth: usize, out: &mut String) {
             out.push_str(&open);
             out.push('\n');
             for child in children {
-                print_node(child, depth + 1, out);
+                print_node(child, depth + 1, out, wrap_width);
             }
             if let Some(else_nodes) = else_children {
                 out.push_str(&"\t".repeat(depth));
                 out.push_str("{:else}\n");
                 for child in else_nodes {
-                    print_node(child, depth + 1, out);
+                    print_node(child, depth + 1, out, wrap_width);
                 }
             }
             out.push_str(&"\t".repeat(depth));
@@ -780,7 +764,7 @@ fn print_node(node: &Node, depth: usize, out: &mut String) {
     }
 }
 
-fn print_inline_element(tag: &str, attrs: &[String], children: &[Node], depth: usize, out: &mut String) {
+fn print_inline_element(tag: &str, attrs: &[String], children: &[Node], depth: usize, out: &mut String, wrap_width: usize) {
     let content = render_children_text(children);
     let attr_str = format_attrs_inline(attrs);
     let tag_open = if attr_str.is_empty() {
@@ -791,11 +775,11 @@ fn print_inline_element(tag: &str, attrs: &[String], children: &[Node], depth: u
     let closing = format!("</{}>", tag);
     let total = format!("{}{}{}", tag_open, content, closing);
 
-    if total.len() <= 160 {
+    if total.len() <= wrap_width {
         out.push_str(&"\t".repeat(depth));
         out.push_str(&total);
         out.push('\n');
-    } else if attrs.len() >= 4 && tag_open.len() > 150 {
+    } else if attrs.len() >= 4 && tag_open.len() > wrap_width.saturating_sub(10) {
         // Many/long attributes — split each onto its own line
         out.push_str(&"\t".repeat(depth));
         out.push('<');
@@ -828,7 +812,7 @@ fn print_inline_element(tag: &str, attrs: &[String], children: &[Node], depth: u
     }
 }
 
-fn print_block_element(tag: &str, attrs: &[String], children: &[Node], depth: usize, out: &mut String) {
+fn print_block_element(tag: &str, attrs: &[String], children: &[Node], depth: usize, out: &mut String, wrap_width: usize) {
     let attr_str = format_attrs_inline(attrs);
     let tag_line = if attr_str.is_empty() {
         format!("<{}>", tag)
@@ -836,7 +820,7 @@ fn print_block_element(tag: &str, attrs: &[String], children: &[Node], depth: us
         format!("<{} {}>", tag, attr_str)
     };
 
-    if tag_line.len() <= 140 {
+    if tag_line.len() <= wrap_width {
         out.push_str(&"\t".repeat(depth));
         out.push_str(&tag_line);
         out.push('\n');
@@ -856,7 +840,7 @@ fn print_block_element(tag: &str, attrs: &[String], children: &[Node], depth: us
     }
 
     for child in children {
-        print_node(child, depth + 1, out);
+        print_node(child, depth + 1, out, wrap_width);
     }
 
     out.push_str(&"\t".repeat(depth));
@@ -907,7 +891,7 @@ fn is_void_element(tag: &str) -> bool {
     )
 }
 
-fn print_empty_element(tag: &str, attrs: &[String], depth: usize, out: &mut String) {
+fn print_empty_element(tag: &str, attrs: &[String], depth: usize, out: &mut String, wrap_width: usize) {
     let attr_str = format_attrs_inline(attrs);
 
     // Void HTML elements (input, br, hr, etc.) use self-closing syntax <tag />
@@ -930,7 +914,7 @@ fn print_empty_element(tag: &str, attrs: &[String], depth: usize, out: &mut Stri
         } else {
             format!("<{} {}></{}>", tag, attr_str, tag)
         };
-        if close_tag.len() + depth <= 140 {
+        if close_tag.len() + depth <= wrap_width {
             out.push_str(&"\t".repeat(depth));
             out.push_str(&close_tag);
             out.push('\n');
@@ -976,14 +960,14 @@ mod tests {
     #[test]
     fn simple_element() {
         let input = "<div><p>hello</p></div>";
-        let output = format_ree(input);
+        let output = format_ree(input, 120);
         assert_eq!(output, "<div>\n\t<p>hello</p>\n</div>\n");
     }
 
     #[test]
     fn ree_block() {
         let input = "{#if show}<div>yes</div>{/if}";
-        let output = format_ree(input);
+        let output = format_ree(input, 120);
         assert!(output.contains("{#if show}"));
         assert!(output.contains("<div>yes</div>"));
         assert!(output.contains("{/if}"));
@@ -992,21 +976,21 @@ mod tests {
     #[test]
     fn ree_expression() {
         let input = "<span>{= title }</span>";
-        let output = format_ree(input);
+        let output = format_ree(input, 120);
         assert_eq!(output, "<span>{= title }</span>\n");
     }
 
     #[test]
     fn void_element_self_closing() {
         let input = "<input type=\"text\" />";
-        let output = format_ree(input);
+        let output = format_ree(input, 120);
         assert!(output.contains("<input type=\"text\" />"), "void elements should use /> syntax, got: {:?}", output);
     }
 
     #[test]
     fn comment_preserved() {
         let input = "<!-- hello -->";
-        let output = format_ree(input);
+        let output = format_ree(input, 120);
         assert_eq!(output, "<!-- hello -->\n");
     }
 }
