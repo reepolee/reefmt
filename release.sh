@@ -3,10 +3,9 @@
 # Builds the native binary for the current platform and publishes it as a GitHub Release.
 # Version is auto-bumped (patch) only when the tag for the current version doesn't exist yet.
 #
-# Usage: bash release.sh [--draft] [--minor] [--force]
+# Usage: bash release.sh [--draft] [--minor]
 #   --draft  Create the release as a draft (default: published)
 #   --minor  Bump the minor version instead of the patch version (default: patch)
-#   --force  Skip version bump and use the current version as-is (e.g. for releasing a .0)
 #
 # Prerequisites:
 #   - gh CLI (https://cli.github.com) — authenticated via `gh auth login`
@@ -41,13 +40,11 @@ fi
 
 draft_flag=""
 minor_bump=false
-force_flag=false
 
 for arg in "$@"; do
 	case "$arg" in
 		--draft) draft_flag="--draft" ;;
 		--minor) minor_bump=true ;;
-		--force) force_flag=true ;;
 	esac
 done
 
@@ -56,9 +53,6 @@ if [ -n "$draft_flag" ]; then
 fi
 if [ "$minor_bump" = true ]; then
 	echo "  (Minor bump)"
-fi
-if [ "$force_flag" = true ]; then
-	echo "  (Force mode — version bump skipped, using current version as-is)"
 fi
 
 # ──────────────────────────────────────────────
@@ -82,6 +76,20 @@ bump_minor() {
 	local minor="${rest%%.*}"
 	local new_minor=$((minor + 1))
 	echo "$major.$new_minor.0"
+}
+
+# Returns 0 (true) if $1 is a greater version than $2
+version_gt() {
+	local a_major="${1%%.*}"; local a_rest="${1#*.}"
+	local a_minor="${a_rest%%.*}"; local a_patch="${a_rest#*.}"
+	local b_major="${2%%.*}"; local b_rest="${2#*.}"
+	local b_minor="${b_rest%%.*}"; local b_patch="${b_rest#*.}"
+
+	[ "$a_major" -gt "$b_major" ] && return 0
+	[ "$a_major" -lt "$b_major" ] && return 1
+	[ "$a_minor" -gt "$b_minor" ] && return 0
+	[ "$a_minor" -lt "$b_minor" ] && return 1
+	[ "$a_patch" -gt "$b_patch" ]
 }
 
 version=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
@@ -130,11 +138,14 @@ if [ -n "$latest_tag" ]; then
 	# If you run the release script without pulling first, versions will diverge.
 	tag_version="${latest_tag#v}"
 	if [ "$tag_version" != "$version" ]; then
-		if [ "$force_flag" = true ]; then
-			echo "  (Warning: local version $version differs from latest tag $tag_version, proceeding with --force)"
+		if version_gt "$tag_version" "$version"; then
+			# Tag is ahead of Cargo.toml → secondary machine, use tag version
+			echo "  (Note: latest tag is $tag_version, Cargo.toml has $version — using tag version)"
+			version="$tag_version"
 		else
-			echo "ERROR: Local version ($version) differs from latest tag ($tag_version)." >&2
-			echo "  Run 'git pull' first to sync, or use --force to override." >&2
+			# Cargo.toml is ahead of the tag → manually bumped without a release
+			echo "ERROR: Cargo.toml version ($version) is ahead of latest tag ($tag_version)." >&2
+			echo "  Did you forget to create a tag?" >&2
 			exit 1
 		fi
 	fi
@@ -147,11 +158,7 @@ fi
 
 tag="v$version"
 
-if [ "$force_flag" = true ]; then
-	echo "═══ reefmt release $version for $os ($arch) ═══"
-	echo "  (Force mode — using current version $version without bump)"
-	do_bump=false
-elif [ "$new_commits" -gt 0 ]; then
+if [ "$new_commits" -gt 0 ]; then
 	# Code has changed since last release → bump version
 	if [ "${minor_bump:-false}" = true ]; then
 		new_version=$(bump_minor "$version")
@@ -189,7 +196,7 @@ elif [ "$new_commits" -gt 0 ]; then
 		fi
 	fi
 else
-	# No code changes → just upload the binary (or --force was used)
+	# No code changes → just upload the binary
 	echo "═══ reefmt release $version for $os ($arch) ═══"
 	echo "  (No new commits since $latest_tag. Uploading binary only.)"
 	do_bump=false
@@ -232,13 +239,13 @@ else
 fi
 
 # Push tag and (if bumped) the version bump commit together
-echo "  Pushing tag $tag to origin..."
-git push origin "$tag"
-
 if [ "$do_bump" = true ]; then
 	echo "  Pushing version bump commit..."
 	git push origin HEAD
 fi
+
+echo "  Pushing tag $tag to origin..."
+git push origin "$tag"
 
 # ──────────────────────────────────────────────
 # Create or upload to GitHub Release
