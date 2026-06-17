@@ -134,14 +134,7 @@ fn find_next_special(input: &str) -> usize {
                 return i;
             }
             b'{' => {
-                if i + 1 < len && bytes[i+1] == b'{' {
-                    if let Some(end) = input[i+2..].find("}}") {
-                        i += end + 2 + 2;
-                        continue;
-                    } else {
-                        return len;
-                    }
-                }
+                // Don't skip {{ }} — let parse_token handle it as RawJs
                 return i;
             }
             _ => {}
@@ -227,10 +220,11 @@ fn parse_token(input: &str) -> (Option<Node>, &str) {
     } else if input.starts_with("{=") {
         parse_ree_inline(input, 2, true)
     } else if input.starts_with("{~") {
-        parse_ree_inline(input, 2, false)
-    } else if let Some(rest) = input.strip_prefix('{') {
-        (Some(Node::Text(input[..1].to_string())), rest)
-    } else {
+        parse_ree_inline(input, 2, false)            } else if input.starts_with("{{") {
+                parse_ree_raw_js(input)
+            } else if let Some(rest) = input.strip_prefix('{') {
+		(Some(Node::Text(input[..1].to_string())), rest)
+	} else {
         (Some(Node::Text(input[..1].to_string())), &input[1..])
     }
 }
@@ -500,6 +494,16 @@ fn parse_ree_directive(input: &str) -> (Option<Node>, &str) {
     (Some(Node::ReeDirective(input[..end].to_string())), &input[end..])
 }
 
+// ── Raw JS Block ────────────────────────────────────────────
+
+fn parse_ree_raw_js(input: &str) -> (Option<Node>, &str) {
+    if let Some(end) = input[2..].find("}}") {
+        let content = input[2..end + 2].to_string();
+        (Some(Node::RawJs(content)), &input[end + 4..])
+    } else {                (Some(Node::Text(input.to_string())), "")
+    }
+}
+
 // ── Ree Expression / Call ────────────────────────────────────
 
 fn parse_ree_inline(input: &str, open_len: usize, is_expr: bool) -> (Option<Node>, &str) {
@@ -564,10 +568,9 @@ fn parse_raw_block_content<'a>(input: &'a str, close_marker: &str) -> (Vec<Node>
                 remaining = &remaining[end..];
             } else {
                 remaining = &remaining[1..];
-            }
-        } else if remaining.starts_with("{{") {
+            }            } else if remaining.starts_with("{{") {
             if let Some(end) = remaining[2..].find("}}") {
-                nodes.push(Node::RawJs(remaining[..end + 4].to_string()));
+                nodes.push(Node::RawJs(remaining[2..end + 2].to_string()));
                 remaining = &remaining[end + 4..];
             } else {
                 nodes.push(Node::Text(remaining.to_string()));
@@ -760,11 +763,30 @@ fn print_node(node: &Node, depth: usize, out: &mut String, wrap_width: usize) {
             out.push('\n');
         }
         Node::RawJs(code) => {
-            out.push_str(&"\t".repeat(depth));
-            out.push_str("{{ ");
-            out.push_str(code.trim());
-            out.push_str(" }}");
-            out.push('\n');
+            if code.contains('\n') {
+                // Multi-line raw JS block
+                out.push_str(&"\t".repeat(depth));
+                out.push_str("{{");
+                out.push('\n');
+                for line in code.lines() {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        out.push_str(&"\t".repeat(depth + 1));
+                        out.push_str(line.trim_start());
+                        out.push('\n');
+                    }
+                }
+                out.push_str(&"\t".repeat(depth));
+                out.push_str("}}");
+                out.push('\n');
+            } else {
+                // Single-line raw JS
+                out.push_str(&"\t".repeat(depth));
+                out.push_str("{{ ");
+                out.push_str(code.trim());
+                out.push_str(" }}");
+                out.push('\n');
+            }
         }
     }
 }

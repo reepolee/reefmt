@@ -536,11 +536,137 @@ fn collapse_inline_type_literals(code: &str, max_width: usize) -> String {
     result
 }
 
+/// Check if a trimmed line is a block opener like `if (cond) {` or `for (;;) {`
+fn is_block_opener(trimmed: &str) -> bool {
+    // Must end with `{` and the character before must be `)`
+    // e.g. `if (cond) {`, `for (;;) {`, `while (x) {`, `} else if (cond) {`
+    if !trimmed.ends_with('{') {
+        return false;
+    }
+    let before_brace = trimmed[..trimmed.len() - 1].trim_end();
+    before_brace.ends_with(')')
+}
+
+/// Run one pass of the collapse logic. Returns `true` if any changes were made
+/// (meaning another pass may find more opportunities).
+fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, out: &mut String) -> bool {
+    out.clear();
+    let lines: Vec<&str> = code.lines().collect();
+    let mut i = 0;
+    let mut modified = false;
+
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim();
+
+        // ---- Single-statement block: `if (cond) {` stmt `}` ----
+        if i + 2 < lines.len() && is_block_opener(trimmed) {
+            let stmt_trimmed = lines[i + 1].trim();
+            let close_trimmed = lines[i + 2].trim();
+
+            if !stmt_trimmed.is_empty() && close_trimmed == "}" {
+                let prefix = &line[..line.len() - trimmed.len()];
+                let before_brace = trimmed.trim_end();
+                let collapsed = format!("{} {} }}", before_brace, stmt_trimmed);
+                let full_line = format!("{}{}", prefix, collapsed);
+
+                if full_line.len() <= max_width {
+                    out.push_str(&full_line);
+                    out.push('\n');
+                    i += 3;
+                    modified = true;
+                    continue;
+                }
+            }
+        }
+
+        // ---- Object literal function param: `foo({` key:val, `})` ----
+        if i + 2 < lines.len() && is_obj_lit_opener(trimmed) {
+            let mut depth = 1u32;
+            let mut closing = None;
+            for j in i + 1..lines.len() {
+                for (byte_pos, ch) in lines[j].char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => { depth -= 1; if depth == 0 { closing = Some((j, byte_pos + 1)); break; } }
+                        _ => {}
+                    }
+                }
+                if closing.is_some() { break; }
+            }
+
+            if let Some((end_idx, after_close)) = closing {
+                let body: Vec<&str> = (i + 1..end_idx)
+                    .map(|j| lines[j].trim())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+
+                if !body.is_empty() && body.len() <= 6 && body.iter().all(|l| l.contains(':')) {
+                    let prefix = &line[..line.len() - trimmed.len()];
+                    let before_paren = trimmed.trim_end_matches(|c| c == '{' || c == ' ');
+                    let after_close_str = &lines[end_idx][after_close..];
+                    let members: Vec<&str> = body.iter()
+                        .map(|l| l.trim_end_matches(',').trim()).collect();
+
+                    let collapsed = format!(
+                        "{}{}{{ {} }}{}",
+                        prefix, before_paren, members.join(", "), after_close_str
+                    );
+
+                    if collapsed.len() <= max_width {
+                        out.push_str(&collapsed);
+                        out.push('\n');
+                        i = end_idx + 1;
+                        modified = true;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        out.push_str(line);
+        out.push('\n');
+        i += 1;
+    }
+
+    if !code.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    modified
+}
+
+/// Collapse single-statement blocks and object literal function params onto
+/// one line when they fit within `max_width`. Runs iteratively until no
+/// further collapses are possible (handles nested structures like `if (x) {
+///   fn({ key: val });
+/// }` where the inner object-literal collapses first, then the if-block).
+pub(crate) fn collapse_single_stmt_blocks(code: &str, max_width: usize) -> String {
+    let mut result = code.to_string();
+    let mut buf = String::with_capacity(code.len());
+    loop {
+        if !collapse_single_stmt_blocks_pass(&result, max_width, &mut buf) {
+            return result;
+        }
+        std::mem::swap(&mut result, &mut buf);
+    }
+}
+
+/// Check if a trimmed line ends with `({` — a function call with object literal.
+fn is_obj_lit_opener(trimmed: &str) -> bool {
+    let mut rev = trimmed.chars().rev().peekable();
+    while let Some(&c) = rev.peek() { if c == ' ' || c == '\t' { rev.next(); } else { break; } }
+    if rev.next() != Some('{') { return false; }
+    while let Some(&c) = rev.peek() { if c == ' ' || c == '\t' { rev.next(); } else { break; } }
+    rev.next() == Some('(')
+}
+
 /// Format standalone code content (TS/JS/CSS) using native SWC, no subprocess needed.
-/// For .ts and .js files, uses the SWC parser/codegen pipeline.
-/// For .css files, returns the content unchanged (CSS support is a future improvement).
-/// `wrap_width` controls the max line width for collapsing inline type literals.
-pub(crate) fn format_code_content(content: &str, ext: &str, wrap_width: usize) -> String {
+pub(crate) fn format_code_content(
+    content: &str,
+    ext: &str,
+    wrap_width: usize,
+    collapse_blocks: bool,
+) -> String {
     let normalized = content.replace("\r\n", "\n");
 
     let formatted = match ext {
@@ -553,7 +679,12 @@ pub(crate) fn format_code_content(content: &str, ext: &str, wrap_width: usize) -
             } else {
                 postprocess_from_swc(&swc_formatted, &placeholders)
             };
-            collapse_inline_type_literals(&restored, wrap_width)
+            let collapsed = collapse_inline_type_literals(&restored, wrap_width);
+            if collapse_blocks {
+                collapse_single_stmt_blocks(&collapsed, wrap_width)
+            } else {
+                collapsed
+            }
         }
         _ => normalized.clone(),
     };
@@ -566,8 +697,7 @@ pub(crate) fn format_code_content(content: &str, ext: &str, wrap_width: usize) -
 }
 
 /// Format a standalone code file (TS, JS, CSS). Returns `true` if modified.
-/// `wrap_width` controls the max line width for collapsing inline type literals.
-pub(crate) fn format_code_file(path: &Path, mode: Mode, wrap_width: usize) -> bool {
+pub(crate) fn format_code_file(path: &Path, mode: Mode, wrap_width: usize, collapse_blocks: bool) -> bool {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -578,7 +708,7 @@ pub(crate) fn format_code_file(path: &Path, mode: Mode, wrap_width: usize) -> bo
 
     let normalized = content.replace("\r\n", "\n");
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-    let write_content = format_code_content(&normalized, ext, wrap_width);
+    let write_content = format_code_content(&normalized, ext, wrap_width, collapse_blocks);
 
     if write_content == normalized {
         return false;
@@ -613,8 +743,8 @@ pub(crate) fn format_file(path: &Path, mode: Mode, config: &crate::ReeConfig) ->
         return false;
     }
     match ext {
-        "ree" => crate::ree_format::format_ree_file(path, mode, config.wrap_width),
-        "ts" | "js" | "css" => format_code_file(path, mode, config.wrap_width),
+        "ree" => crate::ree_format::format_ree_file(path, mode, config.wrap_width, config.collapse_single_stmt_blocks),
+        "ts" | "js" | "css" => format_code_file(path, mode, config.wrap_width, config.collapse_single_stmt_blocks),
         _ => false,
     }
 }
@@ -632,7 +762,7 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Check, 120);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Check, 120, true);
         assert!(modified, "Check mode should return true when file would change");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, unformatted, "Check mode should not modify the file");
@@ -648,7 +778,7 @@ mod tests {
         let content = "<span>text</span>\n";
         fs::write(&path, content).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Check, 120);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Check, 120, true);
         assert!(!modified, "Check mode should return false for already-formatted file (modified={})", modified);
 
         let content_after = fs::read_to_string(&path).unwrap();
@@ -665,7 +795,7 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Diff, 120);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Diff, 120, true);
         assert!(modified, "Diff mode should return true when file would change");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, unformatted, "Diff mode should not modify the file");
@@ -681,7 +811,7 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Write, 120);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Write, 120, true);
         assert!(modified, "Write mode should return true when file changes");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_ne!(content_after, unformatted, "Write mode should modify the file");
@@ -697,7 +827,7 @@ mod tests {
         let content = "<span>text</span>\n";
         fs::write(&path, content).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Diff, 120);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Diff, 120, true);
         assert!(!modified, "Diff mode should return false for already-formatted file");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, content, "Diff mode should not modify the file");
@@ -713,7 +843,7 @@ mod tests {
         let content = "const x = 1;\n";
         fs::write(&path, content).unwrap();
 
-        let _modified = format_code_file(&path, Mode::Check, 180);
+        let _modified = format_code_file(&path, Mode::Check, 180, true);
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, content, "Check mode should not modify the code file");
 
@@ -723,37 +853,37 @@ mod tests {
     #[test]
     fn diff_mode_code_file_missing_returns_false() {
         let path = Path::new("/tmp/nonexistent_file_reefmt_diff_test.ts");
-        let modified = format_code_file(path, Mode::Diff, 180);
+        let modified = format_code_file(path, Mode::Diff, 180, true);
         assert!(!modified, "format_code_file Diff should return false for missing file");
     }
 
     #[test]
     fn check_mode_ree_file_missing_returns_false() {
         let path = Path::new("/tmp/nonexistent_file_reefmt_test.ree");
-        let modified = crate::ree_format::format_ree_file(path, Mode::Check, 120);
+        let modified = crate::ree_format::format_ree_file(path, Mode::Check, 120, true);
         assert!(!modified, "format_ree_file should return false for missing file");
     }
 
     #[test]
     fn format_code_content_js_uses_swc() {
         let src = "const x=1;const y=2;";
-        let result = format_code_content(src, "js", 180);
+        let result = format_code_content(src, "js", 180, true);
         assert!(result.contains("const x = 1;"), "SWC should format JS: got {:?}", result);
     }
 
     #[test]
     fn idempotent_format_code_content_js() {
         let src = "const x = 1;\n";
-        let pass1 = format_code_content(src, "js", 180);
-        let pass2 = format_code_content(&pass1, "js", 180);
+        let pass1 = format_code_content(src, "js", 180, true);
+        let pass2 = format_code_content(&pass1, "js", 180, true);
         assert_eq!(pass1, pass2, "format_code_content should be idempotent for JS");
     }
 
     #[test]
     fn idempotent_format_code_content_non_ascii_comment() {
         let src = "// Café naïve — ščüéø\nconst x = 1;\n";
-        let pass1 = format_code_content(src, "js", 180);
-        let pass2 = format_code_content(&pass1, "js", 180);
+        let pass1 = format_code_content(src, "js", 180, true);
+        let pass2 = format_code_content(&pass1, "js", 180, true);
         assert_eq!(pass1, pass2,
             "format_code_content should be idempotent with non-ASCII chars");
     }
@@ -761,14 +891,14 @@ mod tests {
     #[test]
     fn format_code_content_css_passthrough() {
         let src = "body { color: red; }\n";
-        let result = format_code_content(src, "css", 180);
+        let result = format_code_content(src, "css", 180, true);
         assert_eq!(result, src, "CSS should pass through unchanged");
     }
 
     #[test]
     fn preserves_block_comments() {
         let src = "/**\n * doc\n */\nexport const x = 1;\n";
-        let result = format_code_content(src, "ts", 180);
+        let result = format_code_content(src, "ts", 180, true);
         assert!(result.contains("/**"), "block comment /** should be preserved");
         assert!(result.contains(" * doc\n"), "block comment content should be preserved");
         assert!(result.contains(" */\nexport"), "*/ should be on its own line before export");
@@ -777,36 +907,243 @@ mod tests {
     #[test]
     fn preserves_blank_lines_between_statements() {
         let src = "export interface A {\n\tx: number;\n}\n\nexport interface B {\n\ty: number;\n}\n";
-        let result = format_code_content(src, "ts", 180);
+        let result = format_code_content(src, "ts", 180, true);
         assert!(result.contains("}\n\nexport"), "blank line between interfaces should be preserved");
     }
 
     #[test]
     fn inline_block_comment_not_extracted() {
         let src = "const x = 1; /* inline */\n";
-        let result = format_code_content(src, "ts", 180);
+        let result = format_code_content(src, "ts", 180, true);
         assert!(result.contains("/* inline */"), "inline block comments should stay inline");
     }
 
     #[test]
     fn block_comment_in_string_not_extracted() {
         let src = "const s = \"/* not a comment */\";\n";
-        let result = format_code_content(src, "ts", 180);
+        let result = format_code_content(src, "ts", 180, true);
         assert!(result.contains("/* not a comment */"), "comments inside strings should be preserved");
     }
 
     #[test]
     fn single_line_block_comment_own_line() {
         let src = "/* standalone */\nexport const x = 1;\n";
-        let result = format_code_content(src, "ts", 180);
+        let result = format_code_content(src, "ts", 180, true);
         assert!(result.contains("/* standalone */\nexport"), "standalone block comment should be on its own line");
     }
 
     #[test]
     fn idempotent_with_block_comments_and_blank_lines() {
         let src = "/**\n * Translation helpers\n */\n\n// ─── Types ─────────────────────────────────────────────────────\n\nexport interface TranslationRow {\n\tid: number;\n\tlang: string;\n}\n\nexport interface GroupInfo {\n\tnamespace: string;\n\tchild_keys: string[];\n}\n";
-        let pass1 = format_code_content(src, "ts", 180);
-        let pass2 = format_code_content(&pass1, "ts", 180);
+        let pass1 = format_code_content(src, "ts", 180, true);
+        let pass2 = format_code_content(&pass1, "ts", 180, true);
         assert_eq!(pass1, pass2, "output should be idempotent with block comments and blank lines");
+    }
+
+    // ─── collapse_single_stmt_blocks tests ────────────────────────
+
+    #[test]
+    fn collapse_simple_if_block() {
+        let src = "\tif (cond) {\n\t\tdoSomething();\n\t}\n";
+        let result = collapse_single_stmt_blocks(src, 180);
+        assert_eq!(result, "\tif (cond) { doSomething(); }\n");
+    }
+
+    #[test]
+    fn collapse_nested_if_with_obj_lit() {
+        // The inner obj lit must collapse first, then the outer if-block
+        let src = "\tif (items[activeIndex]) {\n\t\titems[activeIndex].scrollIntoView({\n\t\t\tblock: \"nearest\"\n\t\t});\n\t}\n";
+        let result = collapse_single_stmt_blocks(src, 180);
+        assert_eq!(
+            result,
+            "\tif (items[activeIndex]) { items[activeIndex].scrollIntoView({ block: \"nearest\" }); }\n"
+        );
+    }
+
+    #[test]
+    fn collapse_else_if_chain() {
+        let src = "\t} else if (e.key === \"Escape\") {\n\t\tlist.classList.add(\"hidden\");\n\t}\n";
+        let result = collapse_single_stmt_blocks(src, 180);
+        assert_eq!(result, "\t} else if (e.key === \"Escape\") { list.classList.add(\"hidden\"); }\n");
+    }
+
+    #[test]
+    fn collapse_obj_lit_param() {
+        let src = "\t\titems[activeIndex].scrollIntoView({\n\t\t\tblock: \"nearest\"\n\t\t});\n";
+        let result = collapse_single_stmt_blocks(src, 180);
+        assert_eq!(result, "\t\titems[activeIndex].scrollIntoView({ block: \"nearest\" });\n");
+    }
+
+    #[test]
+    fn collapse_triple_nested_blocks() {
+        let src = "if (a) {\n\tif (b) {\n\t\tif (c) {\n\t\t\tstmt;\n\t\t}\n\t}\n}\n";
+        let result = collapse_single_stmt_blocks(src, 180);
+        assert_eq!(result, "if (a) { if (b) { if (c) { stmt; } } }\n");
+    }
+
+    #[test]
+    fn collapse_too_wide_stays_multi_line() {
+        // The collapsed line would exceed 40 chars, so it stays multi-line
+        let src = "if (reallyLongConditionName) {\n\treallyLongFunctionCall(withArgs);\n}\n";
+        let result = collapse_single_stmt_blocks(src, 40);
+        assert_eq!(result, src);
+    }
+
+    #[test]
+    fn collapse_already_collapsed_is_idempotent() {
+        let src = "if (cond) { doSomething(); }\n";
+        let result = collapse_single_stmt_blocks(src, 180);
+        assert_eq!(result, src);
+    }
+
+    #[test]
+    fn collapse_no_false_positive_do_while() {
+        // `do {` ends with `{` but before brace is `o`, not `)`
+        let src = "do {\n\tstmt;\n} while (cond);\n";
+        let result = collapse_single_stmt_blocks(src, 180);
+        assert_eq!(result, src);
+    }
+
+    #[test]
+    fn collapse_consecutive_blocks() {
+        let src = "if (a) {\n\tfa();\n}\nif (b) {\n\tfb();\n}\n";
+        let result = collapse_single_stmt_blocks(src, 180);
+        assert_eq!(result, "if (a) { fa(); }\nif (b) { fb(); }\n");
+    }
+
+    #[test]
+    fn collapse_empty_body_not_touched() {
+        let src = "if (cond) {\n\t\n}\n";
+        let result = collapse_single_stmt_blocks(src, 180);
+        // Empty body should stay as-is (stmt_trimmed.is_empty() check)
+        assert_eq!(result, src);
+    }
+
+    #[test]
+    fn collapse_for_loop_block() {
+        let src = "for (;;) {\n\tstmt();\n}\n";
+        let result = collapse_single_stmt_blocks(src, 180);
+        assert_eq!(result, "for (;;) { stmt(); }\n");
+    }
+
+    #[test]
+    fn collapse_while_loop_block() {
+        let src = "while (cond) {\n\tstmt();\n}\n";
+        let result = collapse_single_stmt_blocks(src, 180);
+        assert_eq!(result, "while (cond) { stmt(); }\n");
+    }
+
+    #[test]
+    fn collapse_no_trailing_newline_in_input() {
+        // Input without trailing newline
+        let src = "if (cond) {\n\tdoIt();\n}";
+        let result = collapse_single_stmt_blocks(src, 180);
+        assert_eq!(result, "if (cond) { doIt(); }",
+            "Should preserve absence of trailing newline");
+    }
+
+    #[test]
+    fn collapse_obj_lit_multi_member() {
+        let src = "foo({\n\tx: 1,\n\ty: 2,\n\tz: 3\n});\n";
+        let result = collapse_single_stmt_blocks(src, 180);
+        assert_eq!(result, "foo({ x: 1, y: 2, z: 3 });\n");
+    }
+
+    #[test]
+    fn collapse_spaced_obj_lit_opener() {
+        // Space between function name and `({`
+        let src = "foo ({\n\tkey: val\n});\n";
+        let result = collapse_single_stmt_blocks(src, 180);
+        assert_eq!(result, "foo ({ key: val });\n");
+    }
+
+    #[test]
+    fn collapse_nested_too_wide_preserves_inner() {
+        // Outer if fits, but inner obj lit is too wide for 50 chars
+        // Inner should stay expanded since it doesn't fit
+        let src = "\tif (cond) {\n\t\tfn(veryLongFunctionName, extremelyLongArgumentThatExceedsFiftyCharacters);\n\t}\n";
+        let result = collapse_single_stmt_blocks(src, 50);
+        assert_eq!(result, src, "Should stay multi-line if collapsed line exceeds max_width");
+    }
+
+    // ─── Narrow wrapWidth boundary tests ──────────────────────────
+
+    #[test]
+    fn narrow_width_blocks_that_barely_fit() {
+        // Short if-block that just fits in 40 chars
+        // "if (cond) { doIt(); }" = 22 chars, with prefix = 23
+        let src = "\tif (cond) {\n\t\tdoIt();\n\t}\n";
+        let result = collapse_single_stmt_blocks(src, 23);
+        assert_eq!(result, "\tif (cond) { doIt(); }\n");
+    }
+
+    #[test]
+    fn narrow_width_block_one_char_too_wide() {
+        // "\tif (cond) { doIt(); }" = 22 chars (tab + 21), so at width=21 it should NOT collapse
+        let src = "\tif (cond) {\n\t\tdoIt();\n\t}\n";
+        let result = collapse_single_stmt_blocks(src, 21);
+        assert_eq!(result, src, "Should stay multi-line when collapsed line is 1 char too wide");
+    }
+
+    #[test]
+    fn narrow_width_demo_if_block_stays_expanded() {
+        // The exact pattern from demo.ree: "if (items[activeIndex]) { items[activeIndex].scrollIntoView({ block: "nearest" }); }"
+        // This is ~93 chars + tabs. At width=80, it should NOT collapse.
+        let expected_collapsed_len = "\t\t\t\tif (items[activeIndex]) { items[activeIndex].scrollIntoView({ block: \"nearest\" }); }".len();
+        assert!(expected_collapsed_len > 80, "collapsed line should be >80 chars for this test to be meaningful");
+
+        let src = "\t\t\t\tif (items[activeIndex]) {\n\t\t\t\t\titems[activeIndex].scrollIntoView({\n\t\t\t\t\t\tblock: \"nearest\"\n\t\t\t\t\t});\n\t\t\t\t}\n";
+        let result = collapse_single_stmt_blocks(src, 80);
+        // Inner obj lit might still collapse since it's short: "items[activeIndex].scrollIntoView({ block: "nearest" });"
+        // That's ~62 chars + 5 tabs = ~67 chars, which fits in 80.
+        // But the outer if should NOT collapse because the full line is ~93+ chars
+        assert!(
+            result.contains("scrollIntoView({ block: \"nearest\" });"),
+            "Inner obj lit should collapse even at narrow width"
+        );
+        assert!(
+            !result.contains("if (items[activeIndex]) { items[activeIndex]"),
+            "Outer if-block should NOT collapse at width=80"
+        );
+    }
+
+    #[test]
+    fn narrow_width_obj_lit_barely_fits() {
+        // "\t\tfoo({ x: 1, y: 2 });" = 22 chars (2 tabs + 20)
+        let src = "\t\tfoo({\n\t\t\tx: 1,\n\t\t\ty: 2\n\t\t});\n";
+        let result = collapse_single_stmt_blocks(src, 22);
+        assert_eq!(result, "\t\tfoo({ x: 1, y: 2 });\n");
+    }
+
+    #[test]
+    fn narrow_width_obj_lit_too_wide() {
+        // "\t\tfoo({ x: 1, y: 2 });" = 22 chars, so at width=21 it should NOT collapse
+        let src = "\t\tfoo({\n\t\t\tx: 1,\n\t\t\ty: 2\n\t\t});\n";
+        let result = collapse_single_stmt_blocks(src, 21);
+        assert_eq!(result, src, "Obj lit should stay multi-line when 1 char too wide");
+    }
+
+    #[test]
+    fn narrow_width_else_if_barely_fits() {
+        // "\t} else if (k) { stmt(); }" = 28 chars
+        let src = "\t} else if (k) {\n\t\tstmt();\n\t}\n";
+        let result = collapse_single_stmt_blocks(src, 28);
+        assert_eq!(result, "\t} else if (k) { stmt(); }\n");
+    }
+
+    #[test]
+    fn narrow_width_for_loop_barely_fits() {
+        // "\tfor (;;) { stmt(); }" = 22 chars
+        let src = "\tfor (;;) {\n\t\tstmt();\n\t}\n";
+        let result = collapse_single_stmt_blocks(src, 22);
+        assert_eq!(result, "\tfor (;;) { stmt(); }\n");
+    }
+
+    #[test]
+    fn narrow_width_while_barely_fits() {
+        // "\twhile (c) { stmt(); }" = 24 chars
+        let src = "\twhile (c) {\n\t\tstmt();\n\t}\n";
+        let result = collapse_single_stmt_blocks(src, 24);
+        assert_eq!(result, "\twhile (c) { stmt(); }\n");
     }
 }
