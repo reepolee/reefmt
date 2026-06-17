@@ -603,7 +603,7 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, out: &mut Stri
 
                 if !body.is_empty() && body.len() <= 6 && body.iter().all(|l| l.contains(':')) {
                     let prefix = &line[..line.len() - trimmed.len()];
-                    let before_paren = trimmed.trim_end_matches(|c| c == '{' || c == ' ');
+                    let before_paren = trimmed.strip_suffix('{').unwrap_or(trimmed);
                     let after_close_str = &lines[end_idx][after_close..];
                     let members: Vec<&str> = body.iter()
                         .map(|l| l.trim_end_matches(',').trim()).collect();
@@ -651,13 +651,68 @@ pub(crate) fn collapse_single_stmt_blocks(code: &str, max_width: usize) -> Strin
     }
 }
 
-/// Check if a trimmed line ends with `({` — a function call with object literal.
+/// Check if a trimmed line represents a function call with an object literal
+/// as an argument, e.g. `foo({` or `foo(arg, {`.
+/// Must end with `{` (after trimming), must not be a block opener like
+/// `if (cond) {`, and must have a `(` somewhere before the `{`.
 fn is_obj_lit_opener(trimmed: &str) -> bool {
-    let mut rev = trimmed.chars().rev().peekable();
-    while let Some(&c) = rev.peek() { if c == ' ' || c == '\t' { rev.next(); } else { break; } }
-    if rev.next() != Some('{') { return false; }
-    while let Some(&c) = rev.peek() { if c == ' ' || c == '\t' { rev.next(); } else { break; } }
-    rev.next() == Some('(')
+    if !trimmed.ends_with('{') {
+        return false;
+    }
+    if is_block_opener(trimmed) {
+        return false;
+    }
+    // Must have a `(` before the `{`, indicating a function call.
+    trimmed[..trimmed.len() - 1].contains('(')
+}
+
+/// Ensures proper spacing around arrow function `=>` tokens:
+/// `()=>{` → `() => {`, `param=>` → `param => `, etc.
+/// Avoids modifying `<=` and `>=` comparison operators.
+pub(crate) fn fix_arrow_spacing(code: &str) -> String {
+    let mut out = String::with_capacity(code.len());
+    let bytes = code.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i < len {
+        // Peek for `=>` — both bytes are ASCII
+        if i + 1 < len && bytes[i] == b'=' && bytes[i + 1] == b'>' {
+            // Skip if this is `<=` or `>=`
+            if i > 0 && (bytes[i - 1] == b'<' || bytes[i - 1] == b'>') {
+                out.push(bytes[i] as char);
+                i += 1;
+                continue;
+            }
+
+            // Space before `=>` if not already there
+            if i > 0 && bytes[i - 1] != b' ' {
+                out.push(' ');
+            }
+
+            out.push_str("=>");
+            i += 2;
+
+            // Space after `=>` (but not before a newline)
+            if i < len && bytes[i] != b' ' && bytes[i] != b'\n' && bytes[i] != b'\r' {
+                out.push(' ');
+            }
+
+            continue;
+        }
+
+        // Properly copy UTF-8 characters (ASCII fast path, multi-byte fallback)
+        if bytes[i] & 0x80 == 0 {
+            out.push(bytes[i] as char);
+            i += 1;
+        } else {
+            let ch = code[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+
+    out
 }
 
 /// Format standalone code content (TS/JS/CSS) using native SWC, no subprocess needed.
@@ -679,7 +734,8 @@ pub(crate) fn format_code_content(
             } else {
                 postprocess_from_swc(&swc_formatted, &placeholders)
             };
-            let collapsed = collapse_inline_type_literals(&restored, wrap_width);
+            let spaced = fix_arrow_spacing(&restored);
+            let collapsed = collapse_inline_type_literals(&spaced, wrap_width);
             if collapse_blocks {
                 collapse_single_stmt_blocks(&collapsed, wrap_width)
             } else {
@@ -996,6 +1052,57 @@ mod tests {
         assert_eq!(result, src);
     }
 
+    // ─── fix_arrow_spacing tests ────────────────────────────────
+
+    #[test]
+    fn arrow_spacing_parens() {
+        // `()=>{` → `() => {`
+        assert_eq!(fix_arrow_spacing("()=>{"), "() => {");
+    }
+
+    #[test]
+    fn arrow_spacing_with_param() {
+        // `(x)=>` → `(x) => `
+        assert_eq!(fix_arrow_spacing("(x)=>x"), "(x) => x");
+    }
+
+    #[test]
+    fn arrow_spacing_single_param_no_parens() {
+        // `x=>` → `x => ` — only arrow spacing is affected, not operators
+        assert_eq!(fix_arrow_spacing("x=>x+1"), "x => x+1");
+    }
+
+    #[test]
+    fn arrow_spacing_async() {
+        assert_eq!(fix_arrow_spacing("async ()=>{"), "async () => {");
+    }
+
+    #[test]
+    fn arrow_spacing_comparison_untouched() {
+        // `<=` and `>=` should NOT be modified
+        assert_eq!(fix_arrow_spacing("a <= b"), "a <= b");
+        assert_eq!(fix_arrow_spacing("a >= b"), "a >= b");
+    }
+
+    #[test]
+    fn arrow_spacing_no_change_when_already_spaced() {
+        assert_eq!(fix_arrow_spacing("() => {"), "() => {");
+        assert_eq!(fix_arrow_spacing("(x) => x"), "(x) => x");
+    }
+
+    #[test]
+    fn arrow_spacing_mixed_code() {
+        let input = "const fn = ()=>{\n\treturn a <= b;\n}\n";
+        let expected = "const fn = () => {\n\treturn a <= b;\n}\n";
+        assert_eq!(fix_arrow_spacing(input), expected);
+    }
+
+    #[test]
+    fn arrow_spacing_implicit_return() {
+        // `(x)=>(` should become `(x) => (`
+        assert_eq!(fix_arrow_spacing("(x)=>({x})"), "(x) => ({x})");
+    }
+
     #[test]
     fn collapse_no_false_positive_do_while() {
         // `do {` ends with `{` but before brace is `o`, not `)`
@@ -1055,6 +1162,30 @@ mod tests {
         let src = "foo ({\n\tkey: val\n});\n";
         let result = collapse_single_stmt_blocks(src, 180);
         assert_eq!(result, "foo ({ key: val });\n");
+    }
+
+    #[test]
+    fn collapse_obj_lit_as_second_arg() {
+        // Object literal as non-first argument like dispatchEvent("click", { ... })
+        let src = "\t\thidden.dispatchEvent(new Event(\"input\", {\n\t\t\tbubbles: true\n\t\t}));\n";
+        let result = collapse_single_stmt_blocks(src, 180);
+        assert_eq!(result, "\t\thidden.dispatchEvent(new Event(\"input\", { bubbles: true }));\n");
+    }
+
+    #[test]
+    fn collapse_obj_lit_as_second_arg_narrow() {
+        // Same as above but at a narrow width where it just fits
+        let src = "\t\thidden.dispatchEvent(new Event(\"input\", {\n\t\t\tbubbles: true\n\t\t}));\n";
+        let result = collapse_single_stmt_blocks(src, 62);
+        assert_eq!(result, "\t\thidden.dispatchEvent(new Event(\"input\", { bubbles: true }));\n");
+    }
+
+    #[test]
+    fn collapse_obj_lit_as_second_arg_too_wide() {
+        // Collapsed line is 62 chars, so at width 61 it should NOT collapse
+        let src = "\t\thidden.dispatchEvent(new Event(\"input\", {\n\t\t\tbubbles: true\n\t\t}));\n";
+        let result = collapse_single_stmt_blocks(src, 61);
+        assert_eq!(result, src);
     }
 
     #[test]
