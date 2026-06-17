@@ -35,9 +35,12 @@ pub(crate) enum Node {
 
 pub(crate) fn format_ree(input: &str) -> String {
     let normalized = input.replace("\r\n", "\n");
+    eprintln!("[ree_parser] input length: {} bytes", normalized.len());
     let nodes = parse(&normalized);
+    eprintln!("[ree_parser] parsed {} top-level nodes", nodes.len());
     let nodes = hoist_script_ree_blocks(nodes);
     let out = print_nodes(&nodes);
+    eprintln!("[ree_parser] output length: {} bytes", out.len());
     // Normalize to exactly one trailing newline
     let trimmed = out.trim_end_matches('\n');
     format!("{}\n", trimmed)
@@ -437,15 +440,17 @@ fn parse_ree_block_open(input: &str) -> (Option<Node>, &str) {
         return (Some(Node::Text(input[..1].to_string())), &input[1..]);
     }
 
-    let directive = input[1..end - 1].trim();
+    let directive = input[1..end - 1].trim_start();
     let directive_stripped = directive.strip_prefix('#').unwrap_or(directive);
+    // Preserve trailing whitespace in block expressions (e.g. "{#if expr }")
     let (keyword, expr) = match directive_stripped.find(' ') {
         Some(pos) => (
             directive_stripped[..pos].to_string(),
-            directive_stripped[pos + 1..].trim().to_string(),
+            directive_stripped[pos + 1..].trim_start().to_string(),
         ),
         None => (directive_stripped.to_string(), String::new()),
     };
+    eprintln!("[ree_parser] ReeBlock: '{}/{}' expr='{}' len={}", keyword, expr, expr, expr.len());
 
     let remaining = &input[end..];
     let stop = Stop::ReeClose(keyword.clone());
@@ -506,7 +511,11 @@ fn parse_ree_directive(input: &str) -> (Option<Node>, &str) {
 fn parse_ree_inline(input: &str, open_len: usize, is_expr: bool) -> (Option<Node>, &str) {
     let after = &input[open_len..];
     if let Some(pos) = after.find('}') {
-        let expr = after[..pos].trim().to_string();
+        // Use trim_start only — preserve trailing whitespace so the output
+        // matches the input's expression spacing (e.g. "{= expr }" stays as-is).
+        let raw = &after[..pos];
+        let expr = raw.trim_start().to_string();
+        eprintln!("[ree_parser] inline expr: raw='{}' -> stored='{}'", raw, expr);
         let remaining = &after[pos + 1..];
         if is_expr {
             (Some(Node::ReeExpr(expr)), remaining)
@@ -668,6 +677,16 @@ fn print_nodes(nodes: &[Node]) -> String {
 }
 
 fn print_node(node: &Node, depth: usize, out: &mut String) {
+    // Log for debugging — will be removed later
+    let _ = depth; // used for indent
+    match node {
+        Node::Element { tag, .. } => eprintln!("[printer] Element <{}> at depth {}", tag, depth),
+        Node::ReeBlock { keyword, .. } => eprintln!("[printer] ReeBlock {{#{}}} at depth {}", keyword, depth),
+        Node::ReeExpr(e) => eprintln!("[printer] ReeExpr '{{= {} }}' at depth {}", e.trim(), depth),
+        Node::ReeCall(e) => eprintln!("[printer] ReeCall '{{~ {} }}' at depth {}", e.trim(), depth),
+        Node::Text(t) => { let trimmed = t.trim(); if !trimmed.is_empty() { eprintln!("[printer] Text '{}' at depth {}", trimmed, depth); } }
+        _ => {}
+    }
     match node {
         Node::Text(text) => {
             let trimmed = text.trim();
@@ -878,11 +897,33 @@ fn format_attrs_inline(attrs: &[String]) -> String {
     attrs.join(" ")
 }
 
+/// HTML void elements that cannot have children.
+/// Per HTML spec: area, base, br, col, embed, hr, img, input, link, meta,
+/// param, source, track, wbr.
+fn is_void_element(tag: &str) -> bool {
+    matches!(tag.to_ascii_lowercase().as_str(),
+        "area" | "base" | "br" | "col" | "embed" | "hr" | "img"
+        | "input" | "link" | "meta" | "param" | "source" | "track" | "wbr"
+    )
+}
 
 fn print_empty_element(tag: &str, attrs: &[String], depth: usize, out: &mut String) {
     let attr_str = format_attrs_inline(attrs);
-    // Use explicit close tag syntax: <tag></tag> instead of <tag />.
-    // This produces more consistent and readable HTML output.
+
+    // Void HTML elements (input, br, hr, etc.) use self-closing syntax <tag />
+    if is_void_element(tag) {
+        let self_close = if attr_str.is_empty() {
+            format!("<{}/>", tag)
+        } else {
+            format!("<{} {}/>", tag, attr_str)
+        };
+        out.push_str(&"\t".repeat(depth));
+        out.push_str(&self_close);
+        out.push('\n');
+        return;
+    }
+
+    // Non-void empty elements: use explicit close tag <tag></tag>
     if !is_script_or_style(tag) {
         let close_tag = if attr_str.is_empty() {
             format!("<{}></{}>", tag, tag)
@@ -903,19 +944,12 @@ fn print_empty_element(tag: &str, attrs: &[String], depth: usize, out: &mut Stri
         format!("<{} {}>", tag, attr_str)
     };
     let close = format!("</{}>", tag);
-    let total = format!("{}{}", open, close);
-    if total.len() + depth <= 140 && !is_script_or_style(tag) {
-        out.push_str(&"\t".repeat(depth));
-        out.push_str(&total);
-        out.push('\n');
-    } else {
-        out.push_str(&"\t".repeat(depth));
-        out.push_str(&open);
-        out.push('\n');
-        out.push_str(&"\t".repeat(depth));
-        out.push_str(&close);
-        out.push('\n');
-    }
+    out.push_str(&"\t".repeat(depth));
+    out.push_str(&open);
+    out.push('\n');
+    out.push_str(&"\t".repeat(depth));
+    out.push_str(&close);
+    out.push('\n');
 }
 
 fn print_self_closing(tag: &str, attrs: &[String], depth: usize, out: &mut String) {
@@ -927,9 +961,8 @@ fn print_self_closing(tag: &str, attrs: &[String], depth: usize, out: &mut Strin
         out.push(' ');
         out.push_str(&attr_str);
     }
-    out.push_str("></");
-    out.push_str(tag);
-    out.push_str(">\n");
+    // Self-closing elements use <tag /> syntax
+    out.push_str(" />\n");
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -960,14 +993,14 @@ mod tests {
     fn ree_expression() {
         let input = "<span>{= title }</span>";
         let output = format_ree(input);
-        assert_eq!(output, "<span>{= title}</span>\n");
+        assert_eq!(output, "<span>{= title }</span>\n");
     }
 
     #[test]
-    fn self_closing() {
+    fn void_element_self_closing() {
         let input = "<input type=\"text\" />";
         let output = format_ree(input);
-        assert!(output.contains("<input type=\"text\"></input>"));
+        assert!(output.contains("<input type=\"text\" />"), "void elements should use /> syntax, got: {:?}", output);
     }
 
     #[test]

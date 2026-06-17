@@ -3,49 +3,49 @@
 {#with props}
 	<div class="p-4">
 		<div class="flex items-center justify-between">
-			<h1 class="mb-4">{= ui.title}</h1>
+			<h1 class="mb-4">{= ui.title }</h1>
 			<div class="text-sm">{~ js_timestamp_to_locale_string(record.updated_at ?? record.created_at)}</div>
 		</div>
 
 		{#if form_errors}
 			<div class="py-4">
-				<app-banner type="red">{= form_errors}</app-banner>
+				<app-banner type="red">{= form_errors }</app-banner>
 			</div>
 		{/if}
 
 		<form method="POST" action="{~ localized_path(action) }" class="grid gap-4 max-w-[60ch]" id="entry-form">
 			<!-- CSRF token -->
-			<input type="hidden" name="_csrf_token" value="{= csrf_token }"></input>
+			<input type="hidden" name="_csrf_token" value="{= csrf_token }" />
 			<!-- crud:fields:start -->
 			<field-wrapper class="grid" data-field="code">
 				<label class="px-3" for="code">{= labels.code}</label>
-				<input type="text" id="code" name="code" value="{= record.code}"></input>
+				<input type="text" id="code" name="code" value="{= record.code}" />
 				<validation-error class="mt-1" id="error-code"></validation-error>
 			</field-wrapper>
 
 			<field-wrapper class="grid" data-field="name">
 				<label class="px-3" for="name">{= labels.name}</label>
-				<input type="text" id="name" name="name" value="{= record.name}"></input>
+				<input type="text" id="name" name="name" value="{= record.name}" />
 				<validation-error class="mt-1" id="error-name"></validation-error>
 			</field-wrapper>
 			<!-- crud:fields:end --> <!-- Store referrer URL as hidden field -->
-			<input type="hidden" id="return_url" name="_return_url" value=""></input>
+			<input type="hidden" id="return_url" name="_return_url" value="" />
 			<!-- Save action: hidden field set by onclick on save buttons -->
-			<input type="hidden" name="_save_action" id="save_action" value=""></input>
+			<input type="hidden" name="_save_action" id="save_action" value="" />
 
 			<div class="flex gap-2 mt-8 items-center">
-				<button id="btn-submit" type="submit" onclick="document.getElementById('save_action').value = 'stay'">{= actions.save}</button>
+				<button id="btn-submit" type="submit" onclick="document.getElementById('save_action').value = 'stay'">{= actions.save }</button>
 				<button
 					id="btn-save-close"
 					type="submit"
 					onclick="document.getElementById('save_action').value = 'close'"
 					class="button secondary"
 				>
-					{= actions.save_close}
+					{= actions.save_close }
 				</button>
 				<button id="btn-cancel" type="button" onclick="history.back()" class="button secondary">{= actions.cancel}</button>
 
-				{#if (record.id) && enable_delete}
+				{#if (record.id) && enable_delete }
 					<button
 						id="action_delete"
 						type="button"
@@ -60,20 +60,20 @@
 		</form>
 		<!-- crud:children:start -->
 		<div class="child-list mt-8 bg-surface-raised rounded-lg shadow p-4 max-w-max" data-child-section="equipment_items">
-			<h2 class="text-lg font-semibold mb-4">{= props.parent_label}</h2>
+			<h2 class="text-lg font-semibold mb-4">{= props.parent_label }</h2>
 			{#if props.child_records && props.child_records.length > 0}
 				<div class="grid gap-x-8 items-center font-semibold" style="grid-template-columns: {= props.child_columns_grid_cols }">
-					<div class="child-header {= child_columns.title.class }">{= child_fields.title}</div>
-					<div class="child-header {= child_columns.equipment_code.class }">{= child_fields.equipment_code}</div>
-					<div class="child-header {= child_columns.cena.class }">{= child_fields.cena}</div>
-					<div class="child-header {= child_columns.kratica.class }">{= child_fields.kratica}</div>
-					<div class="child-header text-right">{= props.child_ui.actions}</div>
+					<div class="child-header {= child_columns.title.class }">{= child_fields.title }</div>
+					<div class="child-header {= child_columns.equipment_code.class }">{= child_fields.equipment_code }</div>
+					<div class="child-header {= child_columns.cena.class }">{= child_fields.cena }</div>
+					<div class="child-header {= child_columns.kratica.class }">{= child_fields.kratica }</div>
+					<div class="child-header text-right">{= props.child_ui.actions }</div>
 					{#each props.child_records as child}
 						<div class="grid grid-cols-subgrid col-span-full items-center border-t border-slate-100 py-2 hover:bg-slate-200/50 font-normal">
-							<div class="child-field {= props.child_columns.title.class }">{= child.title}</div>
-							<div class="child-field {= props.child_columns.equipment_code.class }">{= child.equipment_code}</div>
-							<div class="child-field {= props.child_columns.cena.class }">{~ display_currency(child.cena)}</div>
-							<div class="child-field {= props.child_columns.kratica.class }">{= child.kratica}</div>
+							<div class="child-field {= props.child_columns.title.class }">{= child.title }</div>
+							<div class="child-field {= props.child_columns.equipment_code.class }">{= child.equipment_code }</div>
+							<div class="child-field {= props.child_columns.cena.class }">{~ display_currency(child.cena) }</div>
+							<div class="child-field {= props.child_columns.kratica.class }">{= child.kratica }</div>
 
 							<div class="flex items-center gap-2 px-2">
 								<button
@@ -99,15 +99,15 @@
 					{/each}
 				</div>
 			{:else}
-				<p class="text-slate-400 italic">{= props.child_ui.empty_text || "No equipment items found."}</p>
+				<p class="text-slate-400 italic">{= props.child_ui.empty_text || "No equipment items found." }</p>
 			{/if}
-			<button type="button" class="button primary mt-4 inline-flex items-center gap-1" data-new-child>{= props.child_ui.new_button}</button>
+			<button type="button" class="button primary mt-4 inline-flex items-center gap-1" data-new-child>{= props.child_ui.new_button }</button>
 		</div>
 		<!-- Child CRUD dialog -->
 		<dialog id="child-dialog-equipment_items" class="p-0 rounded-xl shadow-2xl w-[90vw] max-w-[60ch] max-h-[90vh]">
 			<div class="p-6 overflow-y-auto max-h-[80vh]">
 				<div class="flex items-center justify-between mb-4">
-					<h2 id="child-dialog-title-equipment_items" class="text-lg font-semibold">{= props.child_ui.new_title}</h2>
+					<h2 id="child-dialog-title-equipment_items" class="text-lg font-semibold">{= props.child_ui.new_title }</h2>
 					<button
 						type="button"
 						class="p-1 rounded hover:bg-neutral-100 text-2xl leading-none"
@@ -126,24 +126,24 @@
 
 				<form id="child-form-equipment_items" class="grid gap-4">
 					{#with props}
-						<input type="hidden" name="_csrf_token" value="{= csrf_token }"></input>
-						<input type="hidden" name="equipment_code" id="child-parent-fk-equipment_items" value=""></input>
+						<input type="hidden" name="_csrf_token" value="{= csrf_token }" />
+						<input type="hidden" name="equipment_code" id="child-parent-fk-equipment_items" value="" />
 						<!-- crud:child:fields:start -->
 						<field-wrapper class="grid" data-field="title">
-							<label class="px-3" for="title">{= child_fields.title}</label>
-							<input type="text" id="title" name="title" value=""></input>
+							<label class="px-3" for="title">{= child_fields.title }</label>
+							<input type="text" id="title" name="title" value="" />
 							<validation-error class="mt-1" id="error-title"></validation-error>
 						</field-wrapper>
 
 						<field-wrapper class="grid" data-field="cena">
-							<label class="px-3" for="cena">{= child_fields.cena}</label>
-							<input type="number" id="cena" name="cena" value=""></input>
+							<label class="px-3" for="cena">{= child_fields.cena }</label>
+							<input type="number" id="cena" name="cena" value="" />
 							<validation-error class="mt-1" id="error-cena"></validation-error>
 						</field-wrapper>
 
 						<field-wrapper class="grid" data-field="kratica">
-							<label class="px-3" for="kratica">{= child_fields.kratica}</label>
-							<input type="text" id="kratica" name="kratica" value=""></input>
+							<label class="px-3" for="kratica">{= child_fields.kratica }</label>
+							<input type="text" id="kratica" name="kratica" value="" />
 							<validation-error class="mt-1" id="error-kratica"></validation-error>
 						</field-wrapper>
 						<!-- crud:child:fields:end -->
@@ -374,15 +374,15 @@
 			})();
 		</script>
 		<!-- crud:children:end -->
-		{#if (record.id) && enable_delete}
+		{#if (record.id) && enable_delete }
 			<form id="delete-form" method="POST" action="{~ localized_path('/user/equipment/' + record.code + '/edit') }" style="display: none">
-				<input type="hidden" name="_csrf_token" value="{= csrf_token }"></input>
-				<input type="hidden" name="_action" value="delete"></input>
+				<input type="hidden" name="_csrf_token" value="{= csrf_token }" />
+				<input type="hidden" name="_action" value="delete" />
 			</form>
 		{/if}
 	</div>
 
-	{#if enable_delete}
+	{#if enable_delete }
 		<dialog id="action_delete_dialog" class="p-0 rounded-xl shadow-2xl w-100">
 			<div class="p-6">
 				<h2 class="text-lg font-semibold">{= actions.delete}</h2>
@@ -413,7 +413,7 @@
 		}
 	</script>
 
-	{#if enable_delete}
+	{#if enable_delete }
 		<script>
 			$("#action_delete_dialog").addEventListener("confirm", ()=>{
 				$("#delete-form").submit();

@@ -35,8 +35,13 @@ pub(crate) fn flatten_concat(src: &str) -> String {
 /// Uses the custom AST-based parser (ree_parser) for zero-dependency formatting,
 /// then formats embedded JS/CSS via SWC (native Rust, no subprocess).
 pub(crate) fn format_ree_content(content: &str) -> String {
+    eprintln!("[ree_format] format_ree_content: input {} bytes", content.len());
     let ast_output = crate::ree_parser::format_ree(content);
-    format_script_blocks(&ast_output)
+    eprintln!("[ree_format] after AST pass: {} bytes", ast_output.len());
+    let result = format_script_blocks(&ast_output);
+    eprintln!("[ree_format] after script blocks: {} bytes, matches input={}",
+        result.len(), result == content);
+    result
 }
 
 /// Post-process `<script>` blocks to format JS content via SWC.
@@ -45,8 +50,11 @@ pub(crate) fn format_ree_content(content: &str) -> String {
 fn format_script_blocks(content: &str) -> String {
     let mut out = String::with_capacity(content.len());
     let mut remaining = content;
+    let mut script_count = 0;
 
     while let Some(script_start) = remaining.find("<script") {
+        script_count += 1;
+        eprintln!("[script_blocks] Found <script> #{} at offset {}", script_count, script_start);
         // Find the closing > of the opening tag
         if let Some(tag_end) = remaining[script_start..].find('>') {
             let tag_close = script_start + tag_end + 1;
@@ -104,9 +112,10 @@ fn format_script_blocks(content: &str) -> String {
 /// so the output is correctly nested within the AST's tag structure.
 fn format_script_content(content: &str) -> String {
     if content.trim().is_empty() {
+        eprintln!("[script_content] empty script block");
         return String::new();
     }
-    
+    eprintln!("[script_content] raw content {} bytes", content.len());
     // Detect how many leading newlines there are (separation from <script>>)
     // and trailing newlines (separation from </script>).
     // Crucially, do NOT preserve the AST indentation tabs — the re-indentation
