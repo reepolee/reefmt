@@ -34,5 +34,9 @@
 	// Maximum number of object literal members or type literal members
 	// allowed before collapsing is prevented. Members beyond this count
 	// stay multi-line regardless of wrapWidth.
-	"collapseMaxMembers": 3
+	"collapseMaxMembers": 3,
+	// When true, unused import declarations are removed from JS/TS files
+	// during formatting. Side-effect imports (import "./foo") are always
+	// kept. Defaults to false — enable if you want automatic cleanup.
+	"removeUnusedImports": false
 }

@@ -15,7 +15,7 @@ use swc_core::ecma::parser::{Parser, Syntax, TsSyntax};
 
 /// Format a JavaScript string with custom indent string.
 /// Returns the formatted string, or the original if parsing fails.
-pub(crate) fn format_js_with_indent(code: &str, indent: &str) -> String {
+pub(crate) fn format_js_with_indent(code: &str, indent: &str, remove_unused: bool) -> String {
     if code.trim().is_empty() {
         return code.to_string();
     }
@@ -28,10 +28,15 @@ pub(crate) fn format_js_with_indent(code: &str, indent: &str) -> String {
     // Try TypeScript first, fall back to ES
     let module = parse_ts(&fm, &comments).or_else(|| parse_es(&fm, &comments));
 
-    let module = match module {
+    let mut module = match module {
         Some(m) => m,
         None => return code.to_string(), // Parse failure — return original
     };
+
+    // Remove unused imports if configured
+    if remove_unused {
+        crate::remove_unused_imports::remove_unused_imports(&mut module);
+    }
 
     // Print the AST back to code
     let mut buf = vec![];
@@ -144,7 +149,7 @@ mod tests {
     #[test]
     fn format_simple_js() {
         let input = "const x=1;const y=2;";
-        let result = format_js_with_indent(input, "\t");
+        let result = format_js_with_indent(input, "\t", false);
         assert!(result.contains("const x = 1;"));
         assert!(result.contains("const y = 2;"));
     }
@@ -152,7 +157,7 @@ mod tests {
     #[test]
     fn format_function() {
         let input = "function hello(name){return 'hello '+name;}";
-        let result = format_js_with_indent(input, "\t");
+        let result = format_js_with_indent(input, "\t", false);
         assert!(result.contains("function hello("));
         assert!(result.contains("return"));
     }
@@ -160,29 +165,29 @@ mod tests {
     #[test]
     fn format_empty_returns_original() {
         let input = "";
-        assert_eq!(format_js_with_indent(input, "\t"), "");
+        assert_eq!(format_js_with_indent(input, "\t", false), "");
     }
 
     #[test]
     fn format_invalid_js_returns_original() {
         let input = "this is not valid js {{{{";
-        assert_eq!(format_js_with_indent(input, "\t"), input);
+        assert_eq!(format_js_with_indent(input, "\t", false), input);
     }
 
     #[test]
     fn idempotent_non_ascii_comment() {
         // Regression: non-ASCII chars in comments should be preserved across formats
         let src = "// Café naïve — ščüéø\nconst x = 1;\n";
-        let pass1 = format_js_with_indent(src, "\t");
-        let pass2 = format_js_with_indent(&pass1, "\t");
+        let pass1 = format_js_with_indent(src, "\t", false);
+        let pass2 = format_js_with_indent(&pass1, "\t", false);
         assert_eq!(pass1, pass2, "SWC format should be idempotent with non-ASCII in comments");
     }
 
     #[test]
     fn idempotent_already_formatted() {
         let src = "const x = 1;\n";
-        let pass1 = format_js_with_indent(src, "\t");
-        let pass2 = format_js_with_indent(&pass1, "\t");
+        let pass1 = format_js_with_indent(src, "\t", false);
+        let pass2 = format_js_with_indent(&pass1, "\t", false);
         assert_eq!(pass1, pass2, "SWC format should be idempotent for already-formatted code");
     }
 

@@ -868,6 +868,7 @@ pub(crate) fn format_code_content(
     wrap_width: usize,
     collapse_blocks: bool,
     max_members: usize,
+    remove_unused: bool,
 ) -> String {
     let normalized = content.replace("\r\n", "\n");
 
@@ -875,7 +876,7 @@ pub(crate) fn format_code_content(
         "ts" | "js" => {
             let flattened = flatten_concat(&normalized);
             let (preprocessed, placeholders) = preprocess_for_swc(&flattened);
-            let swc_formatted = crate::swc_format::format_js_with_indent(&preprocessed, "\t");
+            let swc_formatted = crate::swc_format::format_js_with_indent(&preprocessed, "\t", remove_unused);
             let restored = if placeholders.is_empty() {
                 swc_formatted
             } else {
@@ -900,7 +901,7 @@ pub(crate) fn format_code_content(
 }
 
 /// Format a standalone code file (TS, JS, CSS). Returns `true` if modified.
-pub(crate) fn format_code_file(path: &Path, mode: Mode, wrap_width: usize, collapse_blocks: bool, max_members: usize) -> bool {
+pub(crate) fn format_code_file(path: &Path, mode: Mode, wrap_width: usize, collapse_blocks: bool, max_members: usize, remove_unused: bool) -> bool {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -911,7 +912,7 @@ pub(crate) fn format_code_file(path: &Path, mode: Mode, wrap_width: usize, colla
 
     let normalized = content.replace("\r\n", "\n");
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-    let write_content = format_code_content(&normalized, ext, wrap_width, collapse_blocks, max_members);
+    let write_content = format_code_content(&normalized, ext, wrap_width, collapse_blocks, max_members, remove_unused);
 
     if write_content == normalized {
         return false;
@@ -946,8 +947,8 @@ pub(crate) fn format_file(path: &Path, mode: Mode, config: &crate::ReeConfig) ->
         return false;
     }
     match ext {
-        "ree" => crate::ree_format::format_ree_file(path, mode, config.wrap_width, config.collapse_single_stmt_blocks, config.collapse_max_members),
-        "ts" | "js" | "css" => format_code_file(path, mode, config.wrap_width, config.collapse_single_stmt_blocks, config.collapse_max_members),
+        "ree" => crate::ree_format::format_ree_file(path, mode, config.wrap_width, config.collapse_single_stmt_blocks, config.collapse_max_members, config.remove_unused_imports),
+        "ts" | "js" | "css" => format_code_file(path, mode, config.wrap_width, config.collapse_single_stmt_blocks, config.collapse_max_members, config.remove_unused_imports),
         _ => false,
     }
 }
@@ -965,7 +966,7 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Check, 120, true, 3);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Check, 120, true, 3, false);
         assert!(modified, "Check mode should return true when file would change");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, unformatted, "Check mode should not modify the file");
@@ -981,7 +982,7 @@ mod tests {
         let content = "<span>text</span>\n";
         fs::write(&path, content).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Check, 120, true, 3);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Check, 120, true, 3, false);
         assert!(!modified, "Check mode should return false for already-formatted file (modified={})", modified);
 
         let content_after = fs::read_to_string(&path).unwrap();
@@ -998,7 +999,7 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Diff, 120, true, 3);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Diff, 120, true, 3, false);
         assert!(modified, "Diff mode should return true when file would change");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, unformatted, "Diff mode should not modify the file");
@@ -1014,7 +1015,7 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Write, 120, true, 3);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Write, 120, true, 3, false);
         assert!(modified, "Write mode should return true when file changes");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_ne!(content_after, unformatted, "Write mode should modify the file");
@@ -1030,7 +1031,7 @@ mod tests {
         let content = "<span>text</span>\n";
         fs::write(&path, content).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Diff, 120, true, 3);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Diff, 120, true, 3, false);
         assert!(!modified, "Diff mode should return false for already-formatted file");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, content, "Diff mode should not modify the file");
@@ -1046,7 +1047,7 @@ mod tests {
         let content = "const x = 1;\n";
         fs::write(&path, content).unwrap();
 
-        let _modified = format_code_file(&path, Mode::Check, 180, true, 3);
+        let _modified = format_code_file(&path, Mode::Check, 180, true, 3, false);
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, content, "Check mode should not modify the code file");
 
@@ -1056,37 +1057,37 @@ mod tests {
     #[test]
     fn diff_mode_code_file_missing_returns_false() {
         let path = Path::new("/tmp/nonexistent_file_reefmt_diff_test.ts");
-        let modified = format_code_file(path, Mode::Diff, 180, true, 3);
+        let modified = format_code_file(path, Mode::Diff, 180, true, 3, false);
         assert!(!modified, "format_code_file Diff should return false for missing file");
     }
 
     #[test]
     fn check_mode_ree_file_missing_returns_false() {
         let path = Path::new("/tmp/nonexistent_file_reefmt_test.ree");
-        let modified = crate::ree_format::format_ree_file(path, Mode::Check, 120, true, 3);
+        let modified = crate::ree_format::format_ree_file(path, Mode::Check, 120, true, 3, false);
         assert!(!modified, "format_ree_file should return false for missing file");
     }
 
     #[test]
     fn format_code_content_js_uses_swc() {
         let src = "const x=1;const y=2;";
-        let result = format_code_content(src, "js", 180, true, 3);
+        let result = format_code_content(src, "js", 180, true, 3, false);
         assert!(result.contains("const x = 1;"), "SWC should format JS: got {:?}", result);
     }
 
     #[test]
     fn idempotent_format_code_content_js() {
         let src = "const x = 1;\n";
-        let pass1 = format_code_content(src, "js", 180, true, 3);
-        let pass2 = format_code_content(&pass1, "js", 180, true, 3);
+        let pass1 = format_code_content(src, "js", 180, true, 3, false);
+        let pass2 = format_code_content(&pass1, "js", 180, true, 3, false);
         assert_eq!(pass1, pass2, "format_code_content should be idempotent for JS");
     }
 
     #[test]
     fn idempotent_format_code_content_non_ascii_comment() {
         let src = "// Café naïve — ščüéø\nconst x = 1;\n";
-        let pass1 = format_code_content(src, "js", 180, true, 3);
-        let pass2 = format_code_content(&pass1, "js", 180, true, 3);
+        let pass1 = format_code_content(src, "js", 180, true, 3, false);
+        let pass2 = format_code_content(&pass1, "js", 180, true, 3, false);
         assert_eq!(pass1, pass2,
             "format_code_content should be idempotent with non-ASCII chars");
     }
@@ -1094,14 +1095,14 @@ mod tests {
     #[test]
     fn format_code_content_css_passthrough() {
         let src = "body { color: red; }\n";
-        let result = format_code_content(src, "css", 180, true, 3);
+        let result = format_code_content(src, "css", 180, true, 3, false);
         assert_eq!(result, src, "CSS should pass through unchanged");
     }
 
     #[test]
     fn preserves_block_comments() {
         let src = "/**\n * doc\n */\nexport const x = 1;\n";
-        let result = format_code_content(src, "ts", 180, true, 3);
+        let result = format_code_content(src, "ts", 180, true, 3, false);
         assert!(result.contains("/**"), "block comment /** should be preserved");
         assert!(result.contains("* doc\n"), "block comment content should be preserved (space before * is normalized)");
         assert!(result.contains("*/\nexport"), "*/ should be on its own line before export");
@@ -1110,36 +1111,36 @@ mod tests {
     #[test]
     fn preserves_blank_lines_between_statements() {
         let src = "export interface A {\n\tx: number;\n}\n\nexport interface B {\n\ty: number;\n}\n";
-        let result = format_code_content(src, "ts", 180, true, 3);
+        let result = format_code_content(src, "ts", 180, true, 3, false);
         assert!(result.contains("}\n\nexport"), "blank line between interfaces should be preserved");
     }
 
     #[test]
     fn inline_block_comment_not_extracted() {
         let src = "const x = 1; /* inline */\n";
-        let result = format_code_content(src, "ts", 180, true, 3);
+        let result = format_code_content(src, "ts", 180, true, 3, false);
         assert!(result.contains("/* inline */"), "inline block comments should stay inline");
     }
 
     #[test]
     fn block_comment_in_string_not_extracted() {
         let src = "const s = \"/* not a comment */\";\n";
-        let result = format_code_content(src, "ts", 180, true, 3);
+        let result = format_code_content(src, "ts", 180, true, 3, false);
         assert!(result.contains("/* not a comment */"), "comments inside strings should be preserved");
     }
 
     #[test]
     fn single_line_block_comment_own_line() {
         let src = "/* standalone */\nexport const x = 1;\n";
-        let result = format_code_content(src, "ts", 180, true, 3);
+        let result = format_code_content(src, "ts", 180, true, 3, false);
         assert!(result.contains("/* standalone */\nexport"), "standalone block comment should be on its own line");
     }
 
     #[test]
     fn idempotent_with_block_comments_and_blank_lines() {
         let src = "/**\n * Translation helpers\n */\n\n// ─── Types ─────────────────────────────────────────────────────\n\nexport interface TranslationRow {\n\tid: number;\n\tlang: string;\n}\n\nexport interface GroupInfo {\n\tnamespace: string;\n\tchild_keys: string[];\n}\n";
-        let pass1 = format_code_content(src, "ts", 180, true, 3);
-        let pass2 = format_code_content(&pass1, "ts", 180, true, 3);
+        let pass1 = format_code_content(src, "ts", 180, true, 3, false);
+        let pass2 = format_code_content(&pass1, "ts", 180, true, 3, false);
         assert_eq!(pass1, pass2, "output should be idempotent with block comments and blank lines");
     }
 
@@ -1150,8 +1151,8 @@ mod tests {
         // on each pass because SWC re-indented placeholder lines and the
         // content lines of the comment had extra spacing that accumulated.
         let src = "export function create_cache(redis_client: typeof default_redis) {\n\treturn {\n\t\t/**\n\t\t * Wraps a search query with Redis caching and dependency tracking.\n\t\t * On cache miss, stores the result and registers it in dependency sets\n\t\t * for each table in `view_deps`.\n\t\t *\n\t\t * On Redis error, falls back to `query_fn()` directly with a warning.\n\t\t */\n\t\tasync search<T>(\n\t\t\troute: string,\n\t\t\tparams: Record<string, unknown>,\n\t\t\tview_deps: string[],\n\t\t\tquery_fn: () => Promise<T>,\n\t\t): Promise<T> {\n\t\t\treturn cached_query(route, params, view_deps, query_fn);\n\t\t}\n\t};\n}\n";
-        let pass1 = format_code_content(src, "ts", 180, true, 3);
-        let pass2 = format_code_content(&pass1, "ts", 180, true, 3);
+        let pass1 = format_code_content(src, "ts", 180, true, 3, false);
+        let pass2 = format_code_content(&pass1, "ts", 180, true, 3, false);
         assert_eq!(pass1, pass2, "block comment inside object literal should be idempotent");
     }
 
