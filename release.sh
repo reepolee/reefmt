@@ -6,7 +6,7 @@
 # Usage: bash release.sh [--draft] [--minor] [--force]
 #   --draft  Create the release as a draft (default: published)
 #   --minor  Bump the minor version instead of the patch version (default: patch)
-#   --force  Skip version mismatch check (use when pushing ahead of remote)
+#   --force  Skip version bump and use the current version as-is (e.g. for releasing a .0)
 #
 # Prerequisites:
 #   - gh CLI (https://cli.github.com) — authenticated via `gh auth login`
@@ -58,7 +58,7 @@ if [ "$minor_bump" = true ]; then
 	echo "  (Minor bump)"
 fi
 if [ "$force_flag" = true ]; then
-	echo "  (Force mode — version mismatch check skipped)"
+	echo "  (Force mode — version bump skipped, using current version as-is)"
 fi
 
 # ──────────────────────────────────────────────
@@ -147,7 +147,11 @@ fi
 
 tag="v$version"
 
-if [ "$new_commits" -gt 0 ]; then
+if [ "$force_flag" = true ]; then
+	echo "═══ reefmt release $version for $os ($arch) ═══"
+	echo "  (Force mode — using current version $version without bump)"
+	do_bump=false
+elif [ "$new_commits" -gt 0 ]; then
 	# Code has changed since last release → bump version
 	if [ "${minor_bump:-false}" = true ]; then
 		new_version=$(bump_minor "$version")
@@ -167,7 +171,7 @@ if [ "$new_commits" -gt 0 ]; then
 	tag="v$version"
 	do_bump=true
 else
-	# No code changes → just upload the binary
+	# No code changes → just upload the binary (or --force was used)
 	echo "═══ reefmt release $version for $os ($arch) ═══"
 	echo "  (No new commits since $latest_tag. Uploading binary only.)"
 	do_bump=false

@@ -5,7 +5,7 @@
 # Usage: .\release.ps1 [-Draft] [-Minor] [-Force]
 #   -Draft  Create the release as a draft (default: published)
 #   -Minor  Bump the minor version instead of the patch version (default: patch)
-#   -Force  Skip version mismatch check (use when pushing ahead of remote)
+#   -Force  Skip version bump and use the current version as-is (e.g. for releasing a .0)
 #
 # Prerequisites:
 #   - gh CLI (https://cli.github.com) — authenticated via `gh auth login`
@@ -92,7 +92,11 @@ if ($latestTag) {
 $tag = "v$version"
 $doBump = $false
 
-if ($newCommits -gt 0) {
+if ($Force) {
+    Write-Host "═══ reefmt release $version for Windows ═══"
+    Write-Host "  (Force mode — using current version $version without bump)"
+    $doBump = $false
+} elseif ($newCommits -gt 0) {
     # Code has changed since last release → bump version
     $parts = $version -split '\.'
     if ($Minor) {
