@@ -2,6 +2,7 @@ mod ree_format;
 mod format;
 mod ree_parser;
 mod swc_format;
+mod remove_unused_imports;
 
 use serde::Deserialize;
 use std::{
@@ -44,6 +45,10 @@ pub(crate) struct ReeConfig {
     /// stay multi-line regardless of wrapWidth.
     #[serde(rename = "collapseMaxMembers", default = "default_three")]
     collapse_max_members: usize,
+    /// When true, unused import declarations are removed from JS/TS files
+    /// during formatting. Side-effect imports (`import "./foo"`) are always kept.
+    #[serde(rename = "removeUnusedImports", default)]
+    remove_unused_imports: bool,
 }
 
 
@@ -310,8 +315,8 @@ fn main() {
         let ext = ext.trim_start_matches('.');
 
         let formatted = match ext {
-            "ree" => ree_format::format_ree_content(&input, config.wrap_width, config.collapse_single_stmt_blocks, config.collapse_max_members),
-            "ts" | "js" | "css" => format::format_code_content(&input, ext, config.wrap_width, config.collapse_single_stmt_blocks, config.collapse_max_members),
+            "ree" => ree_format::format_ree_content(&input, config.wrap_width, config.collapse_single_stmt_blocks, config.collapse_max_members, config.remove_unused_imports),
+            "ts" | "js" | "css" => format::format_code_content(&input, ext, config.wrap_width, config.collapse_single_stmt_blocks, config.collapse_max_members, config.remove_unused_imports),
             _ => {
                 eprintln!("Unsupported extension for --stdin: .{}", ext);
                 std::process::exit(1);
@@ -410,6 +415,7 @@ mod tests {
             wrap_width: 120,
             collapse_single_stmt_blocks: true,
             collapse_max_members: 3,
+            remove_unused_imports: false,
         };
         let modified = format::format_file(&path, format::Mode::Write, &config);
         assert!(!modified, "format_file should return false for unsupported extension");
@@ -425,7 +431,7 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, format::Mode::Check, 120, true, 3);
+        let modified = crate::ree_format::format_ree_file(&path, format::Mode::Check, 120, true, 3, false);
         assert!(modified, "Check mode should return true when file would change");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, unformatted, "Check mode should not modify the file");
@@ -462,6 +468,7 @@ mod tests {
             wrap_width: 120,
             collapse_single_stmt_blocks: true,
             collapse_max_members: 3,
+            remove_unused_imports: false,
         };
 
         let matched = Path::new("generator/templates/ui/button.ts");

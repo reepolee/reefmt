@@ -31,12 +31,12 @@ pub(crate) fn flatten_concat(src: &str) -> String {
 }
 
 /// Format full Ree template content.
-pub(crate) fn format_ree_content(content: &str, wrap_width: usize, collapse_blocks: bool, max_members: usize) -> String {
+pub(crate) fn format_ree_content(content: &str, wrap_width: usize, collapse_blocks: bool, max_members: usize, remove_unused: bool) -> String {
     let ast_output = crate::ree_parser::format_ree(content, wrap_width);
-    format_script_blocks(&ast_output, wrap_width, collapse_blocks, max_members)
+    format_script_blocks(&ast_output, wrap_width, collapse_blocks, max_members, remove_unused)
 }
 
-fn format_script_blocks(content: &str, wrap_width: usize, collapse_blocks: bool, max_members: usize) -> String {
+fn format_script_blocks(content: &str, wrap_width: usize, collapse_blocks: bool, max_members: usize, remove_unused: bool) -> String {
     let mut out = String::with_capacity(content.len());
     let mut remaining = content;
     while let Some(script_start) = remaining.find("<script") {
@@ -63,7 +63,7 @@ fn format_script_blocks(content: &str, wrap_width: usize, collapse_blocks: bool,
                 out.push_str(&remaining[script_start..content_start]);
 
                 let script_content = &remaining[content_start..content_end];
-                let formatted = format_script_content(script_content, wrap_width, collapse_blocks, max_members);
+                let formatted = format_script_content(script_content, wrap_width, collapse_blocks, max_members, remove_unused);
                 out.push_str(&formatted);
 
                 if formatted.is_empty() {
@@ -95,7 +95,7 @@ fn format_script_blocks(content: &str, wrap_width: usize, collapse_blocks: bool,
 /// Protects Ree expressions, formats with SWC, then restores them.
 /// Detects the base indentation from the original content and preserves it
 /// so the output is correctly nested within the AST's tag structure.
-fn format_script_content(content: &str, wrap_width: usize, collapse_blocks: bool, max_members: usize) -> String {
+fn format_script_content(content: &str, wrap_width: usize, collapse_blocks: bool, max_members: usize, remove_unused: bool) -> String {
     if content.trim().is_empty() {
         return String::new();
     }
@@ -131,7 +131,7 @@ fn format_script_content(content: &str, wrap_width: usize, collapse_blocks: bool
     let protected = protect_ree_expressions(&bare_js, &mut placeholders);
     
     // Format with SWC
-    let formatted = crate::swc_format::format_js_with_indent(&protected, "\t");
+    let formatted = crate::swc_format::format_js_with_indent(&protected, "\t", remove_unused);
     
     // Fix arrow function spacing: `()=>{` → `() => {`
     let formatted = crate::format::fix_arrow_spacing(&formatted);
@@ -297,7 +297,7 @@ fn restore_ree_expressions(input: &str, placeholders: &[String]) -> String {
 
 
 /// Format a Ree template file. Returns `true` if the file was (or would be) modified.
-pub(crate) fn format_ree_file(path: &Path, mode: crate::format::Mode, wrap_width: usize, collapse_blocks: bool, max_members: usize) -> bool {
+pub(crate) fn format_ree_file(path: &Path, mode: crate::format::Mode, wrap_width: usize, collapse_blocks: bool, max_members: usize, remove_unused: bool) -> bool {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -307,7 +307,7 @@ pub(crate) fn format_ree_file(path: &Path, mode: crate::format::Mode, wrap_width
     };
 
     let normalized = content.replace("\r\n", "\n");
-    let write_content = format_ree_content(&normalized, wrap_width, collapse_blocks, max_members);
+    let write_content = format_ree_content(&normalized, wrap_width, collapse_blocks, max_members, remove_unused);
 
     if write_content == normalized {
         return false;
@@ -338,7 +338,7 @@ mod tests {
     #[test]
     fn format_ree_content_idempotent() {
         let src = "<span>text</span>\n";
-        let result = format_ree_content(src, 120, true, 3);
+        let result = format_ree_content(src, 120, true, 3, false);
         assert_eq!(result, src, "format_ree_content should be idempotent for already-formatted content");
     }
 
@@ -347,8 +347,8 @@ mod tests {
         // Regression: non-ASCII UTF-8 chars in <script> comments were corrupted
         // by protect_ree_expressions pushing bytes as chars (mojibake).
         let src = "<!DOCTYPE html>\n<html>\n\t<head>\n\t\t<script>\n\t\t// šč test — non-ASCII\n\t\tconst x = 1;\n\t\t</script>\n\t</head>\n</html>\n";
-        let pass1 = format_ree_content(src, 120, true, 3);
-        let pass2 = format_ree_content(&pass1, 120, true, 3);
+        let pass1 = format_ree_content(src, 120, true, 3, false);
+        let pass2 = format_ree_content(&pass1, 120, true, 3, false);
         assert_eq!(pass1, pass2,
             "format_ree_content should be idempotent with non-ASCII chars in script comments");
     }
@@ -357,8 +357,8 @@ mod tests {
     fn idempotent_non_ascii_in_ree_expr() {
         // Non-ASCII inside Ree expressions should also be stable
         let src = "<p>{= props.ui.šč_test }</p>\n";
-        let pass1 = format_ree_content(src, 120, true, 3);
-        let pass2 = format_ree_content(&pass1, 120, true, 3);
+        let pass1 = format_ree_content(src, 120, true, 3, false);
+        let pass2 = format_ree_content(&pass1, 120, true, 3, false);
         assert_eq!(pass1, pass2,
             "format_ree_content should be idempotent with non-ASCII in Ree expressions");
     }
@@ -367,8 +367,8 @@ mod tests {
     fn idempotent_doctype_and_html() {
         // Regression: DOCTYPE was parsed as an HTML element, causing indentation drift
         let src = "<!DOCTYPE html>\n\n<html lang=\"en\">\n\t<head>\n\t\t<meta charset=\"UTF-8\" />\n\t</head>\n</html>\n";
-        let pass1 = format_ree_content(src, 120, true, 3);
-        let pass2 = format_ree_content(&pass1, 120, true, 3);
+        let pass1 = format_ree_content(src, 120, true, 3, false);
+        let pass2 = format_ree_content(&pass1, 120, true, 3, false);
         assert_eq!(pass1, pass2,
             "format_ree_content should be idempotent with DOCTYPE declarations");
     }
@@ -377,8 +377,8 @@ mod tests {
     fn idempotent_ree_blocks_and_script() {
         // Full Ree block with embedded script containing non-ASCII
         let src = "{#if props.show}\n\t<script>\n\t// Café naïve — UTF-8 in script\n\tconsole.log(42);\n\t</script>\n{/if}\n";
-        let pass1 = format_ree_content(src, 120, true, 3);
-        let pass2 = format_ree_content(&pass1, 120, true, 3);
+        let pass1 = format_ree_content(src, 120, true, 3, false);
+        let pass2 = format_ree_content(&pass1, 120, true, 3, false);
         assert_eq!(pass1, pass2,
             "format_ree_content should be idempotent with Ree blocks and UTF-8 in scripts");
     }
@@ -387,8 +387,8 @@ mod tests {
     fn idempotent_multiple_blank_lines() {
         // Multiple consecutive blank lines should converge to stable output
         let src = "<div>\n\n\n<p>text</p>\n</div>\n";
-        let pass1 = format_ree_content(src, 120, true, 3);
-        let pass2 = format_ree_content(&pass1, 120, true, 3);
+        let pass1 = format_ree_content(src, 120, true, 3, false);
+        let pass2 = format_ree_content(&pass1, 120, true, 3, false);
         assert_eq!(pass1, pass2,
             "format_ree_content should be idempotent with multiple blank lines");
     }
