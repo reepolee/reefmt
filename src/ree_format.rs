@@ -133,6 +133,9 @@ fn format_script_content(content: &str, wrap_width: usize, collapse_blocks: bool
     // Format with SWC
     let formatted = crate::swc_format::format_js_with_indent(&protected, "\t");
     
+    // Fix arrow function spacing: `()=>{` → `() => {`
+    let formatted = crate::format::fix_arrow_spacing(&formatted);
+    
     // Restore Ree expressions
     let restored = restore_ree_expressions(&formatted, &placeholders);
     
