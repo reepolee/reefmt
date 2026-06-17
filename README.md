@@ -24,21 +24,11 @@ The script detects your OS and architecture, downloads the correct binary from t
 
 Or download a binary directly from the [latest release](https://github.com/reepolee/reefmt/releases/latest).
 
-### Optional: install formatter dependencies
-
-For best results (JS/CSS formatting via dprint and lint fixes via biome):
-
-```bash
-brew install dprint biome
-# or
-bun install -g dprint biome
-```
-
-reefmt works without these — it falls back to basic indentation if they're not found.
-
 ## Usage
 
-reefmt formats `.ree` template files and can also format `.ts`, `.js`, and `.css` files by piping them through dprint (formatting) and biome (lint fixes) in a single pass — a convenient unified formatter for your projects.
+reefmt formats `.ree` template files using a custom Rust-based AST parser. It also formats `.ts`, `.js`, and `.css` files via the built-in SWC formatter (no external tools needed).
+
+reefmt is a pure Rust binary with zero runtime dependencies — no Node.js, no dprint, no biome required.
 
 reefmt also supports formatting from stdin with the `--stdin` flag, which is useful for editor integrations and pipe workflows.
 

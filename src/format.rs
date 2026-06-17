@@ -4,10 +4,10 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use similar::{ChangeTag, DiffOp};
 
-use crate::ree_tags::{protect, restore, protect_html_comments, restore_html_comments};
-use crate::ree_format::{flatten_concat, indent_code};
+use crate::ree_format::flatten_concat;
 
 /// Atomic counter for generating unique temp file names across parallel threads.
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -16,10 +16,8 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Mode { Write, Check, Diff }
 
-/// Default dprint config, embedded at build time.
-pub(crate) const DPRINT_CONFIG: &str = include_str!("../dprint.default.json");
-/// Default biome config, embedded at build time.
-pub(crate) const BIOME_CONFIG: &str = include_str!("../biome.default.json");
+/// Default oxfmt config with tabs, embedded at build time.
+const OXFMT_CONFIG: &str = "{\"useTabs\": true, \"tabWidth\": 1}";
 
 /// Print a unified diff between original and formatted content.
 pub(crate) fn print_diff(path: &Path, original: &str, formatted: &str) {
@@ -64,91 +62,47 @@ fn temp_uid() -> String {
     format!("{}_{}", pid, count)
 }
 
-/// Resolve the dprint config path. If a `dprint.json` exists in the current
-/// directory, use it directly. Otherwise, write the hardcoded defaults to a
-/// temp file and return that path.
-pub(crate) fn resolve_dprint_config() -> Option<String> {
-    if let Ok(cwd) = env::current_dir() {
-        let external = cwd.join("dprint.json");
-        if external.exists() {
-            return Some(external.to_string_lossy().into_owned());
-        }
-        let external_jsonc = cwd.join("dprint.jsonc");
-        if external_jsonc.exists() {
-            return Some(external_jsonc.to_string_lossy().into_owned());
-        }
-    }
-
-    let uid = temp_uid();
-    let config_path = env::temp_dir()
-        .join(format!("reefmt_dprint_config_{}.json", uid))
-        .to_string_lossy()
-        .into_owned();
-
-    if fs::write(&config_path, DPRINT_CONFIG).is_ok() {
-        Some(config_path)
-    } else {
-        None
-    }
-}
-
-/// Run biome lint --fix on the JS/CSS/TS fragment (via temp file).
-pub(crate) fn run_biome_lint(src: &str, ext: &str) -> String {
-    let uid = temp_uid();
-    let dir = env::temp_dir().join(format!("reefmt_biome_{}", uid));
-    if fs::create_dir_all(&dir).is_err() {
-        return src.to_string();
-    }
-
-    let tmp_path = dir.join(format!("input.{}", ext));
-    let config_path = dir.join("biome.json");
-
-    let biome_config = env::current_dir()
-        .ok()
-        .and_then(|cwd| {
-            let path = cwd.join("biome.json");
-            if path.exists() {
-                fs::read_to_string(&path).ok()
-            } else {
-                let path = cwd.join("biome.jsonc");
+/// Resolve the oxfmt config path. Write the default config to a temp file
+/// once and reuse it for all subsequent calls.
+fn resolve_oxfmt_config() -> &'static str {
+    static CONFIG_PATH: OnceLock<String> = OnceLock::new();
+    CONFIG_PATH.get_or_init(|| {
+        // Check for project-level oxfmt config first
+        if let Ok(cwd) = env::current_dir() {
+            for name in &[".oxfmtrc.json", "oxfmt.json", "oxfmt.jsonc"] {
+                let path = cwd.join(name);
                 if path.exists() {
-                    fs::read_to_string(&path).ok()
-                } else {
-                    None
+                    return path.to_string_lossy().into_owned();
                 }
             }
-        })
-        .unwrap_or_else(|| BIOME_CONFIG.to_string());
+        }
 
-    if fs::write(&config_path, biome_config).is_err()
-        || fs::write(&tmp_path, src).is_err()
-    {
-        let _ = fs::remove_dir_all(&dir);
-        return src.to_string();
-    }
+        let uid = temp_uid();
+        let config_path = env::temp_dir()
+            .join(format!("reefmt_oxfmt_config_{}.json", uid))
+            .to_string_lossy()
+            .into_owned();
 
-    let filename = format!("input.{}", ext);
-    let result = Command::new("biome")
-        .current_dir(&dir)
-        .args(["lint", "--write", "--unsafe", &filename])
-        .output();
-
-    let output = match result {
-        Ok(_) => match fs::read_to_string(&tmp_path) {
-            Ok(content) => content,
-            Err(_) => src.to_string(),
-        },
-        Err(_) => src.to_string(),
-    };
-
-    let _ = fs::remove_dir_all(&dir);
-    output
+        if fs::write(&config_path, OXFMT_CONFIG).is_ok() {
+            config_path
+        } else {
+            String::new()
+        }
+    })
 }
 
-/// Pipe content through dprint for formatting.
-pub(crate) fn pipe_dprint(src: &str, ext: &str, config_path: &str) -> String {
-    let mut child = match Command::new("dprint")
-        .args(["fmt", "--stdin", &format!("file.{}", ext), "--config", config_path])
+/// Pipe content through oxfmt for formatting.
+pub(crate) fn pipe_oxfmt(src: &str, ext: &str) -> String {
+    let filepath = format!("file.{}", ext);
+    let mut args = vec!["--stdin-filepath", &filepath];
+    let config_path = resolve_oxfmt_config();
+    if !config_path.is_empty() {
+        args.push("-c");
+        args.push(config_path);
+    }
+
+    let mut child = match Command::new("oxfmt")
+        .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -170,56 +124,12 @@ pub(crate) fn pipe_dprint(src: &str, ext: &str, config_path: &str) -> String {
     }
 }
 
-/// Format code (JS/TS/CSS) through biome lint-fix + dprint formatting.
-pub(crate) fn dprint_format(src: &str, lang: &str) -> String {
-    let ext = if lang == "css" { "css" } else { "js" };
-
-    let (html_protected, html_comments) = protect_html_comments(src.trim());
-    let protected = protect(&html_protected);
-    let flattened = flatten_concat(&protected);
-    let after_lint = run_biome_lint(&flattened, ext);
-
-    let config_path = resolve_dprint_config();
-    let formatted = match config_path {
-        Some(ref path) => {
-            let result = pipe_dprint(&after_lint, ext, path);
-            if path.contains("reefmt_dprint_config_") {
-                let _ = fs::remove_file(path);
-            }
-            result
-        }
-        None => after_lint,
-    };
-
-    let restored = restore(&formatted);
-    let restored = restore_html_comments(&restored, &html_comments);
-    let indented = indent_code(&restored);
-
-    indented
-        .trim()
-        .lines()
-        .map(|l| format!("\t{}", l))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Format standalone code content (TS/JS/CSS) via biome lint-fix then dprint.
+/// Format standalone code content (TS/JS/CSS) via oxfmt.
 pub(crate) fn format_code_content(content: &str, ext: &str) -> String {
     let normalized = content.replace("\r\n", "\n");
 
     let flattened = flatten_concat(&normalized);
-    let after_lint = run_biome_lint(&flattened, ext);
-
-    let formatted = match resolve_dprint_config() {
-        Some(ref config_path) => {
-            let result = pipe_dprint(&after_lint, ext, config_path);
-            if config_path.contains("reefmt_dprint_config_") {
-                let _ = fs::remove_file(config_path);
-            }
-            result
-        }
-        None => after_lint,
-    };
+    let formatted = pipe_oxfmt(&flattened, ext);
 
     if !formatted.is_empty() && !formatted.ends_with('\n') {
         format!("{}\n", formatted)

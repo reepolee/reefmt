@@ -1,0 +1,1012 @@
+//! Custom AST-based parser and printer for .ree template files.
+//!
+//! Parses `.ree` files (HTML + Ree template syntax) into an AST and prints
+//! them with consistent tab indentation, proper nesting, and smart line folding.
+
+// ═══════════════════════════════════════════════════════════════
+// AST Types
+// ═══════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone)]
+pub(crate) enum Node {
+    Text(String),
+    Element {
+        tag: String,
+        attrs: Vec<String>,
+        children: Vec<Node>,
+        self_closing: bool,
+    },
+    ReeBlock {
+        keyword: String,
+        expr: String,
+        children: Vec<Node>,
+        else_children: Option<Vec<Node>>,
+    },
+    ReeExpr(String),
+    ReeCall(String),
+    ReeDirective(String),
+    Comment(String),
+    RawJs(String),
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Public API
+// ═══════════════════════════════════════════════════════════════
+
+pub(crate) fn format_ree(input: &str) -> String {
+    let normalized = input.replace("\r\n", "\n");
+    eprintln!("[ree_parser] input length: {} bytes", normalized.len());
+    let nodes = parse(&normalized);
+    eprintln!("[ree_parser] parsed {} top-level nodes", nodes.len());
+    let nodes = hoist_script_ree_blocks(nodes);
+    let out = print_nodes(&nodes);
+    eprintln!("[ree_parser] output length: {} bytes", out.len());
+    // Normalize to exactly one trailing newline
+    let trimmed = out.trim_end_matches('\n');
+    format!("{}\n", trimmed)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Parser
+// ═══════════════════════════════════════════════════════════════
+
+fn parse(input: &str) -> Vec<Node> {
+    let (nodes, _) = parse_nodes(input, Stop::None);
+    nodes
+}
+
+enum Stop {
+    None,
+    CloseTag(String),
+    ReeClose(String),
+}
+
+fn parse_nodes(input: &str, stop: Stop) -> (Vec<Node>, &str) {
+    let mut remaining = input;
+    let mut nodes = Vec::new();
+
+    while !remaining.is_empty() {
+        if check_stop(remaining, &stop) {
+            return (nodes, remaining);
+        }
+
+        let next = find_next_special(remaining);
+
+        if next > 0 {
+            let text = &remaining[..next];
+            if !text.is_empty() {
+                nodes.push(Node::Text(text.to_string()));
+            }
+            remaining = &remaining[next..];
+        }
+
+        if remaining.is_empty() {
+            break;
+        }
+
+        if check_stop(remaining, &stop) {
+            return (nodes, remaining);
+        }
+
+        let (node_opt, after) = parse_token(remaining);
+        if let Some(node) = node_opt {
+            nodes.push(node);
+        }
+        remaining = after;
+    }
+
+    (nodes, remaining)
+}
+
+fn check_stop(remaining: &str, stop: &Stop) -> bool {
+    match stop {
+        Stop::None => false,
+        Stop::CloseTag(tag) => {
+            if remaining.starts_with("</") {
+                let after = &remaining[2..];
+                if let Some(gt) = after.find('>') {
+                    let name = after[..gt].trim();
+                    return name.eq_ignore_ascii_case(tag);
+                }
+            }
+            false
+        }
+        Stop::ReeClose(keyword) => {
+            let c1 = format!("{{/{}}}", keyword);
+            let c2 = format!("{{/ {}}}", keyword);
+            if remaining.starts_with(&c1) || remaining.starts_with(&c2) {
+                return true;
+            }
+            remaining.starts_with("{:else}") || remaining.starts_with("{:else if")
+        }
+    }
+}
+
+fn find_next_special(input: &str) -> usize {
+    let mut i = 0;
+    let len = input.len();
+    let bytes = input.as_bytes();
+    while i < len {
+        // Skip bytes that are not at char boundaries (inside multi-byte UTF-8)
+        if !input.is_char_boundary(i) {
+            i += 1;
+            continue;
+        }
+        match bytes[i] {
+            b'<' => {
+                if i + 3 < len && bytes[i+1] == b'!' && bytes[i+2] == b'-' && bytes[i+3] == b'-' {
+                    if let Some(end) = input[i+4..].find("-->") {
+                        i += end + 4 + 3;
+                        continue;
+                    } else {
+                        return len;
+                    }
+                }
+                return i;
+            }
+            b'{' => {
+                if i + 1 < len && bytes[i+1] == b'{' {
+                    if let Some(end) = input[i+2..].find("}}") {
+                        i += end + 2 + 2;
+                        continue;
+                    } else {
+                        return len;
+                    }
+                }
+                return i;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    len
+}
+
+fn find_next_special_in_raw(input: &str, close_marker: &str) -> usize {
+    let mut i = 0;
+    let len = input.len();
+    let bytes = input.as_bytes();
+    let marker_bytes = close_marker.as_bytes();
+    while i < len {
+        if !input.is_char_boundary(i) {
+            i += 1;
+            continue;
+        }
+        if i + marker_bytes.len() <= len && &bytes[i..i + marker_bytes.len()] == marker_bytes {
+            return i;
+        }
+        match bytes[i] {
+            b'{' if i + 1 < len => {
+                let next = bytes[i + 1];
+                // Inside <script>/<style>, only split at Ree BLOCKS ({#, {/, {:)
+                // and {{ (raw JS). Leave {= and {~ as raw text — SWC post-processor handles them.
+                if next == b'#' || next == b'/' || next == b':' || next == b'{' {
+                    return i;
+                }
+                // It's a bare { or inline Ree expression ({=, {~) — skip past it
+                i += 1;
+                continue;
+            }
+            b'{' => {
+                i += 1;
+                continue;
+            }
+            b'<' => {
+                if i + 3 < len && bytes[i+1] == b'!' && bytes[i+2] == b'-' && bytes[i+3] == b'-' {
+                    if let Some(end) = input[i+4..].find("-->") {
+                        i += end + 4 + 3;
+                        continue;
+                    } else {
+                        return len;
+                    }
+                }
+                return i;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    len
+}
+
+fn parse_token(input: &str) -> (Option<Node>, &str) {
+    if input.starts_with("<!--") {
+        parse_comment(input)
+    } else if input.starts_with("</") {
+        if let Some(gt) = input.find('>') {
+            (None, &input[gt + 1..])
+        } else {
+            (None, "")
+        }
+    } else if input.starts_with('<') {
+        parse_html_tag(input)
+    } else if input.starts_with("{#if")
+        || input.starts_with("{#each")
+        || input.starts_with("{#with")
+    {
+        parse_ree_block_open(input)
+    } else if input.starts_with("{#layout") || input.starts_with("{#include") {
+        parse_ree_directive(input)
+    } else if input.starts_with("{:else") {
+        let end = find_brace_end(input);
+        if end > 0 {
+            (Some(Node::Text(input[..end].to_string())), &input[end..])
+        } else {
+            (Some(Node::Text(input[..1].to_string())), &input[1..])
+        }
+    } else if input.starts_with("{=") {
+        parse_ree_inline(input, 2, true)
+    } else if input.starts_with("{~") {
+        parse_ree_inline(input, 2, false)
+    } else if input.starts_with('{') {
+        (Some(Node::Text(input[..1].to_string())), &input[1..])
+    } else {
+        (Some(Node::Text(input[..1].to_string())), &input[1..])
+    }
+}
+
+/// Find the end of a brace-delimited expression using byte-level iteration.
+/// Skips quoted strings to avoid false matches on `}` inside attribute values.
+fn find_brace_end(input: &str) -> usize {
+    let mut depth: i32 = 0;
+    let bytes = input.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        let b = bytes[i];
+        if b == b'{' {
+            depth += 1;
+        } else if b == b'}' {
+            depth -= 1;
+            if depth == 0 {
+                return i + 1;
+            }
+        } else if b == b'"' {
+            // Skip double-quoted string
+            i += 1;
+            while i < len && bytes[i] != b'"' {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            // i now points at closing " or len; loop will i+=1 past it
+        } else if b == b'\'' {
+            // Skip single-quoted string
+            i += 1;
+            while i < len && bytes[i] != b'\'' {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        i += 1;
+    }
+    input.len()
+}
+
+// ── Comment ──────────────────────────────────────────────────
+
+fn parse_comment(input: &str) -> (Option<Node>, &str) {
+    if let Some(end) = input[4..].find("-->") {
+        let full = end + 4 + 3;
+        (Some(Node::Comment(input[..full].to_string())), &input[full..])
+    } else {
+        (Some(Node::Comment(input.to_string())), "")
+    }
+}
+
+// ── HTML Element ─────────────────────────────────────────────
+
+fn parse_html_tag(input: &str) -> (Option<Node>, &str) {
+    let after_lt = &input[1..];
+
+    let name_end = after_lt
+        .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+        .unwrap_or(after_lt.len());
+    let tag = after_lt[..name_end].to_string();
+    let remaining = &after_lt[name_end..];
+
+    let (attrs, remaining) = parse_attrs(remaining);
+
+    if remaining.starts_with("/>") {
+        return (
+            Some(Node::Element { tag, attrs, children: vec![], self_closing: true }),
+            &remaining[2..],
+        );
+    }
+
+    if remaining.starts_with('>') {
+        let after_gt = &remaining[1..];
+
+        if tag.eq_ignore_ascii_case("script") || tag.eq_ignore_ascii_case("style") {
+            let close = format!("</{}", tag.to_lowercase());
+            let (children, rem) = parse_raw_block_content(after_gt, &close);
+            if rem.starts_with(&close) {
+                if let Some(gt) = rem.find('>') {
+                    return (
+                        Some(Node::Element { tag, attrs, children, self_closing: false }),
+                        &rem[gt + 1..],
+                    );
+                }
+            }
+            return (
+                Some(Node::Element { tag, attrs, children, self_closing: false }),
+                rem,
+            );
+        }
+
+        let stop = Stop::CloseTag(tag.clone());
+        let (children, rem) = parse_nodes(after_gt, stop);
+        if rem.starts_with("</") {
+            if let Some(gt) = rem.find('>') {
+                return (
+                    Some(Node::Element { tag, attrs, children, self_closing: false }),
+                    &rem[gt + 1..],
+                );
+            }
+        }
+        return (
+            Some(Node::Element { tag, attrs, children, self_closing: false }),
+            rem,
+        );
+    }
+
+    (Some(Node::Element { tag, attrs, children: vec![], self_closing: false }), remaining)
+}
+
+fn parse_attrs(input: &str) -> (Vec<String>, &str) {
+    let mut attrs = Vec::new();
+    let mut remaining = input;
+    loop {
+        let trimmed = remaining.trim_start();
+        let ws = remaining.len() - trimmed.len();
+        remaining = &remaining[ws..];
+        if remaining.is_empty() || remaining.starts_with('>') || remaining.starts_with("/>") {
+            break;
+        }
+        if let Some((attr, after)) = parse_one_attr(remaining) {
+            attrs.push(attr);
+            remaining = after;
+        } else {
+            break;
+        }
+    }
+    (attrs, remaining)
+}
+
+fn parse_one_attr(input: &str) -> Option<(String, &str)> {
+    let name_end = input
+        .find(|c: char| c == '=' || c == '>' || c.is_whitespace())
+        .unwrap_or(input.len());
+    if name_end == 0 {
+        return None;
+    }
+    let name = &input[..name_end];
+    let remaining = &input[name_end..];
+
+    if remaining.starts_with('=') {
+        let after_eq = &remaining[1..];
+        if after_eq.starts_with('"') {
+            let mut j = 1;
+            while j < after_eq.len() {
+                if after_eq.as_bytes()[j] == b'"'
+                    && after_eq.as_bytes().get(j.wrapping_sub(1)) != Some(&b'\\')
+                {
+                    return Some((
+                        format!("{}={}", name, &after_eq[..j + 1]),
+                        &after_eq[j + 1..],
+                    ));
+                }
+                j += 1;
+            }
+            return Some((format!("{}={}", name, after_eq), ""));
+        } else if after_eq.starts_with('\'') {
+            let mut j = 1;
+            while j < after_eq.len() {
+                if after_eq.as_bytes()[j] == b'\''
+                    && after_eq.as_bytes().get(j.wrapping_sub(1)) != Some(&b'\\')
+                {
+                    return Some((
+                        format!("{}={}", name, &after_eq[..j + 1]),
+                        &after_eq[j + 1..],
+                    ));
+                }
+                j += 1;
+            }
+            return Some((format!("{}={}", name, after_eq), ""));
+        } else {
+            let val_end = after_eq
+                .find(|c: char| c.is_whitespace() || c == '>')
+                .unwrap_or(after_eq.len());
+            return Some((
+                format!("{}={}", name, &after_eq[..val_end]),
+                &after_eq[val_end..],
+            ));
+        }
+    }
+
+    Some((name.to_string(), remaining))
+}
+
+// ── Ree Block ────────────────────────────────────────────────
+
+fn parse_ree_block_open(input: &str) -> (Option<Node>, &str) {
+    let end = find_brace_end(input);
+    if end == 0 {
+        return (Some(Node::Text(input[..1].to_string())), &input[1..]);
+    }
+
+    let directive = input[1..end - 1].trim_start();
+    let directive_stripped = directive.strip_prefix('#').unwrap_or(directive);
+    // Preserve trailing whitespace in block expressions (e.g. "{#if expr }")
+    let (keyword, expr) = match directive_stripped.find(' ') {
+        Some(pos) => (
+            directive_stripped[..pos].to_string(),
+            directive_stripped[pos + 1..].trim_start().to_string(),
+        ),
+        None => (directive_stripped.to_string(), String::new()),
+    };
+    eprintln!("[ree_parser] ReeBlock: '{}/{}' expr='{}' len={}", keyword, expr, expr, expr.len());
+
+    let remaining = &input[end..];
+    let stop = Stop::ReeClose(keyword.clone());
+    let (children, remaining) = parse_nodes(remaining, stop);
+    let (else_children, remaining) = parse_else_branch(remaining, &keyword);
+    let remaining = skip_ree_close(remaining, &keyword);
+
+    (Some(Node::ReeBlock { keyword, expr, children, else_children }), remaining)
+}
+
+fn parse_else_branch<'a>(input: &'a str, keyword: &str) -> (Option<Vec<Node>>, &'a str) {
+    let trimmed = input.trim_start();
+    let offset = input.len() - trimmed.len();
+
+    if trimmed.starts_with("{:else if ") || trimmed.starts_with("{:else if\t") {
+        if let Some(end) = trimmed.find('}') {
+            let rem = &input[offset + end + 1..];
+            let stop = Stop::ReeClose(keyword.to_string());
+            let (children, rem) = parse_nodes(rem, stop);
+            return (Some(children), rem);
+        }
+    } else if trimmed.starts_with("{:else}") {
+        let rem = &input[offset + 7..];
+        let stop = Stop::ReeClose(keyword.to_string());
+        let (children, rem) = parse_nodes(rem, stop);
+        return (Some(children), rem);
+    }
+
+    (None, input)
+}
+
+fn skip_ree_close<'a>(input: &'a str, keyword: &str) -> &'a str {
+    let trimmed = input.trim_start();
+    let offset = input.len() - trimmed.len();
+    let c1 = format!("{{/{}}}", keyword);
+    let c2 = format!("{{/ {}}}", keyword);
+    if trimmed.starts_with(&c1) {
+        &input[offset + c1.len()..]
+    } else if trimmed.starts_with(&c2) {
+        &input[offset + c2.len()..]
+    } else {
+        input
+    }
+}
+
+// ── Ree Directive ────────────────────────────────────────────
+
+fn parse_ree_directive(input: &str) -> (Option<Node>, &str) {
+    let end = find_brace_end(input);
+    if end == 0 {
+        return (Some(Node::Text(input[..1].to_string())), &input[1..]);
+    }
+    (Some(Node::ReeDirective(input[..end].to_string())), &input[end..])
+}
+
+// ── Ree Expression / Call ────────────────────────────────────
+
+fn parse_ree_inline(input: &str, open_len: usize, is_expr: bool) -> (Option<Node>, &str) {
+    let after = &input[open_len..];
+    if let Some(pos) = after.find('}') {
+        // Use trim_start only — preserve trailing whitespace so the output
+        // matches the input's expression spacing (e.g. "{= expr }" stays as-is).
+        let raw = &after[..pos];
+        let expr = raw.trim_start().to_string();
+        eprintln!("[ree_parser] inline expr: raw='{}' -> stored='{}'", raw, expr);
+        let remaining = &after[pos + 1..];
+        if is_expr {
+            (Some(Node::ReeExpr(expr)), remaining)
+        } else {
+            (Some(Node::ReeCall(expr)), remaining)
+        }
+    } else {
+        (Some(Node::Text(input.to_string())), "")
+    }
+}
+
+// ── Script/Style Raw Block Content ───────────────────────────
+//
+// For <script> and <style> tags, we parse ONLY Ree blocks ({#if}, {#each}, {#with})
+// but NOT inline Ree expressions ({=}, {~}). The inline expressions are preserved
+// as raw Text and handled later by the SWC post-processor (format_script_blocks).
+// This prevents the parser from breaking JS code structure.
+
+fn parse_raw_block_content<'a>(input: &'a str, close_marker: &str) -> (Vec<Node>, &'a str) {
+    let mut remaining = input;
+    let mut nodes = Vec::new();
+
+    while !remaining.is_empty() {
+        if remaining.starts_with(close_marker) {
+            break;
+        }
+
+        let next = find_next_special_in_raw(remaining, close_marker);
+
+        if next > 0 {
+            let text = &remaining[..next];
+            if !text.is_empty() {
+                nodes.push(Node::Text(text.to_string()));
+            }
+            remaining = &remaining[next..];
+        }
+
+        if remaining.is_empty() || remaining.starts_with(close_marker) {
+            break;
+        }
+
+        // Only parse Ree blocks inside script/style (for hoisting).
+        // Leave {=} and {~} as raw Text — they're handled by SWC post-processing.
+        if remaining.starts_with("{#if") || remaining.starts_with("{#each") || remaining.starts_with("{#with") {
+            let (node, after) = parse_ree_block_open(remaining);
+            if let Some(n) = node { nodes.push(n); }
+            remaining = after;
+        } else if remaining.starts_with("{:else") || remaining.starts_with("{/if}") || remaining.starts_with("{/each}") || remaining.starts_with("{/with}") {
+            // Pass through close/else tokens — they're part of Ree blocks
+            let end = find_brace_end(remaining);
+            if end > 0 {
+                nodes.push(Node::Text(remaining[..end].to_string()));
+                remaining = &remaining[end..];
+            } else {
+                remaining = &remaining[1..];
+            }
+        } else if remaining.starts_with("{{") {
+            if let Some(end) = remaining[2..].find("}}") {
+                nodes.push(Node::RawJs(remaining[..end + 4].to_string()));
+                remaining = &remaining[end + 4..];
+            } else {
+                nodes.push(Node::Text(remaining.to_string()));
+                remaining = "";
+            }
+        } else if remaining.starts_with('<') {
+            // Pass through standalone HTML tags inside script content?
+            // This is unusual — just pass through as text
+            if let Some(gt) = remaining.find('>') {
+                nodes.push(Node::Text(remaining[..gt + 1].to_string()));
+                remaining = &remaining[gt + 1..];
+            } else {
+                nodes.push(Node::Text(remaining.to_string()));
+                remaining = "";
+            }
+        } else {
+            // Skip one character and continue gathering text
+            // (This handles {=, {~, and anything else as raw text)
+            nodes.push(Node::Text(remaining[..1].to_string()));
+            remaining = &remaining[1..];
+        }
+    }
+
+    (nodes, remaining)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Post-processing: Hoist Ree blocks from <script> tags
+// ═══════════════════════════════════════════════════════════════
+
+fn hoist_script_ree_blocks(nodes: Vec<Node>) -> Vec<Node> {
+    let mut result = Vec::new();
+    for node in nodes {
+        match &node {
+            Node::Element { tag, attrs, children, self_closing }
+                if (tag.eq_ignore_ascii_case("script") || tag.eq_ignore_ascii_case("style"))
+                    && !self_closing =>
+            {
+                let non_empty: Vec<&Node> = children
+                    .iter()
+                    .filter(|n| !matches!(n, Node::Text(t) if t.trim().is_empty()))
+                    .collect();
+
+                if non_empty.len() == 1 {
+                    if let Node::ReeBlock { keyword, expr, children: bc, else_children: ec } = non_empty[0] {
+                        let inner = Node::Element {
+                            tag: tag.clone(),
+                            attrs: attrs.clone(),
+                            children: bc.clone(),
+                            self_closing: false,
+                        };
+                        result.push(Node::ReeBlock {
+                            keyword: keyword.clone(),
+                            expr: expr.clone(),
+                            children: vec![inner],
+                            else_children: ec.clone(),
+                        });
+                        continue;
+                    }
+                }
+                result.push(Node::Element {
+                    tag: tag.clone(),
+                    attrs: attrs.clone(),
+                    children: hoist_script_ree_blocks(children.clone()),
+                    self_closing: false,
+                });
+            }
+            Node::Element { tag, attrs, children, self_closing } => {
+                result.push(Node::Element {
+                    tag: tag.clone(),
+                    attrs: attrs.clone(),
+                    children: hoist_script_ree_blocks(children.clone()),
+                    self_closing: *self_closing,
+                });
+            }
+            Node::ReeBlock { keyword, expr, children, else_children } => {
+                result.push(Node::ReeBlock {
+                    keyword: keyword.clone(),
+                    expr: expr.clone(),
+                    children: hoist_script_ree_blocks(children.clone()),
+                    else_children: else_children.as_ref().map(|e| hoist_script_ree_blocks(e.clone())),
+                });
+            }
+            other => result.push(other.clone()),
+        }
+    }
+    result
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Printer
+// ═══════════════════════════════════════════════════════════════
+
+fn print_nodes(nodes: &[Node]) -> String {
+    let mut out = String::new();
+    for node in nodes {
+        print_node(node, 0, &mut out);
+    }
+    out
+}
+
+fn print_node(node: &Node, depth: usize, out: &mut String) {
+    // Log for debugging — will be removed later
+    let _ = depth; // used for indent
+    match node {
+        Node::Element { tag, .. } => eprintln!("[printer] Element <{}> at depth {}", tag, depth),
+        Node::ReeBlock { keyword, .. } => eprintln!("[printer] ReeBlock {{#{}}} at depth {}", keyword, depth),
+        Node::ReeExpr(e) => eprintln!("[printer] ReeExpr '{{= {} }}' at depth {}", e.trim(), depth),
+        Node::ReeCall(e) => eprintln!("[printer] ReeCall '{{~ {} }}' at depth {}", e.trim(), depth),
+        Node::Text(t) => { let trimmed = t.trim(); if !trimmed.is_empty() { eprintln!("[printer] Text '{}' at depth {}", trimmed, depth); } }
+        _ => {}
+    }
+    match node {
+        Node::Text(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                // Preserve blank lines (2+ newlines) but skip single newlines
+                // since block element formatting already adds newlines.
+                let blank_lines = text.matches('\n').count().saturating_sub(1);
+                for _ in 0..blank_lines {
+                    out.push('\n');
+                }
+            } else if trimmed.contains('\n') {
+                // Multi-line text (e.g. raw JS/CSS): indent every line
+                let lines: Vec<&str> = trimmed.lines().collect();
+                for (i, line) in lines.iter().enumerate() {
+                    let t = line.trim();
+                    if !t.is_empty() {
+                        out.push_str(&"\t".repeat(depth));
+                        out.push_str(t);
+                    }
+                    if i < lines.len() - 1 {
+                        out.push('\n');
+                    }
+                }
+                out.push('\n');
+            } else {
+                out.push_str(&"\t".repeat(depth));
+                out.push_str(trimmed);
+                out.push('\n');
+            }
+        }
+        Node::Element { tag, attrs, children, self_closing } => {
+            if *self_closing {
+                print_self_closing(tag, attrs, depth, out);
+            } else if children.is_empty() || all_children_are_whitespace(children) {
+                print_empty_element(tag, attrs, depth, out);
+            } else if is_text_only(children) && !is_script_or_style(tag) {
+                print_inline_element(tag, attrs, children, depth, out);
+            } else {
+                print_block_element(tag, attrs, children, depth, out);
+            }
+        }
+        Node::ReeBlock { keyword, expr, children, else_children } => {
+            let open = if expr.is_empty() {
+                format!("{{#{}}}", keyword)
+            } else {
+                format!("{{#{} {}}}", keyword, expr)
+            };
+            out.push_str(&"\t".repeat(depth));
+            out.push_str(&open);
+            out.push('\n');
+            for child in children {
+                print_node(child, depth + 1, out);
+            }
+            if let Some(else_nodes) = else_children {
+                out.push_str(&"\t".repeat(depth));
+                out.push_str("{:else}\n");
+                for child in else_nodes {
+                    print_node(child, depth + 1, out);
+                }
+            }
+            out.push_str(&"\t".repeat(depth));
+            out.push_str(&format!("{{/{}}}", keyword));
+            out.push('\n');
+        }
+        Node::ReeExpr(expr) => {
+            out.push_str(&"\t".repeat(depth));
+            out.push_str(&format!("{{= {}}}", expr));
+            out.push('\n');
+        }
+        Node::ReeCall(expr) => {
+            out.push_str(&"\t".repeat(depth));
+            out.push_str(&format!("{{~ {}}}", expr));
+            out.push('\n');
+        }
+        Node::ReeDirective(text) => {
+            out.push_str(&"\t".repeat(depth));
+            out.push_str(text);
+            out.push('\n');
+        }
+        Node::Comment(text) => {
+            out.push_str(&"\t".repeat(depth));
+            out.push_str(text);
+            out.push('\n');
+        }
+        Node::RawJs(code) => {
+            out.push_str(&"\t".repeat(depth));
+            out.push_str("{{ ");
+            out.push_str(code.trim());
+            out.push_str(" }}");
+            out.push('\n');
+        }
+    }
+}
+
+fn print_inline_element(tag: &str, attrs: &[String], children: &[Node], depth: usize, out: &mut String) {
+    let content = render_children_text(children);
+    let attr_str = format_attrs_inline(attrs);
+    let tag_open = if attr_str.is_empty() {
+        format!("<{}>", tag)
+    } else {
+        format!("<{} {}>", tag, attr_str)
+    };
+    let closing = format!("</{}>", tag);
+    let total = format!("{}{}{}", tag_open, content, closing);
+
+    if total.len() <= 140 {
+        out.push_str(&"\t".repeat(depth));
+        out.push_str(&total);
+        out.push('\n');
+    } else if attrs.len() >= 3 && tag_open.len() > 80 {
+        // Many/long attributes — split each onto its own line
+        out.push_str(&"\t".repeat(depth));
+        out.push('<');
+        out.push_str(tag);
+        out.push('\n');
+        for attr in attrs {
+            out.push_str(&"\t".repeat(depth + 1));
+            out.push_str(attr);
+            out.push('\n');
+        }
+        out.push_str(&"\t".repeat(depth));
+        out.push('>');
+        out.push('\n');
+        out.push_str(&"\t".repeat(depth + 1));
+        out.push_str(content.trim());
+        out.push('\n');
+        out.push_str(&"\t".repeat(depth));
+        out.push_str(&closing);
+        out.push('\n');
+    } else {
+        out.push_str(&"\t".repeat(depth));
+        out.push_str(&tag_open);
+        out.push('\n');
+        out.push_str(&"\t".repeat(depth + 1));
+        out.push_str(content.trim());
+        out.push('\n');
+        out.push_str(&"\t".repeat(depth));
+        out.push_str(&closing);
+        out.push('\n');
+    }
+}
+
+fn print_block_element(tag: &str, attrs: &[String], children: &[Node], depth: usize, out: &mut String) {
+    let attr_str = format_attrs_inline(attrs);
+    let tag_line = if attr_str.is_empty() {
+        format!("<{}>", tag)
+    } else {
+        format!("<{} {}>", tag, attr_str)
+    };
+
+    if tag_line.len() <= 140 {
+        out.push_str(&"\t".repeat(depth));
+        out.push_str(&tag_line);
+        out.push('\n');
+    } else {
+        out.push_str(&"\t".repeat(depth));
+        out.push('<');
+        out.push_str(tag);
+        out.push('\n');
+        for attr in attrs {
+            out.push_str(&"\t".repeat(depth + 1));
+            out.push_str(attr);
+            out.push('\n');
+        }
+        out.push_str(&"\t".repeat(depth));
+        out.push('>');
+        out.push('\n');
+    }
+
+    for child in children {
+        print_node(child, depth + 1, out);
+    }
+
+    out.push_str(&"\t".repeat(depth));
+    out.push_str(&format!("</{}>", tag));
+    out.push('\n');
+}
+
+fn is_text_only(children: &[Node]) -> bool {
+    children.iter().all(|n| matches!(n, Node::Text(_) | Node::ReeExpr(_) | Node::ReeCall(_)))
+}
+
+fn is_script_or_style(tag: &str) -> bool {
+    tag.eq_ignore_ascii_case("script") || tag.eq_ignore_ascii_case("style")
+}
+
+fn all_children_are_whitespace(children: &[Node]) -> bool {
+    children.iter().all(|c| match c {
+        Node::Text(t) => t.trim().is_empty(),
+        _ => false,
+    })
+}
+
+fn render_children_text(children: &[Node]) -> String {
+    let mut parts = Vec::new();
+    for child in children {
+        match child {
+            Node::Text(t) => parts.push(t.trim().to_string()),
+            Node::ReeExpr(e) => parts.push(format!("{{= {}}}", e)),
+            Node::ReeCall(e) => parts.push(format!("{{~ {}}}", e)),
+            _ => parts.push("[complex]".to_string()),
+        }
+    }
+    parts.join("")
+}
+
+fn format_attrs_inline(attrs: &[String]) -> String {
+    attrs.join(" ")
+}
+
+/// HTML void elements that cannot have children.
+/// Per HTML spec: area, base, br, col, embed, hr, img, input, link, meta,
+/// param, source, track, wbr.
+fn is_void_element(tag: &str) -> bool {
+    matches!(tag.to_ascii_lowercase().as_str(),
+        "area" | "base" | "br" | "col" | "embed" | "hr" | "img"
+        | "input" | "link" | "meta" | "param" | "source" | "track" | "wbr"
+    )
+}
+
+fn print_empty_element(tag: &str, attrs: &[String], depth: usize, out: &mut String) {
+    let attr_str = format_attrs_inline(attrs);
+
+    // Void HTML elements (input, br, hr, etc.) use self-closing syntax <tag />
+    if is_void_element(tag) {
+        let self_close = if attr_str.is_empty() {
+            format!("<{}/>", tag)
+        } else {
+            format!("<{} {}/>", tag, attr_str)
+        };
+        out.push_str(&"\t".repeat(depth));
+        out.push_str(&self_close);
+        out.push('\n');
+        return;
+    }
+
+    // Non-void empty elements: use explicit close tag <tag></tag>
+    if !is_script_or_style(tag) {
+        let close_tag = if attr_str.is_empty() {
+            format!("<{}></{}>", tag, tag)
+        } else {
+            format!("<{} {}></{}>", tag, attr_str, tag)
+        };
+        if close_tag.len() + depth <= 140 {
+            out.push_str(&"\t".repeat(depth));
+            out.push_str(&close_tag);
+            out.push('\n');
+            return;
+        }
+    }
+    // Fall back to <tag></tag> for long lines or script/style tags
+    let open = if attr_str.is_empty() {
+        format!("<{}>", tag)
+    } else {
+        format!("<{} {}>", tag, attr_str)
+    };
+    let close = format!("</{}>", tag);
+    out.push_str(&"\t".repeat(depth));
+    out.push_str(&open);
+    out.push('\n');
+    out.push_str(&"\t".repeat(depth));
+    out.push_str(&close);
+    out.push('\n');
+}
+
+fn print_self_closing(tag: &str, attrs: &[String], depth: usize, out: &mut String) {
+    let attr_str = format_attrs_inline(attrs);
+    out.push_str(&"\t".repeat(depth));
+    out.push('<');
+    out.push_str(tag);
+    if !attr_str.is_empty() {
+        out.push(' ');
+        out.push_str(&attr_str);
+    }
+    // Self-closing elements use <tag /> syntax
+    out.push_str(" />\n");
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Tests
+// ═══════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn simple_element() {
+        let input = "<div><p>hello</p></div>";
+        let output = format_ree(input);
+        assert_eq!(output, "<div>\n\t<p>hello</p>\n</div>\n");
+    }
+
+    #[test]
+    fn ree_block() {
+        let input = "{#if show}<div>yes</div>{/if}";
+        let output = format_ree(input);
+        assert!(output.contains("{#if show}"));
+        assert!(output.contains("<div>yes</div>"));
+        assert!(output.contains("{/if}"));
+    }
+
+    #[test]
+    fn ree_expression() {
+        let input = "<span>{= title }</span>";
+        let output = format_ree(input);
+        assert_eq!(output, "<span>{= title }</span>\n");
+    }
+
+    #[test]
+    fn void_element_self_closing() {
+        let input = "<input type=\"text\" />";
+        let output = format_ree(input);
+        assert!(output.contains("<input type=\"text\" />"), "void elements should use /> syntax, got: {:?}", output);
+    }
+
+    #[test]
+    fn comment_preserved() {
+        let input = "<!-- hello -->";
+        let output = format_ree(input);
+        assert_eq!(output, "<!-- hello -->\n");
+    }
+}
