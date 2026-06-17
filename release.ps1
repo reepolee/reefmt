@@ -2,10 +2,9 @@
 # Builds the native binary and publishes it as a GitHub Release.
 # Version is auto-bumped (patch) only when the tag for the current version doesn't exist yet.
 #
-# Usage: .\release.ps1 [-Draft] [-Minor] [-Force]
+# Usage: .\release.ps1 [-Draft] [-Minor]
 #   -Draft  Create the release as a draft (default: published)
 #   -Minor  Bump the minor version instead of the patch version (default: patch)
-#   -Force  Skip version bump and use the current version as-is (e.g. for releasing a .0)
 #
 # Prerequisites:
 #   - gh CLI (https://cli.github.com) — authenticated via `gh auth login`
@@ -18,8 +17,7 @@
 
 param(
     [switch]$Draft,
-    [switch]$Minor,
-    [switch]$Force
+    [switch]$Minor
 )
 
 $ErrorActionPreference = "Stop"
@@ -75,10 +73,13 @@ if ($latestTag) {
     # If you run the release script without pulling first, versions will diverge.
     $tagVersion = $latestTag.TrimStart('v')
     if ($tagVersion -ne $version) {
-        if ($Force) {
-            Write-Host "  (Warning: local version $version differs from latest tag $tagVersion, proceeding with -Force)"
+        if ([version]$tagVersion -gt [version]$version) {
+            # Tag is ahead of Cargo.toml → secondary machine, use tag version
+            Write-Host "  (Note: latest tag is $tagVersion, Cargo.toml has $version — using tag version)"
+            $version = $tagVersion
         } else {
-            Write-Error "Local version ($version) differs from latest tag ($tagVersion). Run 'git pull' first to sync, or use -Force to override."
+            # Cargo.toml is ahead of the tag → manually bumped without a release
+            Write-Error "Cargo.toml version ($version) is ahead of latest tag ($tagVersion). Did you forget to create a tag?"
             exit 1
         }
     }
@@ -92,11 +93,7 @@ if ($latestTag) {
 $tag = "v$version"
 $doBump = $false
 
-if ($Force) {
-    Write-Host "═══ reefmt release $version for Windows ═══"
-    Write-Host "  (Force mode — using current version $version without bump)"
-    $doBump = $false
-} elseif ($newCommits -gt 0) {
+if ($newCommits -gt 0) {
     # Code has changed since last release → bump version
     $parts = $version -split '\.'
     if ($Minor) {
@@ -194,13 +191,13 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 # Push tag and (if bumped) the version bump commit together
-Write-Host "  Pushing tag $tag to origin..."
-git push origin $tag
-
 if ($doBump) {
     Write-Host "  Pushing version bump commit..."
     git push origin HEAD
 }
+
+Write-Host "  Pushing tag $tag to origin..."
+git push origin $tag
 
 # ──────────────────────────────────────────────
 # Create or upload to GitHub Release
