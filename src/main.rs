@@ -22,6 +22,7 @@ pub(crate) struct ReeConfig {
     #[serde(rename = "skipDirs")]
     skip_dirs: Vec<String>,
     /// Glob patterns for files to skip (e.g. "generator/templates/**/*.ts").
+    #[serde(rename = "skipFiles")]
     skip_files: Vec<String>,
     /// File extensions to format.
     extensions: Vec<String>,
@@ -397,6 +398,24 @@ mod tests {
         assert_eq!(content_after, unformatted, "Check mode should not modify the file");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_file_deserializes_correctly() {
+        // This test parses the actual reefmt.jsonc shipped with the project.
+        // It would have caught the missing #[serde(rename = "skipFiles")] bug
+        // on the skip_files field — none of the other tests exercise
+        // json5 deserialization, so that bug slipped through.
+        let content = include_str!("../reefmt.jsonc");
+        let config: ReeConfig = json5::from_str(content).expect(
+            "Failed to parse reefmt.jsonc — serde field names or types may be out of sync with the config file"
+        );
+        // Verify a few known values from the template
+        assert!(config.skip_dirs.contains(&"node_modules".to_string()));
+        assert!(config.skip_files.is_empty());
+        assert!(config.extensions.contains(&"ree".to_string()));
+        assert!(config.skip_dot_dirs);
+        assert_eq!(config.wrap_width, 180);
     }
 
     #[test]
