@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+use std::collections::HashMap;
 use similar::{ChangeTag, DiffOp};
 
 use crate::ree_format::flatten_concat;
@@ -7,6 +8,385 @@ use crate::ree_format::flatten_concat;
 /// Operating mode: write files, check-only (list files), or diff (show changes).
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Mode { Write, Check, Diff }
+
+/// A placeholder entry for content extracted before SWC formatting
+/// and restored afterward.
+struct Placeholder {
+    tag: String,
+    original: String,
+}
+
+/// Pre-process source code before SWC formatting to preserve content that SWC
+/// would otherwise reformat in undesirable ways.
+///
+/// Extracts two types of content:
+/// - **Block comments** (`/* ... */` and `/** ... */`) that appear on their own line
+///   (only whitespace before the `/*` and after the `*/`). These get `*/` merged
+///   with the next line by SWC's codegen.
+/// - **Blank lines** (empty or whitespace-only lines). These are removed by SWC's
+///   codegen since it doesn't preserve blank lines between statements.
+///
+/// Each extracted piece is replaced with a `// __REEFMT_{type}_{id}__` placeholder
+/// comment that SWC preserves. After SWC formatting, the placeholders are restored
+/// to their original text.
+fn preprocess_for_swc(code: &str) -> (String, Vec<Placeholder>) {
+    let mut placeholders = Vec::new();
+    let mut id_counter = 0usize;
+
+    // ---- Pass 1: Extract block comments via character scan ----
+    let pass1 = extract_block_comments(code, &mut placeholders, &mut id_counter);
+
+    // ---- Pass 2: Extract blank lines from the result of pass 1 ----
+    let pass2 = extract_blank_lines(&pass1, &mut placeholders, &mut id_counter);
+
+    (pass2, placeholders)
+}
+
+/// Scan character-by-character to find block comments on their own line
+/// and replace them with `// __REEFMT_BLOCK_N__` placeholders.
+/// Properly skips string literals, template literals, and single-line comments.
+fn extract_block_comments(code: &str, placeholders: &mut Vec<Placeholder>, id: &mut usize) -> String {
+    let mut out = String::with_capacity(code.len());
+    let bytes = code.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i < len {
+        // Helper: copy a single UTF-8 character from position i to out.
+        // Returns the number of bytes consumed.
+        macro_rules! copy_char {
+            () => {{
+                if bytes[i] & 0x80 == 0 {
+                    // ASCII byte — push directly
+                    out.push(bytes[i] as char);
+                    i += 1
+                } else {
+                    // Multi-byte UTF-8 — read the full char from the str slice
+                    let ch = code[i..].chars().next().unwrap();
+                    out.push(ch);
+                    i += ch.len_utf8()
+                }
+            }};
+        }
+
+        // Skip double-quoted strings
+        if bytes[i] == b'"' {
+            out.push('"');
+            i += 1;
+            while i < len {
+                let b = bytes[i];
+                if b == b'\\' && i + 1 < len {
+                    out.push('\\');
+                    i += 1;
+                    copy_char!();
+                } else if b == b'"' {
+                    out.push('"');
+                    i += 1;
+                    break;
+                } else {
+                    copy_char!();
+                }
+            }
+            continue;
+        }
+
+        // Skip single-quoted strings
+        if bytes[i] == b'\'' {
+            out.push('\'');
+            i += 1;
+            while i < len {
+                let b = bytes[i];
+                if b == b'\\' && i + 1 < len {
+                    out.push('\\');
+                    i += 1;
+                    copy_char!();
+                } else if b == b'\'' {
+                    out.push('\'');
+                    i += 1;
+                    break;
+                } else {
+                    copy_char!();
+                }
+            }
+            continue;
+        }
+
+        // Skip template literals (handling nested `${}`)
+        if bytes[i] == b'`' {
+            out.push('`');
+            i += 1;
+            let mut depth = 0u32;
+            while i < len {
+                let b = bytes[i];
+                if b == b'\\' && i + 1 < len {
+                    out.push('\\');
+                    i += 1;
+                    out.push(bytes[i] as char); // escaped char is always ASCII
+                    i += 1;
+                } else if b == b'$' && i + 1 < len && bytes[i + 1] == b'{' {
+                    out.push_str("${");
+                    i += 2;
+                    depth += 1;
+                } else if b == b'}' && depth > 0 {
+                    out.push('}');
+                    i += 1;
+                    depth -= 1;
+                } else if b == b'`' && depth == 0 {
+                    out.push('`');
+                    i += 1;
+                    break;
+                } else {
+                    copy_char!();
+                }
+            }
+            continue;
+        }
+
+        // Skip single-line `//` comments
+        if bytes[i] == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
+            while i < len && bytes[i] != b'\n' {
+                copy_char!();
+            }
+            if i < len {
+                out.push('\n');
+                i += 1;
+            }
+            continue;
+        }
+
+        // Handle block comments `/* ... */`
+        if bytes[i] == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
+            let start = i;
+            i += 2;
+            while i + 1 < len {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+            let comment_text = &code[start..i];
+
+            if is_block_comment_own_line(code, start, i) {
+                let tag = format!("__REEFMT_BLOCK_{}__", *id);
+                *id += 1;
+                let line_count = comment_text.lines().count();
+                for _ in 0..line_count {
+                    out.push_str(&format!("// {}\n", tag));
+                }
+                placeholders.push(Placeholder {
+                    tag,
+                    original: comment_text.to_string(),
+                });
+                // Placeholder lines already end with \n, so skip
+                // the trailing newline after */ to avoid double newlines.
+                if i < len && bytes[i] == b'\n' {
+                    i += 1;
+                }
+            } else {
+                out.push_str(comment_text);
+            }
+            continue;
+        }
+
+        // Regular character (or start of multi-byte UTF-8)
+        copy_char!();
+    }
+
+    out
+}
+
+/// Check whether a block comment (between `start` and `end` byte offsets)
+/// is on its own line: only whitespace before `/*` and after `*/` on their
+/// respective lines.
+fn is_block_comment_own_line(code: &str, start: usize, end: usize) -> bool {
+    // Check before `/*` on the same line
+    let line_start = code[..start].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let before = &code[line_start..start];
+    if !before.trim().is_empty() {
+        return false;
+    }
+
+    // Check after `*/` on the same line
+    let line_end = code[end..].find('\n').map(|p| end + p).unwrap_or(code.len());
+    let after = &code[end..line_end];
+    if !after.trim().is_empty() {
+        return false;
+    }
+
+    true
+}
+
+/// Extract blank lines (empty or whitespace-only lines) and replace each
+/// with a `// __REEFMT_BLANK_N__` placeholder comment.
+///
+/// Operates on code that has already had block comments extracted, so
+/// block-comment placeholder lines (`// __REEFMT_BLOCK_*`) are treated
+/// as non-blank lines to avoid interfering with block comment spacing.
+fn extract_blank_lines(code: &str, placeholders: &mut Vec<Placeholder>, id: &mut usize) -> String {
+    let mut out = String::with_capacity(code.len());
+
+    for line in code.lines() {
+        let trimmed = line.trim();
+
+        // A blank line is one that is empty or whitespace-only
+        // AND is not a block-comment placeholder line
+        if trimmed.is_empty() {
+            let tag = format!("__REEFMT_BLANK_{}__", *id);
+            *id += 1;
+            out.push_str(&format!("// {}\n", tag));
+            placeholders.push(Placeholder {
+                tag,
+                original: String::new(), // blank lines restore to empty
+            });
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+
+    out
+}
+
+/// Restore original content from placeholders in the SWC-formatted output.
+///
+/// Works in two passes:
+/// 1. First restore blank lines (they become empty lines, which won't interfere
+///    with block comment pattern matching).
+/// 2. Then restore block comments (multi-line replacement).
+fn postprocess_from_swc(formatted: &str, placeholders: &[Placeholder]) -> String {
+    // Build a map for fast lookup
+    let mut by_tag: HashMap<&str, &Placeholder> = HashMap::new();
+    for p in placeholders {
+        by_tag.insert(&p.tag, p);
+    }
+
+    // ---- Pass 1: Restore blank lines ----
+    // Blank lines are single `// __REEFMT_BLANK_N__` lines → replace with `\n`
+    let mut result = String::with_capacity(formatted.len());
+
+    for line in formatted.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("// __REEFMT_BLANK_") {
+            // Extract the tag
+            if let Some(tag) = extract_tag(trimmed) {
+                if let Some(ph) = by_tag.get(tag.as_str()) {
+                    if ph.original.is_empty() {
+                        // Blank line — emit an empty line
+                        // Preserve the indentation context: use the same leading
+                        // whitespace as the SWC-formatted placeholder line had
+                        let indent = &line[..line.len() - trimmed.len()];
+                        result.push_str(indent);
+                        result.push('\n');
+                        continue;
+                    }
+                }
+            }
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+
+    // ---- Pass 2: Restore block comments ----
+    // Block comments span multiple placeholder lines. We need to find contiguous
+    // groups of `// __REEFMT_BLOCK_N__` lines and replace each group.
+    let mut final_result = String::with_capacity(result.len());
+    let lines: Vec<&str> = result.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        if trimmed.starts_with("// __REEFMT_BLOCK_") {
+            if let Some(tag) = extract_tag(trimmed) {
+                if let Some(ph) = by_tag.get(tag.as_str()) {
+                    let line_count = ph.original.lines().count();
+
+                    // Verify we have enough consecutive lines with the same tag
+                    let all_match = (0..line_count).all(|offset| {
+                        i + offset < lines.len()
+                            && lines[i + offset].trim() == format!("// {}", tag)
+                    });
+
+                    if all_match && !ph.original.is_empty() {
+                        // Capture the indentation from the first placeholder line
+                        let indent = &lines[i][..lines[i].len() - lines[i].trim().len()];
+
+                        // Re-indent the original block comment to match
+                        let reindented = reindent_block_comment(&ph.original, indent);
+                        final_result.push_str(&reindented);
+                        final_result.push('\n');
+                        i += line_count;
+                        continue;
+                    }
+                }
+            }
+        }
+        final_result.push_str(lines[i]);
+        final_result.push('\n');
+        i += 1;
+    }
+
+    // Remove trailing newline if formatted didn't have one
+    if !formatted.ends_with('\n') && final_result.ends_with('\n') {
+        final_result.pop();
+    }
+
+    final_result
+}
+
+/// Extract the tag (`__REEFMT_BLOCK_N__` or `__REEFMT_BLANK_N__`) from a
+/// `// __REEFMT_...` comment line.
+fn extract_tag(trimmed: &str) -> Option<String> {
+    // trimmed looks like "// __REEFMT_BLOCK_0__" or "// __REEFMT_BLANK_0__"
+    let trimmed = trimmed.trim();
+    let after = trimmed.strip_prefix("// ")?;
+    if after.starts_with("__REEFMT_") {
+        Some(after.to_string())
+    } else {
+        None
+    }
+}
+
+/// Re-indent a block comment to use the given indent string, preserving its
+/// internal structure.
+///
+/// The original block comment has some indentation (e.g. `\t/**`). We need to
+/// strip its original base indentation and apply the new one.
+fn reindent_block_comment(comment: &str, new_indent: &str) -> String {
+    let lines: Vec<&str> = comment.lines().collect();
+    if lines.is_empty() {
+        return comment.to_string();
+    }
+
+    // Detect the base indentation of the first line
+    let first_trimmed = lines[0].trim_start();
+    let base_indent = lines[0].len() - first_trimmed.len();
+
+    let mut out = String::with_capacity(comment.len());
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            out.push('\n');
+            continue;
+        }
+        // Only indent lines that had the base indentation
+        let leading = line.len() - trimmed.len();
+        if leading >= base_indent {
+            out.push_str(new_indent);
+            // Preserve remaining indentation beyond the base level
+            let extra = leading - base_indent;
+            for _ in 0..extra {
+                out.push(' ');
+            }
+        }
+        out.push_str(trimmed);
+        if idx < lines.len() - 1 {
+            out.push('\n');
+        }
+    }
+
+    out
+}
 
 /// Print a unified diff between original and formatted content.
 pub(crate) fn print_diff(path: &Path, original: &str, formatted: &str) {
@@ -52,7 +432,13 @@ pub(crate) fn format_code_content(content: &str, ext: &str) -> String {
     let formatted = match ext {
         "ts" | "js" => {
             let flattened = flatten_concat(&normalized);
-            crate::swc_format::format_js_with_indent(&flattened, "\t")
+            let (preprocessed, placeholders) = preprocess_for_swc(&flattened);
+            let swc_formatted = crate::swc_format::format_js_with_indent(&preprocessed, "\t");
+            if placeholders.is_empty() {
+                swc_formatted
+            } else {
+                postprocess_from_swc(&swc_formatted, &placeholders)
+            }
         }
         _ => normalized.clone(),
     };
@@ -261,5 +647,50 @@ mod tests {
         let src = "body { color: red; }\n";
         let result = format_code_content(src, "css");
         assert_eq!(result, src, "CSS should pass through unchanged");
+    }
+
+    #[test]
+    fn preserves_block_comments() {
+        let src = "/**\n * doc\n */\nexport const x = 1;\n";
+        let result = format_code_content(src, "ts");
+        assert!(result.contains("/**"), "block comment /** should be preserved");
+        assert!(result.contains(" * doc\n"), "block comment content should be preserved");
+        assert!(result.contains(" */\nexport"), "*/ should be on its own line before export");
+    }
+
+    #[test]
+    fn preserves_blank_lines_between_statements() {
+        let src = "export interface A {\n\tx: number;\n}\n\nexport interface B {\n\ty: number;\n}\n";
+        let result = format_code_content(src, "ts");
+        assert!(result.contains("}\n\nexport"), "blank line between interfaces should be preserved");
+    }
+
+    #[test]
+    fn inline_block_comment_not_extracted() {
+        let src = "const x = 1; /* inline */\n";
+        let result = format_code_content(src, "ts");
+        assert!(result.contains("/* inline */"), "inline block comments should stay inline");
+    }
+
+    #[test]
+    fn block_comment_in_string_not_extracted() {
+        let src = "const s = \"/* not a comment */\";\n";
+        let result = format_code_content(src, "ts");
+        assert!(result.contains("/* not a comment */"), "comments inside strings should be preserved");
+    }
+
+    #[test]
+    fn single_line_block_comment_own_line() {
+        let src = "/* standalone */\nexport const x = 1;\n";
+        let result = format_code_content(src, "ts");
+        assert!(result.contains("/* standalone */\nexport"), "standalone block comment should be on its own line");
+    }
+
+    #[test]
+    fn idempotent_with_block_comments_and_blank_lines() {
+        let src = "/**\n * Translation helpers\n */\n\n// ─── Types ─────────────────────────────────────────────────────\n\nexport interface TranslationRow {\n\tid: number;\n\tlang: string;\n}\n\nexport interface GroupInfo {\n\tnamespace: string;\n\tchild_keys: string[];\n}\n";
+        let pass1 = format_code_content(src, "ts");
+        let pass2 = format_code_content(&pass1, "ts");
+        assert_eq!(pass1, pass2, "output should be idempotent with block comments and blank lines");
     }
 }
