@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::ree_tags::{protect, restore, protect_html_comments, restore_html_comments, protect_raw_js_blocks, restore_raw_js_blocks};
+use crate::ree_tags::{protect, restore, protect_html_comments, restore_html_comments, protect_raw_js_blocks, restore_raw_js_blocks, protect_ree_expressions, restore_ree_expressions};
 
 /// Re-indent code based on brace depth.
 pub(crate) fn indent_code(src: &str) -> String {
@@ -280,11 +280,20 @@ pub(crate) fn format_ree_html_via_dprint(src: &str, config_path: &str) -> Option
     let (after_comments, html_comments) = protect_html_comments(src.trim());
     let (after_raw_js, raw_js_blocks, raw_js_own_line) = protect_raw_js_blocks(&after_comments);
     let (after_block_tags, entries) = ree_to_fake_html(&after_raw_js);
-    let protected = protect(&after_block_tags);
+    // Protect entire inline Ree expressions so dprint doesn't see stray `}` chars
+    let (after_ree_exprs, ree_expr_placeholders) = protect_ree_expressions(&after_block_tags);
+    let protected = protect(&after_ree_exprs);
 
-    let formatted = crate::format::pipe_dprint(&protected, "html", config_path);
+    // Strip existing indentation so dprint can apply fresh indentation
+    let stripped: String = protected
+        .lines()
+        .map(|line| line.trim_start())
+        .collect::<Vec<_>>()
+        .join("\n");
 
-    if formatted.trim() == protected.trim() {
+    let formatted = crate::format::pipe_dprint(&stripped, "html", config_path);
+
+    if formatted.trim() == stripped.trim() {
         return None;
     }
 
@@ -295,6 +304,7 @@ pub(crate) fn format_ree_html_via_dprint(src: &str, config_path: &str) -> Option
     let formatted = fix_raw_js_line_breaks(&formatted, &raw_js_own_line);
 
     let restored = restore(&formatted);
+    let restored = restore_ree_expressions(&restored, &ree_expr_placeholders);
     let restored = fake_html_to_ree(&restored, &entries);
     let restored = restore_raw_js_blocks(&restored, &raw_js_blocks);
     Some(restore_html_comments(&restored, &html_comments))
