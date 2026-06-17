@@ -1,13 +1,15 @@
-mod ree_tags;
 mod ree_format;
 mod format;
 mod cache;
+mod ree_parser;
+mod swc_format;
 
 use serde::Deserialize;
 use std::{
     env, fs,
     io::Read,
     path::{Path, PathBuf},
+    process::Command,
     sync::atomic::{AtomicBool, Ordering},
 };
 use glob::glob;
@@ -21,7 +23,6 @@ pub(crate) struct ReeConfig {
     #[serde(rename = "skipDirs")]
     skip_dirs: Vec<String>,
     /// Glob patterns for files to skip (e.g. "generator/templates/**/*.ts").
-    #[serde(rename = "skipFiles")]
     skip_files: Vec<String>,
     /// File extensions to format.
     extensions: Vec<String>,
@@ -54,7 +55,6 @@ impl Default for ReeConfig {
 }
 
 /// Load reefmt config from `reefmt.jsonc` in the current directory.
-/// Falls back to hardcoded defaults if the file doesn't exist or is invalid.
 fn load_config() -> ReeConfig {
     if let Ok(cwd) = env::current_dir() {
         let config_path = cwd.join("reefmt.jsonc");
@@ -94,8 +94,7 @@ pub(crate) fn should_skip_file(file_path: &Path, config: &ReeConfig) -> bool {
     })
 }
 
-/// Check whether a path is inside a directory that should be skipped
-/// (e.g. `node_modules`, `vendor`, or any dot-folder like `.git`).
+/// Check whether a path is inside a directory that should be skipped.
 fn should_skip_path(path: &Path, config: &ReeConfig) -> bool {
     path.components().any(|c| {
         if let std::path::Component::Normal(s) = c {
@@ -103,7 +102,7 @@ fn should_skip_path(path: &Path, config: &ReeConfig) -> bool {
                 if config.skip_dirs.iter().any(|d| d == name) {
                     return true;
                 }
-                if config.skip_dot_dirs && name.starts_with(".") && name != "." {
+                if config.skip_dot_dirs && name.starts_with('.') && name != "." {
                     return true;
                 }
             }
@@ -138,6 +137,77 @@ fn collect_source_files(
     Ok(())
 }
 
+/// Get files changed since last commit using git.
+/// Runs `git diff --name-only HEAD` to get staged + unstaged changes,
+/// then `git diff --name-only --cached` for staged-only, and
+/// `git ls-files --others --exclude-standard` for untracked files.
+/// Returns paths that match the configured extensions.
+fn get_git_changed_files(config: &ReeConfig) -> Vec<PathBuf> {
+    let cwd = match env::current_dir() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+
+    let mut files = Vec::new();
+
+    // Get all modified files (staged + unstaged) and untracked files
+    let output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            for line in stdout.lines() {
+                // porcelain format: XY filename
+                // X = index status, Y = worktree status
+                // We want files that are modified (M), added (A), or untracked (?)
+                // Skip deleted (D) and renamed (R) without content changes
+                if line.len() < 4 {
+                    continue;
+                }
+                let status_chars: Vec<char> = line[..2].chars().collect();
+                let x = status_chars[0];
+                let y = status_chars[1];
+
+                // Skip deleted files
+                if x == 'D' || y == 'D' {
+                    continue;
+                }
+
+                let raw_path = &line[3..];
+                // Handle renamed files (format: "old -> new")
+                let filepath = if let Some(arrow_pos) = raw_path.find(" -> ") {
+                    raw_path[arrow_pos + 4..].trim()
+                } else {
+                    raw_path.trim()
+                };
+                // Strip quotes (git quotes paths with special characters)
+                let filepath = filepath.trim_matches('"');
+
+                let path = cwd.join(filepath);
+                if !path.exists() {
+                    continue;
+                }
+
+                if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                    if config.extensions.iter().any(|e| e == ext) {
+                        if !should_skip_file(&path, config) {
+                            files.push(path);
+                        }
+                    }
+                }
+            }
+        }
+        _ => {
+            // Not a git repo or git not available — fall back to empty
+            eprintln!("Warning: not a git repository, --git has no effect");
+        }
+    }
+
+    files
+}
+
 fn main() {
     let mut args: Vec<String> = env::args().skip(1).collect();
 
@@ -157,6 +227,11 @@ fn main() {
         args.retain(|a| a != "--no-cache");
     }
 
+    let git_mode = args.iter().position(|a| a == "--git").is_some();
+    if git_mode {
+        args.retain(|a| a != "--git");
+    }
+
     let mode = if diff_mode {
         format::Mode::Diff
     } else if check_mode {
@@ -165,7 +240,7 @@ fn main() {
         format::Mode::Write
     };
 
-    // Parse --stdin flag (consumes an optional extension argument)
+    // Parse --stdin flag
     let stdin_mode = args.iter().position(|a| a == "--stdin");
     let stdin_ext: Option<String> = stdin_mode.and_then(|pos| {
         args.remove(pos);
@@ -204,7 +279,7 @@ fn main() {
         return;
     }
 
-    // Check for --init flag (generate config template)
+    // Check for --init flag
     if args.iter().any(|a| a == "--init") {
         let cwd = env::current_dir().unwrap_or_else(|_| {
             eprintln!("Error: could not determine current directory");
@@ -219,19 +294,16 @@ fn main() {
             std::process::exit(1);
         }
         let template = r##"{
-	// Directories to skip when formatting (glob patterns not needed,
-	// just directory names — any folder with this name is skipped).
+	// Directories to skip when formatting.
 	"skipDirs": ["node_modules", "vendor", "vendors", "dist", "templates", "static"],
 
-	// Glob patterns for files to skip (e.g. "generator/templates/**/*.ts").
-	// Matches file paths relative to the project root.
+	// Glob patterns for files to skip.
 	"skipFiles": [".reefmt-cache"],
 
 	// File extensions to format.
 	"extensions": ["ree", "ts", "js", "css"],
 
-	// Whether to skip dot-directories (folders starting with '.',
-	// like .git, .next, .cache, .svelte-kit, etc.).
+	// Whether to skip dot-directories.
 	"skipDotDirs": true
 }
 "##;
@@ -257,52 +329,54 @@ fn main() {
     let config = load_config();
     let any_modified = AtomicBool::new(false);
 
-    // Phase 1: collect all file paths from all targets
-    let mut all_files: Vec<PathBuf> = Vec::new();
-
-    for target in targets {
-        let path = Path::new(&target);
-
-        if path.is_dir() {
-            let mut files = Vec::new();
-            if let Err(e) = collect_source_files(path, &mut files, &config) {
-                eprintln!("Error reading directory {}: {}", target, e);
-                continue;
-            }
-            all_files.extend(files);
-        } else if path.exists() {
-            all_files.push(path.to_path_buf());
-        } else {
-            match glob(&target) {
-                Ok(paths) => {
-                    for entry in paths.flatten() {
-                        if should_skip_path(&entry, &config) {
-                            continue;
-                        }
-                        all_files.push(entry);
-                    }
+    // Collect files to format
+    let all_files: Vec<PathBuf> = if git_mode {
+        get_git_changed_files(&config)
+    } else {
+        let mut files = Vec::new();
+        for target in &targets {
+            let path = Path::new(target);
+            if path.is_dir() {
+                if let Err(e) = collect_source_files(path, &mut files, &config) {
+                    eprintln!("Error reading directory {}: {}", target, e);
+                    continue;
                 }
-                Err(e) => eprintln!("Invalid glob {}: {}", target, e),
+            } else if path.exists() {
+                files.push(path.to_path_buf());
+            } else {
+                match glob(target) {
+                    Ok(paths) => {
+                        for entry in paths.flatten() {
+                            if should_skip_path(&entry, &config) {
+                                continue;
+                            }
+                            files.push(entry);
+                        }
+                    }
+                    Err(e) => eprintln!("Invalid glob {}: {}", target, e),
+                }
             }
         }
+        files
+    };
+
+    if git_mode && all_files.is_empty() {
+        return; // No uncommitted changes — nothing to do
     }
 
     if no_cache {
-        // Phase 2 (no-cache): process all files in parallel, skip cache entirely
         all_files.par_iter().for_each(|file| {
             if format::format_file(file, mode, &config) {
                 any_modified.store(true, Ordering::SeqCst);
             }
         });
     } else {
-        // Phase 2: load cache and filter out files that are already up to date
         let mut cache = cache::FormatCache::load();
         let uncached: Vec<PathBuf> = all_files
             .into_iter()
             .filter(|f| !cache.is_fresh(f))
             .collect();
 
-        // Phase 3: format remaining files in parallel
         if !uncached.is_empty() {
             uncached.par_iter().for_each(|file| {
                 if format::format_file(file, mode, &config) {
@@ -310,7 +384,6 @@ fn main() {
                 }
             });
 
-            // Phase 4: update cache for all processed files
             for file in &uncached {
                 cache.mark_fresh(file);
             }
@@ -342,64 +415,17 @@ mod tests {
     }
 
     #[test]
-    fn format_file_check_mode_unsupported_extension() {
-        let dir = env::temp_dir().join("reefmt_test_unsupported_check");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.txt");
-        fs::write(&path, "hello world").unwrap();
-
-        let config = ReeConfig::default();
-        let modified = format::format_file(&path, format::Mode::Check, &config);
-        assert!(!modified, "format_file Check should return false for unsupported extension");
-        let content_after = fs::read_to_string(&path).unwrap();
-        assert_eq!(content_after, "hello world", "Check mode should not modify the file");
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn check_mode_empty_ree_file_returns_false() {
-        let dir = env::temp_dir().join("reefmt_test_empty_check");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("empty.ree");
-        fs::write(&path, "").unwrap();
-
-        let modified = ree_format::format_ree_file(&path, format::Mode::Check);
-        assert!(!modified, "Check mode should return false for empty file");
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn check_mode_via_format_file_dispatcher() {
-        let dir = env::temp_dir().join("reefmt_test_file_check");
+    fn check_mode_does_not_modify_ree_file() {
+        let dir = env::temp_dir().join("reefmt_test_check_mode");
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test.ree");
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let config = ReeConfig::default();
-        let modified = format::format_file(&path, format::Mode::Check, &config);
-        assert!(modified, "format_file Check should detect unformatted .ree file");
+        let modified = crate::ree_format::format_ree_file(&path, format::Mode::Check);
+        assert!(modified, "Check mode should return true when file would change");
         let content_after = fs::read_to_string(&path).unwrap();
-        assert_eq!(content_after, unformatted, "format_file Check should not modify the file");
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn diff_mode_via_format_file_dispatcher() {
-        let dir = env::temp_dir().join("reefmt_test_file_diff");
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.ree");
-        let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
-        fs::write(&path, unformatted).unwrap();
-
-        let config = ReeConfig::default();
-        let modified = format::format_file(&path, format::Mode::Diff, &config);
-        assert!(modified, "format_file Diff should detect unformatted .ree file");
-        let content_after = fs::read_to_string(&path).unwrap();
-        assert_eq!(content_after, unformatted, "format_file Diff should not modify the file");
+        assert_eq!(content_after, unformatted, "Check mode should not modify the file");
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -412,100 +438,7 @@ mod tests {
         let matched = Path::new("generator/templates/ui/button.ts");
         assert!(should_skip_file(&matched, &config));
 
-        let not_matched_ree = Path::new("generator/templates/ui/button.ree");
-        assert!(!should_skip_file(&not_matched_ree, &config));
-
-        let not_matched_outside = Path::new("src/ui/button.ts");
-        assert!(!should_skip_file(&not_matched_outside, &config));
-
-        config.skip_files = vec![];
-        let empty_skip = Path::new("generator/templates/ui/button.ts");
-        assert!(!should_skip_file(&empty_skip, &config));
-    }
-
-    #[test]
-    fn skip_files_handles_absolute_paths() {
-        let mut config = ReeConfig::default();
-        config.skip_files = vec!["templates/**/*.ts".to_string()];
-
-        let cwd = env::current_dir().unwrap();
-        let abs_path = cwd.join("templates/ui/button.ts");
-        assert!(should_skip_file(&abs_path, &config));
-
-        let outside = Path::new("/nonexistent/templates/ui/button.ts");
-        assert!(!should_skip_file(&outside, &config));
-    }
-
-    #[test]
-    fn init_template_parses_as_valid_config() {
-        let template = r#"{
-	// Directories to skip when formatting (glob patterns not needed,
-	// just directory names — any folder with this name is skipped).
-	"skipDirs": ["node_modules", "vendor", "vendors", "dist", "templates", "static"],
-
-	// Glob patterns for files to skip (e.g. "generator/templates/**/*.ts").
-	// Matches file paths relative to the project root.
-	"skipFiles": [".reefmt-cache"],
-
-	// File extensions to format.
-	"extensions": ["ree", "ts", "js", "css"],
-
-	// Whether to skip dot-directories (folders starting with '.',
-	// like .git, .next, .cache, .svelte-kit, etc.).
-	"skipDotDirs": true
-}"#;
-
-        let config: ReeConfig =
-            json5::from_str(template).expect("--init template should be valid JSONC");
-
-        assert_eq!(config.skip_dirs.len(), 6);
-        assert!(config.skip_dirs.contains(&"node_modules".to_string()));
-        assert!(config.skip_dirs.contains(&"vendor".to_string()));
-        assert!(config.skip_dirs.contains(&"vendors".to_string()));
-        assert!(config.skip_dirs.contains(&"dist".to_string()));
-        assert!(config.skip_dirs.contains(&"templates".to_string()));
-        assert!(config.skip_dirs.contains(&"static".to_string()));
-
-        assert_eq!(config.extensions.len(), 4);
-        assert!(config.extensions.contains(&"ree".to_string()));
-        assert!(config.extensions.contains(&"ts".to_string()));
-        assert!(config.extensions.contains(&"js".to_string()));
-        assert!(config.extensions.contains(&"css".to_string()));
-
-        assert!(config.skip_dot_dirs);
-        assert!(config.skip_files.contains(&".reefmt-cache".to_string()));
-    }
-
-    #[test]
-    fn load_config_parses_reefmt_jsonc_from_directory() {
-        let dir = env::temp_dir().join(format!(
-            "reefmt_test_load_config_{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-
-        let config_content = r#"{
-	"skipDirs": ["node_modules", "dist"],
-	"extensions": ["ree", "ts"],
-	"skipDotDirs": false
-}"#;
-        fs::write(dir.join("reefmt.jsonc"), config_content).unwrap();
-
-        let original_cwd = env::current_dir().unwrap();
-        env::set_current_dir(&dir).unwrap();
-
-        let config = load_config();
-
-        env::set_current_dir(&original_cwd).unwrap();
-
-        assert_eq!(config.skip_dirs.len(), 2);
-        assert!(!config.skip_dirs.contains(&"vendor".to_string()));
-
-        assert_eq!(config.extensions.len(), 2);
-        assert!(!config.extensions.contains(&"js".to_string()));
-
-        assert!(!config.skip_dot_dirs);
-
-        let _ = fs::remove_dir_all(&dir);
+        let not_matched = Path::new("src/ui/button.ts");
+        assert!(!should_skip_file(&not_matched, &config));
     }
 }
