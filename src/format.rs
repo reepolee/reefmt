@@ -308,7 +308,7 @@ fn postprocess_from_swc(formatted: &str, placeholders: &[Placeholder]) -> String
                         // Capture the indentation from the first placeholder line
                         let indent = &lines[i][..lines[i].len() - lines[i].trim().len()];
 
-                        // Re-indent the original block comment to match
+                                    // Re-indent the original block comment to match
                         let reindented = reindent_block_comment(&ph.original, indent);
                         final_result.push_str(&reindented);
                         final_result.push('\n');
@@ -344,39 +344,61 @@ fn extract_tag(trimmed: &str) -> Option<String> {
     }
 }
 
-/// Re-indent a block comment to use the given indent string, preserving its
-/// internal structure.
+/// Re-indent a block comment to use the given indent string.
 ///
-/// The original block comment has some indentation (e.g. `\t/**`). We need to
-/// strip its original base indentation and apply the new one.
+/// Detects the base indentation from the first line (e.g. `\t/**` prefixes
+/// `\t`), strips it from every line, and prepends `new_indent`.
+/// This preserves the internal structure (like ` * ` JSDoc markers) without
+/// accumulating extra whitespace on repeated passes.
+/// Re-indent a block comment to use the given indent string.
+///
+/// The extracted comment typically looks like:
+/// ```
+/// /**
+///  * text
+///  */
+/// ```
+/// where content lines already have some indentation (e.g. `\t\t`).
+/// This function detects the common indentation of content lines,
+/// strips it, and prepends `new_indent`.
 fn reindent_block_comment(comment: &str, new_indent: &str) -> String {
     let lines: Vec<&str> = comment.lines().collect();
     if lines.is_empty() {
         return comment.to_string();
     }
 
-    // Detect the base indentation of the first line
-    let first_trimmed = lines[0].trim_start();
-    let base_indent = lines[0].len() - first_trimmed.len();
+    // Detect common indentation from content lines (skip the opening `/**`)
+    let content_base = if lines.len() > 1 {
+        // Find minimum leading whitespace across all content lines
+        lines[1..].iter()
+            .map(|l| l.len() - l.trim_start().len())
+            .filter(|&n| n > 0)
+            .min()
+            .unwrap_or(0)
+    } else {
+        0
+    };
 
     let mut out = String::with_capacity(comment.len());
     for (idx, line) in lines.iter().enumerate() {
-        let trimmed = line.trim_start();
-        if trimmed.is_empty() {
-            out.push('\n');
-            continue;
-        }
-        // Only indent lines that had the base indentation
-        let leading = line.len() - trimmed.len();
-        if leading >= base_indent {
+        if idx == 0 {
+            // First line (`/**`): prepend new_indent, keep the rest as-is
             out.push_str(new_indent);
-            // Preserve remaining indentation beyond the base level
-            let extra = leading - base_indent;
-            for _ in 0..extra {
-                out.push(' ');
+            out.push_str(line);
+        } else {
+            // Content or closing line: strip the common base indentation
+            // and prepend new_indent
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() {
+                // Whitespace-only line — just emit newline later
+            } else if content_base > 0 && line.len() >= content_base {
+                out.push_str(new_indent);
+                out.push_str(&line[content_base..]);
+            } else {
+                out.push_str(new_indent);
+                out.push_str(trimmed);
             }
         }
-        out.push_str(trimmed);
         if idx < lines.len() - 1 {
             out.push('\n');
         }
@@ -957,8 +979,8 @@ mod tests {
         let src = "/**\n * doc\n */\nexport const x = 1;\n";
         let result = format_code_content(src, "ts", 180, true, 3);
         assert!(result.contains("/**"), "block comment /** should be preserved");
-        assert!(result.contains(" * doc\n"), "block comment content should be preserved");
-        assert!(result.contains(" */\nexport"), "*/ should be on its own line before export");
+        assert!(result.contains("* doc\n"), "block comment content should be preserved (space before * is normalized)");
+        assert!(result.contains("*/\nexport"), "*/ should be on its own line before export");
     }
 
     #[test]
@@ -995,6 +1017,18 @@ mod tests {
         let pass1 = format_code_content(src, "ts", 180, true, 3);
         let pass2 = format_code_content(&pass1, "ts", 180, true, 3);
         assert_eq!(pass1, pass2, "output should be idempotent with block comments and blank lines");
+    }
+
+    #[test]
+    fn idempotent_block_comment_inside_object_literal() {
+        // Regression: block comments nested inside an object literal (e.g.
+        // inside `return { /** ... */ method() { } }`) kept gaining indentation
+        // on each pass because SWC re-indented placeholder lines and the
+        // content lines of the comment had extra spacing that accumulated.
+        let src = "export function create_cache(redis_client: typeof default_redis) {\n\treturn {\n\t\t/**\n\t\t * Wraps a search query with Redis caching and dependency tracking.\n\t\t * On cache miss, stores the result and registers it in dependency sets\n\t\t * for each table in `view_deps`.\n\t\t *\n\t\t * On Redis error, falls back to `query_fn()` directly with a warning.\n\t\t */\n\t\tasync search<T>(\n\t\t\troute: string,\n\t\t\tparams: Record<string, unknown>,\n\t\t\tview_deps: string[],\n\t\t\tquery_fn: () => Promise<T>,\n\t\t): Promise<T> {\n\t\t\treturn cached_query(route, params, view_deps, query_fn);\n\t\t}\n\t};\n}\n";
+        let pass1 = format_code_content(src, "ts", 180, true, 3);
+        let pass2 = format_code_content(&pass1, "ts", 180, true, 3);
+        assert_eq!(pass1, pass2, "block comment inside object literal should be idempotent");
     }
 
     // ─── collapse_single_stmt_blocks tests ────────────────────────
