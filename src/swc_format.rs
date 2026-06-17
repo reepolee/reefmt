@@ -83,6 +83,8 @@ fn parse_es(
 
 /// Re-indent formatted code to use the target indent string.
 /// Detects SWC's indentation width and converts to the target indent.
+/// Any remainder whitespace (leading spaces that don't divide evenly into
+/// full indent levels) is preserved as literal spaces.
 fn reindent(code: &str, target_indent: &str) -> String {
     let indent_width = detect_indent_width(code);
 
@@ -94,9 +96,13 @@ fn reindent(code: &str, target_indent: &str) -> String {
             continue;
         }
         let leading_spaces = line.len() - trimmed.len();
-        let indent_levels = leading_spaces.checked_div(indent_width).unwrap_or(0);
+        let indent_levels = leading_spaces / indent_width;
+        let remainder = leading_spaces % indent_width;
         for _ in 0..indent_levels {
             out.push_str(target_indent);
+        }
+        for _ in 0..remainder {
+            out.push(' ');
         }
         out.push_str(trimmed);
         out.push('\n');
@@ -108,12 +114,19 @@ fn reindent(code: &str, target_indent: &str) -> String {
 }
 
 /// Detect the indentation width used in code.
-/// Uses the minimum non-zero indentation across all indented lines.
+/// Uses the minimum non-zero indentation across all indented lines,
+/// skipping block comment continuation lines (which start with `*` after
+/// trimming — they use 1-space alignment that doesn't represent code indent).
 fn detect_indent_width(code: &str) -> usize {
     let mut min_indent = usize::MAX;
     for line in code.lines() {
         let trimmed = line.trim_start();
         if trimmed.is_empty() || trimmed == line {
+            continue;
+        }
+        // Skip block comment continuation lines like " * content" —
+        // they have 1 space before `*` which is not a code indent level.
+        if trimmed.starts_with('*') {
             continue;
         }
         let leading = line.len() - trimmed.len();
