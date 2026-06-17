@@ -99,8 +99,7 @@ fn check_stop(remaining: &str, stop: &Stop) -> bool {
     match stop {
         Stop::None => false,
         Stop::CloseTag(tag) => {
-            if remaining.starts_with("</") {
-                let after = &remaining[2..];
+            if let Some(after) = remaining.strip_prefix("</") {
                 if let Some(gt) = after.find('>') {
                     let name = after[..gt].trim();
                     return name.eq_ignore_ascii_case(tag);
@@ -195,6 +194,14 @@ fn find_next_special_in_raw(input: &str, close_marker: &str) -> usize {
 fn parse_token(input: &str) -> (Option<Node>, &str) {
     if input.starts_with("<!--") {
         parse_comment(input)
+    } else if input.starts_with("<!DOCTYPE") || input.starts_with("<!doctype") {
+        // DOCTYPE is a special SGML declaration, not an HTML element.
+        // Emit it as raw text up to (and including) the closing >.
+        if let Some(end) = input.find('>') {
+            (Some(Node::Text(input[..end + 1].to_string())), &input[end + 1..])
+        } else {
+            (Some(Node::Text(input.to_string())), "")
+        }
     } else if input.starts_with("</") {
         if let Some(gt) = input.find('>') {
             (None, &input[gt + 1..])
@@ -221,8 +228,8 @@ fn parse_token(input: &str) -> (Option<Node>, &str) {
         parse_ree_inline(input, 2, true)
     } else if input.starts_with("{~") {
         parse_ree_inline(input, 2, false)
-    } else if input.starts_with('{') {
-        (Some(Node::Text(input[..1].to_string())), &input[1..])
+    } else if let Some(rest) = input.strip_prefix('{') {
+        (Some(Node::Text(input[..1].to_string())), rest)
     } else {
         (Some(Node::Text(input[..1].to_string())), &input[1..])
     }
@@ -295,15 +302,14 @@ fn parse_html_tag(input: &str) -> (Option<Node>, &str) {
 
     let (attrs, remaining) = parse_attrs(remaining);
 
-    if remaining.starts_with("/>") {
+    if let Some(after) = remaining.strip_prefix("/>") {
         return (
             Some(Node::Element { tag, attrs, children: vec![], self_closing: true }),
-            &remaining[2..],
+            after,
         );
     }
 
-    if remaining.starts_with('>') {
-        let after_gt = &remaining[1..];
+    if let Some(after_gt) = remaining.strip_prefix('>') {
 
         // Void elements (input, br, hr, etc.) don't have children — treat as self-closing
         if is_void_element(&tag) {
@@ -379,8 +385,7 @@ fn parse_one_attr(input: &str) -> Option<(String, &str)> {
     let name = &input[..name_end];
     let remaining = &input[name_end..];
 
-    if remaining.starts_with('=') {
-        let after_eq = &remaining[1..];
+    if let Some(after_eq) = remaining.strip_prefix('=') {
         if after_eq.starts_with('"') {
             let mut j = 1;
             while j < after_eq.len() {
@@ -789,7 +794,7 @@ fn print_inline_element(tag: &str, attrs: &[String], children: &[Node], depth: u
             out.push_str(&"\t".repeat(depth + 1));
             out.push_str(attr);
             if i == attrs.len() - 1 {
-                out.push_str(">");
+                out.push('>');
             }
             out.push('\n');
         }
@@ -992,5 +997,15 @@ mod tests {
         let input = "<!-- hello -->";
         let output = format_ree(input, 120);
         assert_eq!(output, "<!-- hello -->\n");
+    }
+
+    #[test]
+    fn doctype_preserved_and_html_root() {
+        let input = "<!DOCTYPE html>\n\n<html lang=\"en\">\n\t<head>\n\t\t<meta charset=\"UTF-8\" />\n\t</head>\n</html>\n";
+        let output = format_ree(input, 120);
+        assert!(output.starts_with("<!DOCTYPE html>"), "DOCTYPE should be first, got: {:?}", &output[..20]);
+        assert!(!output.starts_with("\t<!DOCTYPE"), "DOCTYPE should not be indented");
+        assert!(output.contains("\n<html"), "html should be at depth 0 after blank line");
+        assert!(!output.contains("\n\t<html"), "html should NOT be indented");
     }
 }

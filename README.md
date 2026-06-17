@@ -110,18 +110,19 @@ edit to customize skip directories, file extensions, and dot-folder behavior.
 
 ## Configuration
 
-reefmt can be configured with a `reefmt.jsonc` file in your project root.
-Create one with `reefmt --init`, then edit it. The file supports JSON
-comments (`//` and `/* */`) for inline documentation.
+reefmt requires a `reefmt.jsonc` config file in your project root.
+Run `reefmt --init` to generate one, then edit it to suit your project.
+The file supports JSON comments (`//` and `/* */`) for inline documentation.
 
 ### Available options:
 
-| Option | Type | Default | Description |
+| Option | Type | Default (`--init`) | Description |
 |---|---|---|---|
 | `skipDirs` | `string[]` | `["node_modules", "vendor", "vendors", "dist", "templates", "static"]` | Directories to skip when formatting. Any folder matching a name in this list is skipped, regardless of its location in the project. |
 | `skipFiles` | `string[]` | `[]` | Glob patterns for files to skip (e.g. `"generator/templates/**/*.ts"`). Matches file paths relative to the project root. |
 | `extensions` | `string[]` | `["ree", "ts", "js", "css"]` | File extensions to format. |
 | `skipDotDirs` | `boolean` | `true` | Skip directories whose name starts with a dot (e.g. `.git`, `.next`, `.cache`, `.svelte-kit`). |
+| `wrapWidth` | `number` | `180` | Maximum line width before elements are broken onto multiple lines. |
 
 ### Example config:
 
@@ -129,13 +130,10 @@ comments (`//` and `/* */`) for inline documentation.
 {
 	"skipDirs": ["node_modules", "vendor", "dist", ".output"],
 	"extensions": ["ree", "ts", "js", "css", "jsx"],
-	"skipDotDirs": true
+	"skipDotDirs": true,
+	"wrapWidth": 180
 }
 ```
-
-If no `reefmt.jsonc` is found, reefmt uses sensible defaults (same values
-shown above). If the file is present but invalid, a warning is printed and
-defaults are used.
 
 > 📘 For detailed documentation, examples, and configuration reference, visit [reepolee.com/reefmt/docs](https://www.reepolee.com/reefmt/docs/).
 

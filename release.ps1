@@ -117,6 +117,42 @@ if ($Force) {
     $version = $newVersion
     $tag = "v$version"
     $doBump = $true
+
+    # Update CHANGELOG.md with a new version heading
+    if (Test-Path "CHANGELOG.md") {
+        $today = Get-Date -Format "yyyy-MM-dd"
+        $lines = Get-Content "CHANGELOG.md"
+        $hasEntry = $false
+        foreach ($line in $lines) {
+            if ($line -match "^## \[$version\]") {
+                $hasEntry = $true
+                break
+            }
+        }
+        if (-not $hasEntry) {
+            $insertLine = 0
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+                if ($lines[$i] -match "^## \[") {
+                    $insertLine = $i
+                    break
+                }
+            }
+            if ($insertLine -gt 0) {
+                $newContent = @()
+                for ($i = 0; $i -lt $insertLine; $i++) {
+                    $newContent += $lines[$i]
+                }
+                $newContent += ""
+                $newContent += "## [$version] - $today"
+                $newContent += ""
+                for ($i = $insertLine; $i -lt $lines.Count; $i++) {
+                    $newContent += $lines[$i]
+                }
+                Set-Content "CHANGELOG.md" -Value $newContent
+                Write-Host "  Updated CHANGELOG.md with version $version"
+            }
+        }
+    }
 } else {
     # No code changes → just upload the binary
     Write-Host "═══ reefmt release $version for Windows ═══"
@@ -138,7 +174,7 @@ Copy-Item ".\target\release\$AppName.exe" ".\$binaryName"
 
 if ($doBump) {
     Write-Host "`n→ Committing version bump..."
-    git add "Cargo.toml"
+    git add "Cargo.toml", "CHANGELOG.md"
     git commit -m "Bump version to $version"
     Write-Host "  Committed: Bump version to $version"
 }
@@ -182,17 +218,40 @@ if ($LASTEXITCODE -eq 0) {
     gh release upload $tag "$assetPath#$assetName" --clobber
 } else {
     Write-Host "  Creating release $tag..."
+    $notesFile = [System.IO.Path]::GetTempFileName()
+    if (Test-Path "CHANGELOG.md") {
+        $inSection = $false
+        $notes = @()
+        Get-Content "CHANGELOG.md" | ForEach-Object {
+            if ($_ -match "^## \[$version\]") {
+                $inSection = $true
+            } elseif ($_ -match "^## \[" -and $inSection) {
+                $inSection = $false
+            } elseif ($inSection) {
+                $notes += $_
+            }
+        }
+        if ($notes.Count -gt 0) {
+            Set-Content $notesFile -Value $notes
+        } else {
+            Set-Content $notesFile -Value "Release $tag"
+        }
+    } else {
+        Set-Content $notesFile -Value "Release $tag"
+    }
+
     $releaseArgs = @(
         "release", "create", $tag,
         "$assetPath#$assetName",
         "--title", $tag,
-        "--notes", "Release $tag"
+        "--notes-file", $notesFile
     )
     if ($Draft) {
         $releaseArgs += "--draft"
         Write-Host "  (Draft mode)"
     }
     gh @releaseArgs
+    Remove-Item $notesFile -Force
 }
 
 # ──────────────────────────────────────────────

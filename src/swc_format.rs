@@ -94,11 +94,7 @@ fn reindent(code: &str, target_indent: &str) -> String {
             continue;
         }
         let leading_spaces = line.len() - trimmed.len();
-        let indent_levels = if indent_width > 0 {
-            leading_spaces / indent_width
-        } else {
-            0
-        };
+        let indent_levels = leading_spaces.checked_div(indent_width).unwrap_or(0);
         for _ in 0..indent_levels {
             out.push_str(target_indent);
         }
@@ -158,6 +154,23 @@ mod tests {
     fn format_invalid_js_returns_original() {
         let input = "this is not valid js {{{{";
         assert_eq!(format_js_with_indent(input, "\t"), input);
+    }
+
+    #[test]
+    fn idempotent_non_ascii_comment() {
+        // Regression: non-ASCII chars in comments should be preserved across formats
+        let src = "// Café naïve — ščüéø\nconst x = 1;\n";
+        let pass1 = format_js_with_indent(src, "\t");
+        let pass2 = format_js_with_indent(&pass1, "\t");
+        assert_eq!(pass1, pass2, "SWC format should be idempotent with non-ASCII in comments");
+    }
+
+    #[test]
+    fn idempotent_already_formatted() {
+        let src = "const x = 1;\n";
+        let pass1 = format_js_with_indent(src, "\t");
+        let pass2 = format_js_with_indent(&pass1, "\t");
+        assert_eq!(pass1, pass2, "SWC format should be idempotent for already-formatted code");
     }
 
     #[test]

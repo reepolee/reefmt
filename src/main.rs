@@ -15,8 +15,8 @@ use glob::glob;
 use rayon::prelude::*;
 
 /// Reefmt configuration — loaded from `reefmt.jsonc` in the project root.
+/// Run `reefmt --init` to create one.
 #[derive(Deserialize)]
-#[serde(default)]
 pub(crate) struct ReeConfig {
     /// Directories to skip when formatting.
     #[serde(rename = "skipDirs")]
@@ -33,51 +33,30 @@ pub(crate) struct ReeConfig {
     wrap_width: usize,
 }
 
-impl Default for ReeConfig {
-    fn default() -> Self {
-        Self {
-            skip_dirs: vec![
-                "node_modules".to_string(),
-                "vendor".to_string(),
-                "vendors".to_string(),
-                "dist".to_string(),
-                "templates".to_string(),
-                "static".to_string(),
-            ],
-            extensions: vec![
-                "ree".to_string(),
-                "ts".to_string(),
-                "js".to_string(),
-                "css".to_string(),
-            ],
-            skip_files: vec![],
-            skip_dot_dirs: true,
-            wrap_width: 120,
-        }
-    }
-}
+
 
 /// Load reefmt config from `reefmt.jsonc` in the current directory.
+/// Exits with an error if the file is missing or invalid.
 fn load_config() -> ReeConfig {
-    if let Ok(cwd) = env::current_dir() {
-        let config_path = cwd.join("reefmt.jsonc");
-        if config_path.exists() {
-            match fs::read_to_string(&config_path) {
-                Ok(content) => match json5::from_str(&content) {
-                    Ok(config) => return config,
-                    Err(e) => eprintln!(
-                        "Warning: invalid reefmt.jsonc: {}, using defaults",
-                        e
-                    ),
-                },
-                Err(e) => eprintln!(
-                    "Warning: could not read reefmt.jsonc: {}, using defaults",
-                    e
-                ),
-            }
-        }
+    let cwd = env::current_dir().unwrap_or_else(|e| {
+        eprintln!("Error: could not determine current directory: {}", e);
+        std::process::exit(1);
+    });
+    let config_path = cwd.join("reefmt.jsonc");
+    if !config_path.exists() {
+        eprintln!("Error: reefmt.jsonc not found in {}", cwd.display());
+        eprintln!("Run 'reefmt --init' to create a config file.");
+        std::process::exit(1);
     }
-    ReeConfig::default()
+    let content = fs::read_to_string(&config_path).unwrap_or_else(|e| {
+        eprintln!("Error: could not read {}: {}", config_path.display(), e);
+        std::process::exit(1);
+    });
+    json5::from_str(&content).unwrap_or_else(|e| {
+        eprintln!("Error: invalid reefmt.jsonc: {}", e);
+        eprintln!("Fix the error or run 'reefmt --init' to regenerate the config.");
+        std::process::exit(1);
+    })
 }
 
 /// Check whether a file path matches any `skipFiles` glob pattern.
@@ -129,10 +108,8 @@ fn collect_source_files(
                 }
                 collect_source_files(&path, files, config)?;
             } else if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-                if config.extensions.iter().any(|e| e == ext) {
-                    if !should_skip_file(&path, config) {
-                        files.push(path);
-                    }
+                if config.extensions.iter().any(|e| e == ext) && !should_skip_file(&path, config) {
+                    files.push(path);
                 }
             }
         }
@@ -194,10 +171,8 @@ fn get_git_changed_files(config: &ReeConfig) -> Vec<PathBuf> {
                 }
 
                 if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-                    if config.extensions.iter().any(|e| e == ext) {
-                        if !should_skip_file(&path, config) {
-                            files.push(path);
-                        }
+                    if config.extensions.iter().any(|e| e == ext) && !should_skip_file(&path, config) {
+                        files.push(path);
                     }
                 }
             }
@@ -243,9 +218,7 @@ fn main() {
         format::Mode::Write
     };
 
-    let config = load_config();
-
-    // Parse --stdin flag
+    // Parse --stdin flag (parse args before version/init so --version --stdin works)
     let stdin_mode = args.iter().position(|a| a == "--stdin");
     let stdin_ext: Option<String> = stdin_mode.and_then(|pos| {
         args.remove(pos);
@@ -256,6 +229,44 @@ fn main() {
         }
     });
 
+    // Check for --version (no config needed)
+    if args.len() == 1 && (args[0] == "-v" || args[0] == "--version") {
+        println!("reefmt v{}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
+    // Check for --init (no config needed — creates it)
+    if args.iter().any(|a| a == "--init") {
+        let cwd = env::current_dir().unwrap_or_else(|_| {
+            eprintln!("Error: could not determine current directory");
+            std::process::exit(1);
+        });
+        let config_path = cwd.join("reefmt.jsonc");
+        if config_path.exists() {
+            eprintln!(
+                "Error: {} already exists in this directory",
+                config_path.display()
+            );
+            std::process::exit(1);
+        }
+        let template = include_str!("../reefmt.jsonc");
+        match fs::write(&config_path, template.trim_start()) {
+            Ok(_) => {
+                println!("Created: {}", config_path.display());
+                println!("Edit this file to configure reefmt formatting behavior.");
+            }
+            Err(e) => {
+                eprintln!("Error writing {}: {}", config_path.display(), e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // Load config (required for all remaining operations)
+    let config = load_config();
+
+    // Handle --stdin (uses config)
     if stdin_mode.is_some() {
         let mut input = String::new();
         if let Err(e) = std::io::stdin().read_to_string(&mut input) {
@@ -276,54 +287,6 @@ fn main() {
         };
 
         print!("{}", formatted);
-        return;
-    }
-
-    if args.len() == 1 && (args[0] == "-v" || args[0] == "--version") {
-        println!("reefmt v{}", env!("CARGO_PKG_VERSION"));
-        return;
-    }
-
-    // Check for --init flag
-    if args.iter().any(|a| a == "--init") {
-        let cwd = env::current_dir().unwrap_or_else(|_| {
-            eprintln!("Error: could not determine current directory");
-            std::process::exit(1);
-        });
-        let config_path = cwd.join("reefmt.jsonc");
-        if config_path.exists() {
-            eprintln!(
-                "Error: {} already exists in this directory",
-                config_path.display()
-            );
-            std::process::exit(1);
-        }
-        let template = r##"{
-	// Directories to skip when formatting.
-	"skipDirs": ["node_modules", "vendor", "vendors", "dist", "templates", "static"],
-
-	// Glob patterns for files to skip.
-	"skipFiles": [],
-
-	// File extensions to format.
-	"extensions": ["ree", "ts", "js", "css"],
-
-	// Whether to skip dot-directories.
-	"skipDotDirs": true,
-
-	// Maximum line width before elements are broken onto multiple lines.
-	"wrapWidth": 120
-}"##;
-        match fs::write(&config_path, template.trim_start()) {
-            Ok(_) => {
-                println!("Created: {}", config_path.display());
-                println!("Edit this file to configure reefmt formatting behavior.");
-            }
-            Err(e) => {
-                eprintln!("Error writing {}: {}", config_path.display(), e);
-                std::process::exit(1);
-            }
-        }
         return;
     }
 
@@ -407,7 +370,13 @@ mod tests {
         let path = dir.join("test.txt");
         fs::write(&path, "hello world").unwrap();
 
-        let config = ReeConfig::default();
+        let config = ReeConfig {
+            skip_dirs: vec![],
+            skip_files: vec![],
+            extensions: vec!["ree".to_string()],
+            skip_dot_dirs: false,
+            wrap_width: 120,
+        };
         let modified = format::format_file(&path, format::Mode::Write, &config);
         assert!(!modified, "format_file should return false for unsupported extension");
 
@@ -432,13 +401,17 @@ mod tests {
 
     #[test]
     fn skip_files_glob_matches_relative_path() {
-        let mut config = ReeConfig::default();
-        config.skip_files = vec!["generator/templates/**/*.ts".to_string()];
+        let config = ReeConfig {
+            skip_dirs: vec![],
+            skip_files: vec!["generator/templates/**/*.ts".to_string()],
+            extensions: vec!["ts".to_string()],
+            skip_dot_dirs: false,
+            wrap_width: 120,
+        };
 
         let matched = Path::new("generator/templates/ui/button.ts");
-        assert!(should_skip_file(&matched, &config));
-
+        assert!(should_skip_file(matched, &config));
         let not_matched = Path::new("src/ui/button.ts");
-        assert!(!should_skip_file(&not_matched, &config));
+        assert!(!should_skip_file(not_matched, &config));
     }
 }
