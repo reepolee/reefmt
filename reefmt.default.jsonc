@@ -22,5 +22,9 @@
 	],
 	// Whether to skip dot-directories (folders starting with '.',
 	// like .git, .next, .cache, .svelte-kit, etc.).
-	"skipDotDirs": true
+	"skipDotDirs": true,
+	// Maximum line width before elements are broken onto multiple lines.
+	// Controls when inline elements are folded and when long tag lines
+	// are split across multiple lines.
+	"wrapWidth": 180
 }
