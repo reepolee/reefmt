@@ -420,6 +420,122 @@ pub(crate) fn print_diff(path: &Path, original: &str, formatted: &str) {
     }
 }
 
+/// Collapse expanded inline type literals back to a single line when they
+/// fit within `max_width`.
+///
+/// SWC's codegen expands TS inline type literals like `{ a: string; b: number; }`
+/// across multiple lines. This function detects the multi-line form and collapses
+/// it back when the result fits within the max width.
+///
+/// Detection heuristic: a line ending with `{` where the body consists of lines
+/// ending with `;` (TS type members), followed by a properly brace-matched `}`.
+fn collapse_inline_type_literals(code: &str, max_width: usize) -> String {
+    let mut result = String::with_capacity(code.len());
+    let lines: Vec<&str> = code.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim();
+        let is_comment = trimmed.starts_with("//") || trimmed.starts_with("/*");
+
+        // Look for a line ending with `{` preceded by `:` (e.g. `	keys: {`)
+        if trimmed.ends_with('{') && trimmed.contains(':') && !is_comment {
+            // Track brace depth to handle nested type literals correctly
+            let mut depth: u32 = 1;
+            let mut closing_line = None;
+            for j in i + 1..lines.len() {
+                for (byte_pos, ch) in lines[j].char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                // byte_pos is position of `}`, +1 for byte after it
+                                closing_line = Some((j, byte_pos + 1));
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if closing_line.is_some() {
+                    break;
+                }
+            }
+
+            if let Some((end_idx, after_close_start)) = closing_line {
+                let body_lines: Vec<&str> = (i + 1..end_idx)
+                    .map(|j| lines[j].trim())
+                    .collect();
+
+                // Type literal check: all non-empty body lines end with `;`
+                // and contain `:` before `;` (type member pattern like `key: type;`)
+                let is_type_literal = !body_lines.is_empty()
+                    && body_lines.iter().all(|l| {
+                        l.is_empty() || (l.ends_with(';') && l.contains(':'))
+                    });
+
+                if is_type_literal {
+                    // Build members list (strip trailing `;`)
+                    let members: Vec<&str> = body_lines.iter()
+                        .filter(|l| !l.is_empty())
+                        .map(|l| l.trim_end_matches(';').trim())
+                        .collect();
+
+                    if members.len() > 6 {
+                        // Too many members — keep multi-line
+                        result.push_str(line);
+                        result.push('\n');
+                        i += 1;
+                        continue;
+                    }
+
+                    // Get the prefix before `{` on the opening line
+                    let line_prefix = &line[..line.len() - trimmed.len()];
+                    let before_brace = trimmed.strip_suffix('{').unwrap_or(trimmed);
+
+                    // Get everything after the matching `}` on the closing line
+                    let rest_of_closing_line = &lines[end_idx][after_close_start..];
+
+                    // Build inline form: `{ member; member; member; }`
+                    let inner = if members.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {}; ", members.join("; "))
+                    };
+
+                    let collapsed = format!(
+                        "{}{}{{{}}}{}",
+                        line_prefix,
+                        before_brace,
+                        inner,
+                        rest_of_closing_line
+                    );
+
+                    if collapsed.len() <= max_width {
+                        result.push_str(&collapsed);
+                        result.push('\n');
+                        i = end_idx + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        result.push_str(line);
+        result.push('\n');
+        i += 1;
+    }
+
+    // Remove trailing newline if original didn't have one
+    if !code.ends_with('\n') && result.ends_with('\n') {
+        result.pop();
+    }
+
+    result
+}
+
 /// Format standalone code content (TS/JS/CSS) using native SWC, no subprocess needed.
 /// For .ts and .js files, uses the SWC parser/codegen pipeline.
 /// For .css files, returns the content unchanged (CSS support is a future improvement).
@@ -431,11 +547,12 @@ pub(crate) fn format_code_content(content: &str, ext: &str) -> String {
             let flattened = flatten_concat(&normalized);
             let (preprocessed, placeholders) = preprocess_for_swc(&flattened);
             let swc_formatted = crate::swc_format::format_js_with_indent(&preprocessed, "\t");
-            if placeholders.is_empty() {
+            let restored = if placeholders.is_empty() {
                 swc_formatted
             } else {
                 postprocess_from_swc(&swc_formatted, &placeholders)
-            }
+            };
+            collapse_inline_type_literals(&restored, 180)
         }
         _ => normalized.clone(),
     };
