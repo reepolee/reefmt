@@ -1,2 +1,7 @@
 /target/
 Cargo.lock
+
+# Release binaries left by release.sh / release.ps1
+reefmt-linux-*
+reefmt-macos-*
+reefmt-windows-*.exe
