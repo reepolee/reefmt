@@ -220,6 +220,14 @@ if ($Paths -notcontains $InstallDir) {
 Write-Host "  Installed to $(Join-Path $InstallDir "$AppName.exe")"
 
 # ──────────────────────────────────────────────
+# Cleanup copied binary from project root
+# ──────────────────────────────────────────────
+
+Write-Host "`n→ Cleaning up..."
+Remove-Item ".\$binaryName" -Force
+Write-Host "  Removed .\$binaryName"
+
+# ──────────────────────────────────────────────
 # Done
 # ──────────────────────────────────────────────
 
