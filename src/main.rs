@@ -15,6 +15,7 @@ use glob::glob;
 use rayon::prelude::*;
 
 fn default_true() -> bool { true }
+fn default_three() -> usize { 3 }
 
 /// Reefmt configuration — loaded from `reefmt.jsonc` in the project root.
 /// Run `reefmt --init` to create one.
@@ -38,6 +39,11 @@ pub(crate) struct ReeConfig {
     /// are collapsed onto one line when they fit within wrapWidth.
     #[serde(rename = "collapseSingleStatementBlocks", default = "default_true")]
     collapse_single_stmt_blocks: bool,
+    /// Maximum number of object literal members or type literal members
+    /// allowed before collapsing is prevented. Members beyond this count
+    /// stay multi-line regardless of wrapWidth.
+    #[serde(rename = "collapseMaxMembers", default = "default_three")]
+    collapse_max_members: usize,
 }
 
 
@@ -217,6 +223,20 @@ fn main() {
         args.retain(|a| a != "--git");
     }
 
+    // Parse --collapse-max-members CLI override
+    let cli_max_members: Option<usize> = args.iter().position(|a| a == "--collapse-max-members").map(|pos| {
+        args.remove(pos); // remove the flag
+        if pos >= args.len() {
+            eprintln!("Error: --collapse-max-members requires a number argument");
+            std::process::exit(1);
+        }
+        let val = args.remove(pos);
+        val.parse().unwrap_or_else(|_| {
+            eprintln!("Error: --collapse-max-members must be a positive integer");
+            std::process::exit(1);
+        })
+    });
+
     let mode = if diff_mode {
         format::Mode::Diff
     } else if check_mode {
@@ -271,7 +291,12 @@ fn main() {
     }
 
     // Load config (required for all remaining operations)
-    let config = load_config();
+    let mut config = load_config();
+
+    // CLI --collapse-max-members overrides config
+    if let Some(max_members) = cli_max_members {
+        config.collapse_max_members = max_members;
+    }
 
     // Handle --stdin (uses config)
     if stdin_mode.is_some() {
@@ -285,8 +310,8 @@ fn main() {
         let ext = ext.trim_start_matches('.');
 
         let formatted = match ext {
-            "ree" => ree_format::format_ree_content(&input, config.wrap_width, config.collapse_single_stmt_blocks),
-            "ts" | "js" | "css" => format::format_code_content(&input, ext, config.wrap_width, config.collapse_single_stmt_blocks),
+            "ree" => ree_format::format_ree_content(&input, config.wrap_width, config.collapse_single_stmt_blocks, config.collapse_max_members),
+            "ts" | "js" | "css" => format::format_code_content(&input, ext, config.wrap_width, config.collapse_single_stmt_blocks, config.collapse_max_members),
             _ => {
                 eprintln!("Unsupported extension for --stdin: .{}", ext);
                 std::process::exit(1);
@@ -384,6 +409,7 @@ mod tests {
             skip_dot_dirs: false,
             wrap_width: 120,
             collapse_single_stmt_blocks: true,
+            collapse_max_members: 3,
         };
         let modified = format::format_file(&path, format::Mode::Write, &config);
         assert!(!modified, "format_file should return false for unsupported extension");
@@ -399,7 +425,7 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, format::Mode::Check, 120, true);
+        let modified = crate::ree_format::format_ree_file(&path, format::Mode::Check, 120, true, 3);
         assert!(modified, "Check mode should return true when file would change");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, unformatted, "Check mode should not modify the file");
@@ -423,6 +449,7 @@ mod tests {
         assert!(config.extensions.contains(&"ree".to_string()));
         assert!(config.skip_dot_dirs);
         assert_eq!(config.wrap_width, 180);
+        assert_eq!(config.collapse_max_members, 3);
     }
 
     #[test]
@@ -434,6 +461,7 @@ mod tests {
             skip_dot_dirs: false,
             wrap_width: 120,
             collapse_single_stmt_blocks: true,
+            collapse_max_members: 3,
         };
 
         let matched = Path::new("generator/templates/ui/button.ts");
