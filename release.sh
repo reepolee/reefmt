@@ -170,6 +170,24 @@ elif [ "$new_commits" -gt 0 ]; then
 	version="$new_version"
 	tag="v$version"
 	do_bump=true
+
+	# Update CHANGELOG.md with a new version heading
+	if [ -f CHANGELOG.md ]; then
+		today=$(date +%Y-%m-%d)
+		if ! grep -q "^## \\[$version\\]" CHANGELOG.md 2>/dev/null; then
+			first_version_line=$(grep -n "^## \\[" CHANGELOG.md | head -1 | cut -d: -f1)
+			if [ -n "$first_version_line" ]; then
+				{
+					head -n $((first_version_line - 1)) CHANGELOG.md
+					echo ""
+					echo "## [$version] - $today"
+					echo ""
+					tail -n +"$first_version_line" CHANGELOG.md
+				} > CHANGELOG.md.tmp && mv CHANGELOG.md.tmp CHANGELOG.md
+				echo "  Updated CHANGELOG.md with version $version"
+			fi
+		fi
+	fi
 else
 	# No code changes → just upload the binary (or --force was used)
 	echo "═══ reefmt release $version for $os ($arch) ═══"
@@ -194,7 +212,7 @@ file "./$binary_name"
 if [ "$do_bump" = true ]; then
 	echo ""
 	echo "→ Committing version bump..."
-	git add Cargo.toml
+	git add Cargo.toml CHANGELOG.md
 	git commit -m "Bump version to $version"
 	echo "  Committed: Bump version to $version"
 fi
@@ -237,11 +255,22 @@ if gh release view "$tag" >/dev/null 2>&1; then
 	gh release upload "$tag" "$asset_path#$asset_name" --clobber
 else
 	echo "  Creating release $tag..."
+	# Extract changelog entry for release notes
+	notes_file=$(mktemp)
+	if [ -f CHANGELOG.md ]; then
+		awk "BEGIN{found=0} /^## \\[$version\\]/{found=1; next} /^## \\[/ && found{exit} found{print}" CHANGELOG.md > "$notes_file"
+	fi
+	if [ ! -s "$notes_file" ]; then
+		echo "Release $tag" > "$notes_file"
+	fi
+
 	gh release create "$tag" \
 		"$asset_path#$asset_name" \
 		--title "$tag" \
-		--notes "Release $tag" \
+		--notes-file "$notes_file" \
 		$draft_flag
+
+	rm -f "$notes_file"
 fi
 
 # ──────────────────────────────────────────────

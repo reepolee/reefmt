@@ -1,23 +1,12 @@
-use std::env;
 use std::fs;
-use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
 use similar::{ChangeTag, DiffOp};
 
 use crate::ree_format::flatten_concat;
 
-/// Atomic counter for generating unique temp file names across parallel threads.
-static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 /// Operating mode: write files, check-only (list files), or diff (show changes).
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Mode { Write, Check, Diff }
-
-/// Default oxfmt config with tabs, embedded at build time.
-const OXFMT_CONFIG: &str = "{\"useTabs\": true, \"tabWidth\": 1}";
 
 /// Print a unified diff between original and formatted content.
 pub(crate) fn print_diff(path: &Path, original: &str, formatted: &str) {
@@ -54,82 +43,19 @@ pub(crate) fn print_diff(path: &Path, original: &str, formatted: &str) {
     }
 }
 
-/// Generate a unique identifier for temp files (process ID + atomic counter).
-/// Guarantees uniqueness across parallel threads.
-fn temp_uid() -> String {
-    let pid = std::process::id();
-    let count = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{}_{}", pid, count)
-}
-
-/// Resolve the oxfmt config path. Write the default config to a temp file
-/// once and reuse it for all subsequent calls.
-fn resolve_oxfmt_config() -> &'static str {
-    static CONFIG_PATH: OnceLock<String> = OnceLock::new();
-    CONFIG_PATH.get_or_init(|| {
-        // Check for project-level oxfmt config first
-        if let Ok(cwd) = env::current_dir() {
-            for name in &[".oxfmtrc.json", "oxfmt.json", "oxfmt.jsonc"] {
-                let path = cwd.join(name);
-                if path.exists() {
-                    return path.to_string_lossy().into_owned();
-                }
-            }
-        }
-
-        let uid = temp_uid();
-        let config_path = env::temp_dir()
-            .join(format!("reefmt_oxfmt_config_{}.json", uid))
-            .to_string_lossy()
-            .into_owned();
-
-        if fs::write(&config_path, OXFMT_CONFIG).is_ok() {
-            config_path
-        } else {
-            String::new()
-        }
-    })
-}
-
-/// Pipe content through oxfmt for formatting.
-pub(crate) fn pipe_oxfmt(src: &str, ext: &str) -> String {
-    let filepath = format!("file.{}", ext);
-    let mut args = vec!["--stdin-filepath", &filepath];
-    let config_path = resolve_oxfmt_config();
-    if !config_path.is_empty() {
-        args.push("-c");
-        args.push(config_path);
-    }
-
-    let mut child = match Command::new("oxfmt")
-        .args(&args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => return src.to_string(),
-    };
-
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(src.as_bytes());
-    }
-
-    match child.wait_with_output() {
-        Ok(output) if output.status.success() => {
-            String::from_utf8_lossy(&output.stdout).to_string()
-        }
-        _ => src.to_string(),
-    }
-}
-
-/// Format standalone code content (TS/JS/CSS) via oxfmt.
+/// Format standalone code content (TS/JS/CSS) using native SWC, no subprocess needed.
+/// For .ts and .js files, uses the SWC parser/codegen pipeline.
+/// For .css files, returns the content unchanged (CSS support is a future improvement).
 pub(crate) fn format_code_content(content: &str, ext: &str) -> String {
     let normalized = content.replace("\r\n", "\n");
 
-    let flattened = flatten_concat(&normalized);
-    let formatted = pipe_oxfmt(&flattened, ext);
+    let formatted = match ext {
+        "ts" | "js" => {
+            let flattened = flatten_concat(&normalized);
+            crate::swc_format::format_js_with_indent(&flattened, "\t")
+        }
+        _ => normalized.clone(),
+    };
 
     if !formatted.is_empty() && !formatted.ends_with('\n') {
         format!("{}\n", formatted)
@@ -193,6 +119,7 @@ pub(crate) fn format_file(path: &Path, mode: Mode, config: &crate::ReeConfig) ->
 
 #[cfg(test)]
 mod tests {
+    use std::env;
     use super::*;
 
     #[test]
@@ -303,5 +230,36 @@ mod tests {
         let path = Path::new("/tmp/nonexistent_file_reefmt_test.ree");
         let modified = crate::ree_format::format_ree_file(path, Mode::Check, 120);
         assert!(!modified, "format_ree_file should return false for missing file");
+    }
+
+    #[test]
+    fn format_code_content_js_uses_swc() {
+        let src = "const x=1;const y=2;";
+        let result = format_code_content(src, "js");
+        assert!(result.contains("const x = 1;"), "SWC should format JS: got {:?}", result);
+    }
+
+    #[test]
+    fn idempotent_format_code_content_js() {
+        let src = "const x = 1;\n";
+        let pass1 = format_code_content(src, "js");
+        let pass2 = format_code_content(&pass1, "js");
+        assert_eq!(pass1, pass2, "format_code_content should be idempotent for JS");
+    }
+
+    #[test]
+    fn idempotent_format_code_content_non_ascii_comment() {
+        let src = "// Café naïve — ščüéø\nconst x = 1;\n";
+        let pass1 = format_code_content(src, "js");
+        let pass2 = format_code_content(&pass1, "js");
+        assert_eq!(pass1, pass2,
+            "format_code_content should be idempotent with non-ASCII chars");
+    }
+
+    #[test]
+    fn format_code_content_css_passthrough() {
+        let src = "body { color: red; }\n";
+        let result = format_code_content(src, "css");
+        assert_eq!(result, src, "CSS should pass through unchanged");
     }
 }

@@ -36,8 +36,7 @@ pub(crate) fn flatten_concat(src: &str) -> String {
 /// then formats embedded JS/CSS via SWC (native Rust, no subprocess).
 pub(crate) fn format_ree_content(content: &str, wrap_width: usize) -> String {
     let ast_output = crate::ree_parser::format_ree(content, wrap_width);
-    let result = format_script_blocks(&ast_output);
-    result
+    format_script_blocks(&ast_output)
 }
 
 /// Post-process `<script>` blocks to format JS content via SWC.
@@ -208,6 +207,7 @@ fn detect_min_leading_tabs(content: &str) -> usize {
 /// the surrounding JS without choking on template syntax.
 /// Protects: {= expr}, {~ expr}, {#keyword ...}, {:else}, {/keyword}
 /// Correctly skips content inside JS single/double-quoted strings.
+/// Preserves multi-byte UTF-8 characters (does NOT push bytes as chars).
 fn protect_ree_expressions(input: &str, placeholders: &mut Vec<String>) -> String {
     let mut result = String::with_capacity(input.len());
     let bytes = input.as_bytes();
@@ -222,22 +222,28 @@ fn protect_ree_expressions(input: &str, placeholders: &mut Vec<String>) -> Strin
         // literals handle {=} via ${} interpolation which SWC parses fine)
         if b == b'\'' || b == b'"' {
             let quote = b;
-            result.push(b as char);
+            result.push(b as char); // opening quote (ASCII)
             i += 1;
             while i < len {
                 let c = bytes[i];
                 if c == b'\\' && i + 1 < len {
-                    // Escaped character — copy both bytes, skip both
+                    // Escaped character — copy both bytes (both ASCII)
                     result.push(c as char);
                     result.push(bytes[i + 1] as char);
                     i += 2;
                 } else if c == quote {
-                    result.push(c as char);
+                    result.push(c as char); // closing quote (ASCII)
                     i += 1;
                     break;
-                } else {
+                } else if c & 0x80 == 0 {
+                    // ASCII inside string
                     result.push(c as char);
                     i += 1;
+                } else {
+                    // Multi-byte UTF-8 inside string — consume full character
+                    let ch = input[i..].chars().next().unwrap();
+                    result.push(ch);
+                    i += ch.len_utf8();
                 }
             }
             continue;
@@ -260,8 +266,17 @@ fn protect_ree_expressions(input: &str, placeholders: &mut Vec<String>) -> Strin
             }
         }
 
-        result.push(b as char);
-        i += 1;
+        // Copy the full UTF-8 character (not byte-by-byte)
+        if b & 0x80 == 0 {
+            // ASCII byte
+            result.push(b as char);
+            i += 1;
+        } else {
+            // Multi-byte UTF-8 — consume full character from the string
+            let ch = input[i..].chars().next().unwrap();
+            result.push(ch);
+            i += ch.len_utf8();
+        }
     }
     result
 }
@@ -322,5 +337,56 @@ mod tests {
         let src = "<span>text</span>\n";
         let result = format_ree_content(src, 120);
         assert_eq!(result, src, "format_ree_content should be idempotent for already-formatted content");
+    }
+
+    #[test]
+    fn idempotent_non_ascii_in_script_comment() {
+        // Regression: non-ASCII UTF-8 chars in <script> comments were corrupted
+        // by protect_ree_expressions pushing bytes as chars (mojibake).
+        let src = "<!DOCTYPE html>\n<html>\n\t<head>\n\t\t<script>\n\t\t// šč test — non-ASCII\n\t\tconst x = 1;\n\t\t</script>\n\t</head>\n</html>\n";
+        let pass1 = format_ree_content(src, 120);
+        let pass2 = format_ree_content(&pass1, 120);
+        assert_eq!(pass1, pass2,
+            "format_ree_content should be idempotent with non-ASCII chars in script comments");
+    }
+
+    #[test]
+    fn idempotent_non_ascii_in_ree_expr() {
+        // Non-ASCII inside Ree expressions should also be stable
+        let src = "<p>{= props.ui.šč_test }</p>\n";
+        let pass1 = format_ree_content(src, 120);
+        let pass2 = format_ree_content(&pass1, 120);
+        assert_eq!(pass1, pass2,
+            "format_ree_content should be idempotent with non-ASCII in Ree expressions");
+    }
+
+    #[test]
+    fn idempotent_doctype_and_html() {
+        // Regression: DOCTYPE was parsed as an HTML element, causing indentation drift
+        let src = "<!DOCTYPE html>\n\n<html lang=\"en\">\n\t<head>\n\t\t<meta charset=\"UTF-8\" />\n\t</head>\n</html>\n";
+        let pass1 = format_ree_content(src, 120);
+        let pass2 = format_ree_content(&pass1, 120);
+        assert_eq!(pass1, pass2,
+            "format_ree_content should be idempotent with DOCTYPE declarations");
+    }
+
+    #[test]
+    fn idempotent_ree_blocks_and_script() {
+        // Full Ree block with embedded script containing non-ASCII
+        let src = "{#if props.show}\n\t<script>\n\t// Café naïve — UTF-8 in script\n\tconsole.log(42);\n\t</script>\n{/if}\n";
+        let pass1 = format_ree_content(src, 120);
+        let pass2 = format_ree_content(&pass1, 120);
+        assert_eq!(pass1, pass2,
+            "format_ree_content should be idempotent with Ree blocks and UTF-8 in scripts");
+    }
+
+    #[test]
+    fn idempotent_multiple_blank_lines() {
+        // Multiple consecutive blank lines should converge to stable output
+        let src = "<div>\n\n\n<p>text</p>\n</div>\n";
+        let pass1 = format_ree_content(src, 120);
+        let pass2 = format_ree_content(&pass1, 120);
+        assert_eq!(pass1, pass2,
+            "format_ree_content should be idempotent with multiple blank lines");
     }
 }
