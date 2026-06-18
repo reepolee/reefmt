@@ -105,7 +105,7 @@ already cover the affected code paths.
    - **Formatted pass 1:** `test-files/output/<relpath>` (after formatting, overwrites snapshot)
    - **Original pristine:** `test-files/originals/<relpath>` (never modified)
    
-   Since output was seeded from originals in step 3, `git diff HEAD -- test-files/output/`
+   Since output was seeded from originals in step 2, `git diff HEAD -- test-files/output/`
    shows exactly what each formatting pass changed.
 
 ### Phase 3 — Compare & Analyze
@@ -201,27 +201,33 @@ already cover the affected code paths.
     cp -r test-files/originals test-files/output
     ```
 
-11. **Re-run Phases 2–3** with the rebuilt binary.
+11. **Re-commit the seed state** so `git diff HEAD` shows only the new formatting changes:
+    ```bash
+    git add test-files/output/
+    git commit -m "checkpoint before reefmt test loop (iteration)"
+    ```
 
-12. **Check result:**
+12. **Re-run Phases 2–3** with the rebuilt binary.
+
+13. **Check result:
     - **Bug fixed?** → Move to the next bug or proceed to validation.
     - **Bug not fixed?** → Refine the fix and re-run.
     - **New regression introduced?** → Fix that too — don't leave the tree broken.
 
-13. **Exit loop** when all of these are true:
+14. **Exit loop** when all of these are true:
     - All files in `test-files/originals/` format without errors
     - Every formatted output is idempotent (pass 1 == pass 2)
     - `cargo test` passes with zero failures
 
 ### Phase 6 — Validation
 
-14. **Final end-of-loop git diff to review all changes at once:**
+15. **Final end-of-loop git diff to review all changes at once:
     ```bash
     git diff HEAD -- test-files/output/
     ```
     This highlights exactly what the formatter changed, grouped by file.
 
-15. **Final checklist:**
+16. **Final checklist:
     ```
     [ ] cargo test passes completely
     [ ] cargo build --release succeeds
