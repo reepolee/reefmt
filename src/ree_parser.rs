@@ -815,15 +815,11 @@ fn print_node(node: &Node, depth: usize, out: &mut String, wrap_width: usize) {
             out.push_str(&"\t".repeat(depth));
             out.push_str(&open);
             out.push('\n');
-            for child in children {
-                print_node(child, depth + 1, out, wrap_width);
-            }
+            print_ree_block_children(children, depth + 1, out, wrap_width);
             if let Some(else_nodes) = else_children {
                 out.push_str(&"\t".repeat(depth));
                 out.push_str("{:else}\n");
-                for child in else_nodes {
-                    print_node(child, depth + 1, out, wrap_width);
-                }
+                print_ree_block_children(else_nodes, depth + 1, out, wrap_width);
             }
             out.push_str(&"\t".repeat(depth));
             out.push_str(&format!("{{/{}}}", keyword));
@@ -1050,6 +1046,100 @@ fn print_empty_element(tag: &str, attrs: &[String], depth: usize, out: &mut Stri
     out.push('\n');
 }
 
+/// Check whether a node is an "inline" type (text, expression, or call)
+/// that can be grouped with adjacent inline nodes on the same line.
+fn is_inline_node(node: &Node) -> bool {
+    matches!(node, Node::Text(_) | Node::ReeExpr(_) | Node::ReeCall(_) | Node::Comment(_))
+}
+
+/// Check whether a node is a blank-line text node that should act as a
+/// separator between inline groups rather than being merged into an inline run.
+fn is_blank_line_node(node: &Node) -> bool {
+    match node {
+        Node::Text(t) => t.trim().is_empty() && t.matches('\n').count() > 1,
+        _ => false,
+    }
+}
+
+/// Print consecutive inline nodes on a single line, collapsing whitespace
+/// between them to single spaces. This keeps semantically related expressions
+/// (e.g. `{= option}` and `{= selectors.per_page}`) together on one line
+/// instead of splitting them across separate lines.
+fn print_inline_nodes(nodes: &[Node], depth: usize, out: &mut String, _wrap_width: usize) {
+    let mut line = String::new();
+    for node in nodes {
+        match node {
+            Node::Text(t) => {
+                let trimmed = t.trim();
+                if !trimmed.is_empty() {
+                    if !line.is_empty() && !line.ends_with(' ') {
+                        line.push(' ');
+                    }
+                    line.push_str(trimmed);
+                    if !line.ends_with(' ') {
+                        line.push(' ');
+                    }
+                }
+            }
+            Node::ReeExpr(e) => {
+                line.push_str(&format!("{{= {}}} ", e));
+            }
+            Node::ReeCall(c) => {
+                line.push_str(&format!("{{~ {}}} ", c));
+            }
+            Node::Comment(c) => {
+                let trimmed = c.trim();
+                if !trimmed.is_empty() {
+                    line.push_str(trimmed);
+                    line.push(' ');
+                }
+            }
+            _ => {}
+        }
+    }
+    let trimmed_line = line.trim();
+    if !trimmed_line.is_empty() {
+        out.push_str(&"\t".repeat(depth));
+        out.push_str(trimmed_line);
+        out.push('\n');
+    }
+}
+
+/// Print children of a ReeBlock, grouping consecutive inline nodes (Text,
+/// ReeExpr, ReeCall, Comment) onto a single line instead of splitting them.
+/// Block-level children (Element, ReeBlock, etc.) still print on their own lines.
+/// Blank-line text nodes (Text with >= 2 newlines, whitespace only) act as
+/// separators between inline groups — they are preserved rather than merged.
+fn print_ree_block_children(children: &[Node], depth: usize, out: &mut String, wrap_width: usize) {
+    let mut i = 0;
+    while i < children.len() {
+        if is_inline_node(&children[i]) {
+            // Blank-line text nodes act as separators — emit the blank line and continue
+            if is_blank_line_node(&children[i]) {
+                if let Node::Text(t) = &children[i] {
+                    let blank_lines = t.matches('\n').count().saturating_sub(1);
+                    for _ in 0..blank_lines {
+                        out.push('\n');
+                    }
+                }
+                i += 1;
+                continue;
+            }
+
+            let start = i;
+            i += 1;
+            // Extend the inline group until we hit a non-inline or blank-line node
+            while i < children.len() && is_inline_node(&children[i]) && !is_blank_line_node(&children[i]) {
+                i += 1;
+            }
+            print_inline_nodes(&children[start..i], depth, out, wrap_width);
+        } else {
+            print_node(&children[i], depth, out, wrap_width);
+            i += 1;
+        }
+    }
+}
+
 fn print_self_closing(tag: &str, attrs: &[String], depth: usize, out: &mut String) {
     let attr_str = format_attrs_inline(attrs);
     out.push_str(&"\t".repeat(depth));
@@ -1237,6 +1327,22 @@ mod tests {
         let pass1 = format_ree(input, 120);
         let pass2 = format_ree(&pass1, 120);
         assert_eq!(pass1, pass2, "close tag with trailing space should be idempotent");
+    }
+
+    #[test]
+    fn ree_block_inline_children_grouped() {
+        // Consecutive inline children in a ReeBlock (like {= option} and {= selectors.per_page}
+        // in an {:else} branch) should be printed on one line, not split across separate lines.
+        let input = "{#if option===\"all\"}{= selectors.all}{:else}{= option} {= selectors.per_page}{/if}";
+        let output = format_ree(input, 120);
+        assert_eq!(
+            output,
+            "{#if option===\"all\"}\n\t{= selectors.all}\n{:else}\n\t{= option} {= selectors.per_page}\n{/if}\n",
+            "Consecutive inline nodes in ReeBlock else-children should be grouped on one line"
+        );
+        // Verify idempotency
+        let pass2 = format_ree(&output, 120);
+        assert_eq!(output, pass2, "ReeBlock inline grouping should be idempotent");
     }
 
     #[test]
