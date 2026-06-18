@@ -107,7 +107,12 @@ fn format_script_content(content: &str, wrap_width: usize, collapse_blocks: bool
     let trailing_nl = count_trailing_newlines(content);
     let trimmed = content.trim();
     
-    let base_tabs = detect_min_leading_tabs(trimmed);
+    // Detect base_tabs from raw (untrimmed) content lines, not from the
+    // already-trimmed string. When block collapsing reduces multi-line
+    // script content to a single line, the trimmed version loses all
+    // indentation info, causing a cascading idempotency failure on the
+    // next pass. The raw content still preserves the leading tabs.
+    let base_tabs = detect_min_leading_tabs(content);
     
     // Strip base_tabs from every line to get clean JS for SWC
     let bare_js: String = trimmed.lines()
