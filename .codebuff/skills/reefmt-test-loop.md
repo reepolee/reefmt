@@ -55,15 +55,27 @@ already cover the affected code paths.
    ```
    Verify the binary exists at `target/release/reefmt`.
 
-2. **Clean the output and discover files with a glob:**
+2. **Commit the current state so we can examine a clean diff later:**
+   ```bash
+   git add -A
+   git commit -m "checkpoint before reefmt test loop"
+   ```
+   This creates a reference point. After formatting, `git diff HEAD -- test-files/output/`
+   will show only the formatting changes, making it easy to spot bugs.
+
+3. **Seed output with a snapshot of originals:**
    ```bash
    rm -rf test-files/output
-   mkdir -p test-files/output
+   cp -r test-files/originals test-files/output
    ```
+   This copies all originals into the output directory. After formatting, formatted
+   versions overwrite the copies, so the output directory always contains both
+   originals (in unchanged subdirectories) and formatted results side by side,
+   and `git diff` shows exactly what the formatter changed per file.
 
 ### Phase 2 — Format Originals
 
-3. **Discover all source files via glob and format each one:**
+4. **Discover all source files via glob and format each one:**
 
    Use a glob to find all supported files (`.ree`, `.ts`, `.js`, `.css`) in
    `test-files/originals/`, then format each via stdin, preserving the file
@@ -88,13 +100,24 @@ already cover the affected code paths.
    target/release/reefmt --diff "test-files/originals/**/*.{ree,ts,js,css}"
    ```
 
-4. **Capture originals and formatted output** for comparison:
-   - **Original:** `test-files/originals/<relpath>`
-   - **Formatted pass 1:** `test-files/output/<relpath>`
+5. **Capture originals and formatted output** for comparison:
+   - **Original snapshot:** `test-files/output/<relpath>` (before formatting)
+   - **Formatted pass 1:** `test-files/output/<relpath>` (after formatting, overwrites snapshot)
+   - **Original pristine:** `test-files/originals/<relpath>` (never modified)
+   
+   Since output was seeded from originals in step 3, `git diff HEAD -- test-files/output/`
+   shows exactly what each formatting pass changed.
 
 ### Phase 3 — Compare & Analyze
 
-5. **Diff original vs formatted for all file types:**
+6. **Diff original vs formatted for all file types using git:**
+   ```bash
+   git diff HEAD -- test-files/output/
+   ```
+   This shows a clean diff of every formatting change. Because output was seeded from
+   originals and committed, the diff contains only what the formatter changed — no noise.
+   
+   Alternatively, use a regular diff for quick inline viewing:
    ```bash
    find test-files/originals -type f \( -name "*.ree" -o -name "*.ts" -o -name "*.js" -o -name "*.css" \) | while read -r f; do
      rel="${f#test-files/originals/}"
@@ -120,7 +143,7 @@ already cover the affected code paths.
    | **SWC JS/TS issues** | Arrow spacing, type literals, import/export formatting errors |
    | **CSS passthrough** | CSS files should pass through unchanged (reefmt formats .ree/ts/js only) |
 
-6. **Verify idempotency (pass 1 vs pass 2) for all file types:**
+7. **Verify idempotency (pass 1 vs pass 2) for all file types:**
    ```bash
    find test-files/originals -type f \( -name "*.ree" -o -name "*.ts" -o -name "*.js" -o -name "*.css" \) | while read -r f; do
      rel="${f#test-files/originals/}"
@@ -138,7 +161,7 @@ already cover the affected code paths.
    Every file must produce identical output on a second pass. If pass 1 ≠ pass 2,
    the formatter does not stabilize — this is a priority bug.
 
-7. **Run the test suite:**
+8. **Run the test suite:**
    ```bash
    cargo test 2>&1
    ```
@@ -148,7 +171,7 @@ already cover the affected code paths.
 
 ### Phase 4 — Fix Bugs (Inner Loop)
 
-8. **For each discovered bug:**
+9. **For each discovered bug:**
 
    a. **Read the relevant source file:**
       - `src/ree_parser.rs` — Ree template AST parser
@@ -172,21 +195,33 @@ already cover the affected code paths.
 
 ### Phase 5 — Iterate
 
-9. **Re-run Phases 2–3** with the rebuilt binary.
+10. **Re-seed output from originals** (to get a clean snapshot for the next diff):
+    ```bash
+    rm -rf test-files/output
+    cp -r test-files/originals test-files/output
+    ```
 
-10. **Check result:**
+11. **Re-run Phases 2–3** with the rebuilt binary.
+
+12. **Check result:**
     - **Bug fixed?** → Move to the next bug or proceed to validation.
     - **Bug not fixed?** → Refine the fix and re-run.
     - **New regression introduced?** → Fix that too — don't leave the tree broken.
 
-11. **Exit loop** when all of these are true:
+13. **Exit loop** when all of these are true:
     - All files in `test-files/originals/` format without errors
     - Every formatted output is idempotent (pass 1 == pass 2)
     - `cargo test` passes with zero failures
 
 ### Phase 6 — Validation
 
-12. **Final checklist:**
+14. **Final end-of-loop git diff to review all changes at once:**
+    ```bash
+    git diff HEAD -- test-files/output/
+    ```
+    This highlights exactly what the formatter changed, grouped by file.
+
+15. **Final checklist:**
     ```
     [ ] cargo test passes completely
     [ ] cargo build --release succeeds
