@@ -931,6 +931,679 @@ pub(crate) fn fix_arrow_spacing(code: &str) -> String {
     out
 }
 
+/// Check if a trimmed line contains the `function` keyword as a standalone word
+/// (not inside an identifier like "myFunction" or "functionality").
+fn contains_function_keyword(trimmed: &str) -> bool {
+    trimmed == "function"
+        || trimmed.starts_with("function ")
+        || trimmed.starts_with("function(")
+        || trimmed.starts_with("function<")
+        || trimmed.contains(" function ")
+        || trimmed.contains(" function(")
+        || trimmed.contains(" function<")
+        || trimmed.ends_with(" function")
+}
+
+/// Check if a trimmed line looks like a declaration that should have its
+/// parameters split (arrow function expressions, class/interface/object
+/// methods, or any pattern without the `function` keyword).
+///
+/// Heuristic: the line has `(typed params)` followed by `=>`, `{`, or `:`,
+/// where the content before `(` is a name (not `.` which would indicate a
+/// method call on an object). Arrow function assignments like
+/// `const fn = (a: string, b: number) =>` are accepted.
+///
+/// The actual validation of type annotations happens after the param
+/// list is parsed (in `try_split_function_params`), so this is just
+/// a fast pre-check to avoid processing obviously wrong lines.
+fn is_method_declaration_like(trimmed: &str) -> bool {
+    if contains_function_keyword(trimmed) {
+        return false; // handled by the other check
+    }
+    if !trimmed.contains('(') {
+        return false;
+    }
+    // Must have content before `(` that looks like a name
+    if let Some(paren_pos) = trimmed.find('(') {
+        if paren_pos == 0 {
+            return false;
+        }
+        let before = trimmed[..paren_pos].trim_end();
+        // Reject method calls on an object (`obj.method(...)`)
+        if before.ends_with('.') {
+            return false;
+        }
+        // Must have at least one word character before `(`
+        if !before.chars().any(|c| c.is_alphanumeric()) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Split a parameter section (the text between `(` and `)`) into individual
+/// parameters at commas that are NOT inside nested `<>`, `{}`, `[]`, `()`,
+/// string literals, or template literals.
+fn split_at_top_level_commas(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth_paren: i32 = 0;
+    let mut depth_angle: i32 = 0;
+    let mut depth_brace: i32 = 0;
+    let mut depth_bracket: i32 = 0;
+    let mut start = 0usize;
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i < len {
+        let b = bytes[i];
+
+        // Skip double-quoted strings
+        if b == b'"' {
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
+                } else if bytes[i] == b'"' {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        // Skip single-quoted strings
+        if b == b'\'' {
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
+                } else if bytes[i] == b'\'' {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        // Skip template literals
+        if b == b'`' {
+            i += 1;
+            let mut tmpl_depth = 0u32;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
+                } else if bytes[i] == b'$' && i + 1 < len && bytes[i + 1] == b'{' {
+                    i += 2;
+                    tmpl_depth += 1;
+                } else if bytes[i] == b'}' && tmpl_depth > 0 {
+                    i += 1;
+                    tmpl_depth -= 1;
+                } else if bytes[i] == b'`' && tmpl_depth == 0 {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        match b {
+            b'(' => depth_paren += 1,
+            b')' => depth_paren -= 1,
+            b'<' => depth_angle += 1,
+            // Use saturating_sub to avoid false negatives from `=>` arrows
+            // or `>=` operators that would otherwise decrement below 0.
+            b'>' => {
+                depth_angle = depth_angle.saturating_sub(1);
+            }
+            b'{' => depth_brace += 1,
+            b'}' => depth_brace -= 1,
+            b'[' => depth_bracket += 1,
+            b']' => depth_bracket -= 1,
+            b',' if depth_paren == 0
+                && depth_angle == 0
+                && depth_brace == 0
+                && depth_bracket == 0 =>
+            {
+                parts.push(s[start..i].to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+
+        i += 1;
+    }
+
+    // Don't forget the trailing part after the last comma (or the whole string)
+    if start <= len {
+        parts.push(s[start..].to_string());
+    }
+
+    parts
+}
+
+/// Determine how to scan for the opening `(` of a parameter list.
+///
+/// For `function`-keyword declarations, we scan from after the keyword.
+/// For method declarations, we scan from the start of the line.
+/// Returns the byte offset to start scanning from, or `None` if the
+/// line shouldn't be processed.
+enum DeclType {
+    FunctionKeyword,  // function keyword declaration
+    MethodDeclaration, // class/interface method (no function keyword)
+}
+
+/// Check if a trimmed line is a declaration that should have its
+/// params split. Returns the declaration type if yes, `None` if no.
+fn classify_declaration(trimmed: &str) -> Option<DeclType> {
+    if contains_function_keyword(trimmed) {
+        return Some(DeclType::FunctionKeyword);
+    }
+    if is_method_declaration_like(trimmed) {
+        return Some(DeclType::MethodDeclaration);
+    }
+    None
+}
+
+/// Try to split a function/method declaration's parameters one-per-line
+/// when there are more than 3 params AND the line exceeds `max_width`.
+///
+/// This fixes SWC's tendency to collapse multi-param function signatures
+/// onto a single line, making them unreadable.
+///
+/// If the conditions aren't met, returns `None` (no change).
+fn try_split_function_params(line: &str, max_width: usize) -> Option<String> {
+    let trimmed = line.trim();
+
+    let decl_type = classify_declaration(trimmed)?;
+    let is_func_keyword = matches!(decl_type, DeclType::FunctionKeyword);
+
+    // Find the opening `(` of the parameter list
+    let bytes = line.as_bytes();
+    let len = bytes.len();
+
+    // Find the first `(` at the right position
+    let start_offset = if is_func_keyword {
+        // For `function` keyword, scan from after the keyword
+        // to avoid matching type annotation parens like
+        // `const fn: (x: number) => void = function(...)`.
+        line.find("function").unwrap_or(0)
+    } else {
+        0
+    };
+    let mut i = start_offset;
+    let mut open_paren = None;
+    let mut depth = 0u32;
+
+    while i < len {
+        let b = bytes[i];
+
+        // Skip strings
+        if b == b'"' {
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
+                } else if bytes[i] == b'"' {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if b == b'\'' {
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
+                } else if bytes[i] == b'\'' {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if b == b'`' {
+            i += 1;
+            let mut tmpl_depth = 0u32;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
+                } else if bytes[i] == b'$' && i + 1 < len && bytes[i + 1] == b'{' {
+                    i += 2;
+                    tmpl_depth += 1;
+                } else if bytes[i] == b'}' && tmpl_depth > 0 {
+                    i += 1;
+                    tmpl_depth -= 1;
+                } else if bytes[i] == b'`' && tmpl_depth == 0 {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        if b == b'(' && open_paren.is_none() {
+            open_paren = Some(i);
+            depth = 1;
+            i += 1;
+            continue;
+        }
+
+        if let Some(_) = open_paren {
+            match b {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let open = open_paren.unwrap();
+                        let close = i;
+
+                        // Extract the parameter section
+                        let param_section = &line[open + 1..close];
+                        let params = split_at_top_level_commas(param_section);
+
+                        // For non-function declarations (methods), validate that
+                        // params have type annotations to avoid matching function
+                        // calls like `result = someFunc(a, b, c, d, e, f);`
+                        if !is_func_keyword {
+                            let has_type_annotations = params.iter().any(|p| p.trim().contains(':'));
+                            if !has_type_annotations {
+                                return None;
+                            }
+                        }
+
+                        // Only split if >3 params AND line exceeds wrapWidth
+                        if params.len() <= 3 || line.len() <= max_width {
+                            return None;
+                        }
+
+                        let indent = &line[..line.len() - trimmed.len()];
+                        let before_paren = &line[..open + 1]; // includes the '('
+                        let after_paren = &line[close..]; // from the ')' onwards
+
+                        let mut out = String::with_capacity(
+                            line.len() + params.len() * 8,
+                        );
+                        out.push_str(before_paren);
+                        out.push('\n');
+                        for (idx, param) in params.iter().enumerate() {
+                            out.push_str(indent);
+                            out.push('\t');
+                            out.push_str(param.trim());
+                            if idx < params.len() - 1 {
+                                out.push_str(",\n");
+                            } else {
+                                // Trailing comma on last param
+                                out.push_str(",\n");
+                            }
+                        }
+                        out.push_str(indent);
+                        out.push_str(after_paren);
+
+                        return Some(out);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        i += 1;
+    }
+
+    None
+}
+
+/// Split function parameters one-per-line when a function declaration has
+/// more than 3 parameters AND the line exceeds `max_width`.
+///
+/// Operates on each line independently — lines that don't match a function
+/// signature or that already have their params split are left untouched.
+fn wrap_long_function_params(code: &str, max_width: usize) -> String {
+    let mut result = String::with_capacity(code.len());
+
+    for line in code.lines() {
+        if let Some(split) = try_split_function_params(line, max_width) {
+            result.push_str(&split);
+            result.push('\n');
+        } else {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+
+    if !code.ends_with('\n') && result.ends_with('\n') {
+        result.pop();
+    }
+
+    result
+}
+
+/// Try to split a method chain that exceeds `max_width` across multiple lines.
+///
+/// Detects `.method(...)` calls at depth 0 (not inside nested parens, brackets,
+/// angle brackets, or strings). Requires at least 2 consecutive method calls to
+/// split. Each `.method(...)` goes on its own line with one additional level of
+/// indentation.
+///
+/// For example:
+/// ```
+/// const grid_cols = `${Object.entries(columns).filter(...).map(...).join(" ")} auto`;
+/// ```
+/// becomes:
+/// ```
+/// const grid_cols = `${Object.entries(columns)
+/// 	.filter(...)
+/// 	.map(...)
+/// 	.join(" ")} auto`;
+/// ```
+fn try_split_method_chain(line: &str, max_width: usize) -> Option<String> {
+    if line.len() <= max_width {
+        return None;
+    }
+
+    let trimmed = line.trim();
+    let indent = &line[..line.len() - trimmed.len()];
+    let bytes = line.as_bytes();
+    let len = bytes.len();
+
+    // Collect all `.method(` calls at depth 0
+    // where `start` is the position of `.` and `end` is the position after matching `)`
+    struct ChainCall {
+        dot_pos: usize,
+        end_pos: usize,
+    }
+    let mut calls: Vec<ChainCall> = Vec::new();
+    let mut i = 0;
+    let mut depth_paren: i32 = 0;
+    let mut depth_angle: i32 = 0;
+    let mut depth_bracket: i32 = 0;
+
+    // Track template literal depth for proper scanning
+    // 0 = not in template; 1 = in template TEXT; 2+ = in template EXPRESSION
+    let mut template_depth: u32 = 0;
+
+    while i < len {
+        let b = bytes[i];
+
+        // Skip double-quoted strings
+        if b == b'"' {
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
+                } else if bytes[i] == b'"' {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        // Skip single-quoted strings
+        if b == b'\'' {
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
+                } else if bytes[i] == b'\'' {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        // Handle template literals — track depth so we process the
+        // expression part `${...}` normally but skip the text part.
+        if b == b'`' {
+            if template_depth == 0 {
+                template_depth = 1; // entering template TEXT
+                i += 1;
+                // Skip template text until `${` or closing `` ` ``
+                while i < len {
+                    if bytes[i] == b'\\' && i + 1 < len {
+                        i += 2;
+                    } else if bytes[i] == b'$' && i + 1 < len && bytes[i + 1] == b'{' {
+                        // Entering template EXPRESSION — break back to main loop
+                        template_depth = 2; // in expression (1 for text + 1 for ${})
+                        i += 2; // skip ${
+                        // We DO NOT increment depth_brace here because we're
+                        // not inside a regular brace — we're in a template.
+                        // The expression's `{` is already consumed.
+                        break;
+                    } else if bytes[i] == b'`' {
+                        template_depth = 0;
+                        i += 1;
+                        break;
+                    } else {
+                        i += 1;
+                    }
+                }
+                continue;
+            } else if template_depth > 0 {
+                // Template closed
+                template_depth = 0;
+                i += 1;
+                continue;
+            }
+        }
+
+        // When in template expression, track `}` to return to text
+        if template_depth == 2 && b == b'}' {
+            // Check if this closes the template expression
+            // We need to track brace depth within the expression
+            // Using depth_brace: decremented by `}`, then check
+            // if we've closed all braces opened in the expression
+            template_depth = 1; // back to template text
+            i += 1;
+            // Now skip template text until ${ or `
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
+                } else if bytes[i] == b'$' && i + 1 < len && bytes[i + 1] == b'{' {
+                    template_depth = 2; // back in expression
+                    i += 2;
+                    break;
+                } else if bytes[i] == b'`' {
+                    template_depth = 0;
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        // Skip template expression mode's `{` for tracking
+        // When in template expression and we see `{`, increment depth
+        if template_depth >= 2 && b == b'{' {
+            // This braces the expression depth tracking
+            template_depth += 1;
+            i += 1;
+            continue;
+        }
+        if template_depth >= 2 && b == b'}' {
+            // Already handled above for depth==2 case
+            // For depth > 2, this is a nested brace inside the expression
+            template_depth -= 1;
+            i += 1;
+            continue;
+        }
+
+        // Skip processing when in template TEXT (not in expression)
+        if template_depth == 1 {
+            i += 1;
+            continue;
+        }
+
+        // Track depth for nested structures
+        match b {
+            b'(' => depth_paren += 1,
+            b')' => depth_paren -= 1,
+            b'<' => depth_angle += 1,
+            b'>' => {
+                depth_angle = depth_angle.saturating_sub(1);
+            }
+            b'[' => depth_bracket += 1,
+            b']' => depth_bracket -= 1,
+            _ => {}
+        }
+
+        // Look for `.` at depth 0 (not nested inside parens/brackets/angles)
+        // Also skip `.` when in template text (template_depth == 1)
+        if b == b'.'
+            && depth_paren == 0
+            && depth_angle == 0
+            && depth_bracket == 0
+        {
+            let after = i + 1;
+            if after < len && (bytes[after].is_ascii_alphabetic() || bytes[after] == b'_' || bytes[after] == b'$') {
+                // Find end of method name
+                let mut j = after;
+                while j < len && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_' || bytes[j] == b'$') {
+                    j += 1;
+                }
+                // Skip whitespace before `(`
+                while j < len && bytes[j] == b' ' {
+                    j += 1;
+                }
+                if j < len && bytes[j] == b'(' {
+                    // Find matching `)` — track depth of parens
+                    let mut paren_depth = 1u32;
+                    let mut k = j + 1;
+                    while k < len && paren_depth > 0 {
+                        // Skip strings inside the method call
+                        if bytes[k] == b'"' {
+                            k += 1;
+                            while k < len {
+                                if bytes[k] == b'\\' && k + 1 < len {
+                                    k += 2;
+                                } else if bytes[k] == b'"' {
+                                    k += 1;
+                                    break;
+                                } else {
+                                    k += 1;
+                                }
+                            }
+                            continue;
+                        }
+                        if bytes[k] == b'\'' {
+                            k += 1;
+                            while k < len {
+                                if bytes[k] == b'\\' && k + 1 < len {
+                                    k += 2;
+                                } else if bytes[k] == b'\'' {
+                                    k += 1;
+                                    break;
+                                } else {
+                                    k += 1;
+                                }
+                            }
+                            continue;
+                        }
+                        if bytes[k] == b'(' {
+                            paren_depth += 1;
+                        } else if bytes[k] == b')' {
+                            paren_depth -= 1;
+                        }
+                        k += 1;
+                    }
+                    if paren_depth == 0 {
+                        calls.push(ChainCall {
+                            dot_pos: i,
+                            end_pos: k, // position after `)`
+                        });
+                        i = k;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        i += 1;
+    }
+
+    // Need at least 3 method calls at depth 0 to split.
+    // We split starting from the SECOND call, keeping the first
+    // call and its receiver on the first line.
+    // This way `Object.entries(columns).filter().map().join()` keeps
+    // `Object.entries(columns)` on the first line and splits
+    // `.filter().map().join()`.
+    if calls.len() < 3 {
+        return None;
+    }
+
+    // Build output: first line has everything up to the SECOND `.`,
+    // then `.method(args)` from the second call onwards each on their
+    // own indented line.
+    let mut out = String::with_capacity(line.len() + calls.len() * 8);
+
+    // Everything before the SECOND method call stays on the first line
+    let before_chain = &line[..calls[1].dot_pos];
+    out.push_str(before_chain);
+    out.push('\n');
+
+    // All but the last split call on their own lines
+    let last_idx = calls.len() - 1;
+    for call in calls[1..last_idx].iter() {
+        out.push_str(indent);
+        out.push('\t');
+        out.push_str(&line[call.dot_pos..call.end_pos]);
+        out.push('\n');
+    }
+
+    // Last `.method(args)` plus everything after on one line
+    let last = &calls[last_idx];
+    let after_last = &line[last.dot_pos..];
+    out.push_str(indent);
+    out.push('\t');
+    out.push_str(after_last);
+
+    Some(out)
+}
+
+/// Split method chains that exceed `max_width` across multiple lines.
+///
+/// Operates line-by-line. Lines that don't fit or don't have method chains
+/// are left untouched.
+fn wrap_long_method_chains(code: &str, max_width: usize) -> String {
+    let mut result = String::with_capacity(code.len());
+
+    for line in code.lines() {
+        if let Some(split) = try_split_method_chain(line, max_width) {
+            result.push_str(&split);
+            result.push('\n');
+        } else {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+
+    if !code.ends_with('\n') && result.ends_with('\n') {
+        result.pop();
+    }
+
+    result
+}
+
 /// Format standalone code content (TS/JS/CSS) using native SWC, no subprocess needed.
 pub(crate) fn format_code_content(
     content: &str,
@@ -955,10 +1628,12 @@ pub(crate) fn format_code_content(
             let spaced = fix_arrow_spacing(&restored);
             let fixed_do = fix_do_while_semicolon(&spaced);
             let collapsed = collapse_inline_type_literals(&fixed_do, wrap_width, max_members);
+            let params_split = wrap_long_function_params(&collapsed, wrap_width);
+            let chains_split = wrap_long_method_chains(&params_split, wrap_width);
             if collapse_blocks {
-                collapse_single_stmt_blocks(&collapsed, wrap_width, max_members)
+                collapse_single_stmt_blocks(&chains_split, wrap_width, max_members)
             } else {
-                collapsed
+                chains_split
             }
         }
         _ => normalized.clone(),
@@ -1772,6 +2447,297 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ─── wrap_long_method_chains tests ─────────────────────────
+
+    #[test]
+    fn wrap_method_chain_simple_template() {
+        // Method chain inside a template literal — the user's original example
+        // Has 4 `.method()` calls: .entries, .filter, .map, .join
+        // First call (.entries) stays on first line; .filter, .map, .join get split
+        let src = "const grid_cols = `${Object.entries(columns).filter(([_, v]: [string, any]) => v.grid !== false).map(([_, v]: [string, any]) => (typeof v === \"string\" ? v : v.width)).join(\" \")} auto`;\n";
+        assert!(src.len() > 180, "line should exceed 180 chars, got {} chars", src.len());
+        let result = wrap_long_method_chains(src, 180);
+        assert!(
+            result.contains("Object.entries(columns)\n"),
+            "Object.entries(columns) should be the end of first line: got {:?}",
+            result
+        );
+        assert!(
+            result.contains("\t.filter(([_, v]: [string, any]) => v.grid !== false)\n"),
+            ".filter should be on its own indented line"
+        );
+        assert!(
+            result.contains("\t.map(([_, v]: [string, any]) => (typeof v === \"string\" ? v : v.width))\n"),
+            ".map should be on its own indented line"
+        );
+        assert!(
+            result.contains("\t.join(\" \")} auto`;"),
+            "Last .join + rest on its own indented line"
+        );
+    }
+
+    #[test]
+    fn wrap_method_chain_fits_width_no_split() {
+        // Method chain that fits within max_width — should NOT split
+        let src = "const result = arr.filter(fn).map(fn2).join(\",\");\n";
+        let result = wrap_long_method_chains(src, 180);
+        assert_eq!(result, src, "Should not split when line fits within max_width");
+    }
+
+    #[test]
+    fn wrap_method_chain_single_call_no_split() {
+        // Only one `.method()` call — not a chain, should NOT split
+        let src = "const longPrefix = someExpression.filter(x => x > 0 && x < 100 && x !== null && x !== undefined);\n";
+        // Line is ~107 chars
+        let result = wrap_long_method_chains(src, 97);
+        assert_eq!(result, src, "Single method call should not split");
+    }
+
+    #[test]
+    fn wrap_method_chain_two_calls_no_split() {
+        // Two method calls — only 2 < 3, so should NOT split
+        let src = "const result = someBase.filter(x => x > 0 && x < 100 && x.isValid()).map(y => y.toString());\n";
+        assert!(src.len() > 80, "line should exceed 80 chars, got {} chars", src.len());
+        let result = wrap_long_method_chains(src, 80);
+        assert_eq!(result, src, "Two method calls (< 3) should not split");
+    }
+
+    #[test]
+    fn wrap_method_chain_already_split_idempotent() {
+        // Already-split method chain should be idempotent
+        let src = "const grid_cols = `${Object.entries(columns)\n\t.filter(([_, v]: [string, any]) => v.grid !== false)\n\t.map(([_, v]: [string, any]) => (typeof v === \"string\" ? v : v.width))\n\t.join(\" \")} auto`;\n";
+        let result = wrap_long_method_chains(src, 180);
+        assert_eq!(result, src, "Already-split method chain should be idempotent");
+    }
+
+    #[test]
+    fn wrap_method_chain_no_false_positive_dot_in_string() {
+        // `.` inside a string should not trigger
+        let src = "const msg = \"hello.world\";\n";
+        let result = wrap_long_method_chains(src, 40);
+        assert_eq!(result, src);
+    }
+
+    #[test]
+    fn wrap_method_chain_three_calls_split() {
+        // Three method calls exceeding width
+        let src = "const result = base.filter(x => x > 0 && x < 100 && x.isValid()).map(y => y.toString()).join(\",\");\n";
+        assert_eq!(src.len(), 99, "line is 99 chars");
+        let result = wrap_long_method_chains(src, 97);
+        assert!(!result.contains(src.trim_end()), "Should not contain original line");
+        assert!(result.contains("base.filter(x => x > 0 && x < 100 && x.isValid())\n"), "First call stays on first line");
+        assert!(result.contains("\t.map(y => y.toString())\n"), "Second call on its own indented line");
+        assert!(result.contains("\t.join(\",\");"), "Last call + rest on last indented line");
+    }
+
+    #[test]
+    fn wrap_method_chain_numeric_dot_ignored() {
+        // Numeric `.` like 3.14 should NOT be treated as method call
+        // Only 2 calls (.toFixed, .valueOf) after the numeric 3.14 — < 3, so no split
+        let src = "const val = 3.14.toFixed(2).valueOf();\n";
+        let result = wrap_long_method_chains(src, 40);
+        assert_eq!(result, src, "Two method calls after numeric literal should not split (need >= 3)");
+    }
+
+    #[test]
+    fn wrap_method_chain_full_pipeline() {
+        // Full pipeline test: the method chain inside template literal
+        let input = "const grid_cols = `${Object.entries(columns).filter(([_, v]: [string, any]) => v.grid !== false).map(([_, v]: [string, any]) => (typeof v === \"string\" ? v : v.width)).join(\" \")} auto`;\n";
+        let result = format_code_content(input, "ts", 180, true, 3, false);
+        // The method chain should be split
+        assert!(result.contains("Object.entries(columns)\n"), "Method chain should be split");
+        assert!(result.contains(".filter("), ".filter should be present");
+        assert!(result.contains(".map("), ".map should be present");
+        assert!(result.contains(".join(\" \")}"), ".join should be present");
+        // Verify idempotency
+        let pass2 = format_code_content(&result, "ts", 180, true, 3, false);
+        assert_eq!(result, pass2, "Full pipeline should be idempotent");
+    }
+
+    // ─── wrap_long_function_params tests ────────────────────────
+
+    #[test]
+    fn wrap_split_function_params_6_params_exceeds_width() {
+        // 6 params, line is ~230 chars, wrapWidth=180 → split one-per-line
+        let src = "export async function search_records(search: string = \"\", offset: number = 0, limit: number = 20, order_by: string = \"id::asc\", scope_clause: string = \"\", filter_clauses: { clause: string; params: any[]; }[] = []): Promise<{ records: Record[]; total: number; }> {\n";
+        let result = wrap_long_function_params(src, 180);
+        assert!(result.starts_with("export async function search_records("), "Should keep open paren on first line");
+        assert!(result.contains("\n\tsearch: string = \"\""), "First param should be indented one level from column 0");
+        assert!(result.contains("\n\tfilter_clauses: { clause: string; params: any[]; }[] = []"), "Last param indented one level");
+        assert!(result.contains("\n): Promise<"), ") should be at original indent level (0)");
+        // Count total params — each param on its own line followed by a comma
+        let param_lines: Vec<&str> = result.lines()
+            .filter(|l| l.trim().starts_with("search:") || l.trim().starts_with("offset:") || l.trim().starts_with("limit:") || l.trim().starts_with("order_by:") || l.trim().starts_with("scope_clause:") || l.trim().starts_with("filter_clauses:"))
+            .collect();
+        assert_eq!(param_lines.len(), 6, "Should have 6 param lines");
+    }
+
+    #[test]
+    fn wrap_skip_function_3_params() {
+        // 3 params, even if line exceeds width, should NOT split
+        let src = "export function foo(a: string, b: string, c: string): void {\n";
+        let result = wrap_long_function_params(src, 40);
+        assert_eq!(result, src);
+    }
+
+    #[test]
+    fn wrap_skip_function_fits_width() {
+        // 4 params but line fits within maxWidth → keep one-line
+        let src = "function foo(a: string, b: string, c: string, d: string) {\n";
+        assert!(src.len() <= 80, "line should fit within 80 for this test");
+        let result = wrap_long_function_params(src, 80);
+        assert_eq!(result, src);
+    }
+
+    #[test]
+    fn wrap_async_function_split() {
+        // Async function declaration with many params
+        let src = "export async function process_data(id: number, name: string, value: number, options: Record<string, any>, callback: () => void): Promise<void> {\n";
+        assert!(src.len() > 120, "line should exceed 120 for this test");
+        let result = wrap_long_function_params(src, 120);
+        assert!(result.starts_with("export async function process_data("), "Should start with function name + open paren");
+        assert!(result.contains("\n\tid: number,"), "Params should be indented one level from column 0");
+        assert!(result.contains("\n\tcallback: () => void,"), "Last param should have trailing comma");
+        assert!(result.contains("\n): Promise<void>"), "Close paren at original indent (0)");
+    }
+
+    #[test]
+    fn wrap_idempotent_already_split() {
+        // If already formatted with params on separate lines, should not change
+        let src = "export async function search_records(\n\tsearch: string = \"\",\n\toffset: number = 0,\n\tlimit: number = 20,\n\torder_by: string = \"id::asc\",\n\tscope_clause: string = \"\",\n\tfilter_clauses: { clause: string; params: any[]; }[] = [],\n): Promise<{ records: Record[]; total: number; }> {\n\ttry {\n\t\treturn { records: [], total: 0 };\n\t} catch (error) {\n\t\tconsole.error(\"Error:\", error);\n\t\treturn { records: [], total: 0 };\n\t}\n}\n";
+        let result = wrap_long_function_params(src, 180);
+        assert_eq!(result, src, "Already-split function should not be modified");
+    }
+
+    #[test]
+    fn wrap_no_function_keyword_no_change() {
+        // Lines without `function` keyword should pass through unchanged
+        let src = "const x = 1;\nconst y = 2;\n";
+        let result = wrap_long_function_params(src, 180);
+        assert_eq!(result, src);
+    }
+
+    #[test]
+    fn wrap_full_pipeline_multi_param_function() {
+        // Full pipeline: function with params already split should stay split
+        let input = "export async function search_records(\n\tsearch: string = \"\",\n\toffset: number = 0,\n\tlimit: number = 20,\n\torder_by: string = \"id::asc\",\n\tscope_clause: string = \"\",\n\tfilter_clauses: { clause: string; params: any[]; }[] = [],\n): Promise<{ records: Record[]; total: number; }> {\n\ttry {\n\t\treturn { records: [], total: 0 };\n\t} catch (error) {\n\t\tconsole.error(\"Error:\", error);\n\t\treturn { records: [], total: 0 };\n\t}\n}\n";
+        let result = format_code_content(input, "ts", 180, true, 3, false);
+        // Should keep params on separate lines (already split)
+        assert!(result.contains("search_records("), "Open paren on first line");
+        assert!(result.contains("\n\tsearch: string"), "Params should be on separate lines");
+        // Verify idempotency
+        let pass2 = format_code_content(&result, "ts", 180, true, 3, false);
+        assert_eq!(result, pass2, "Full pipeline should be idempotent");
+    }
+
+    #[test]
+    fn wrap_class_method_split() {
+        // Class method declaration (no `function` keyword)
+        // Line is ~63 chars, wrapWidth=50 → should split
+        let src = "\t\tgetData(a: string, b: number, c: string, d: boolean): void {\n";
+        assert!(src.len() > 50, "line should exceed 50 chars for this test");
+        let result = wrap_long_function_params(src, 50);
+        assert!(result.contains("getData("), "Should keep method name + open paren on first line");
+        assert!(result.contains("\n\t\t\ta: string,"), "First param should be indented one more level");
+        assert!(result.contains("\n\t\t\td: boolean,"), "Last param should have trailing comma");
+        assert!(result.contains("\n\t\t): void {"), "Close paren at original indent level");
+    }
+
+    #[test]
+    fn wrap_class_method_async_split() {
+        // Async method with 5 params exceeding width
+        let src = "\tasync fetchData(id: number, name: string, value: number, options: Record<string, any>, callback: () => void): Promise<void> {\n";
+        assert!(src.len() > 120, "line should exceed 120 chars");
+        let result = wrap_long_function_params(src, 120);
+        assert!(result.starts_with("\tasync fetchData("), "Should keep async + method name");
+        assert!(result.contains("\n\t\tid: number,"), "Params indented one more level");
+    }
+
+    #[test]
+    fn wrap_interface_method_split() {
+        // Interface method declaration (no body, just return type)
+        let src = "getData(a: string, b: number, c: string, d: boolean): Record[];\n";
+        let result = wrap_long_function_params(src, 60);
+        assert!(result.starts_with("getData("), "Should keep method name + open paren");
+        assert!(result.contains("\n\ta: string,"), "Params indented one level");
+        assert!(result.contains("\n): Record[];"), "Close paren at original indent");
+    }
+
+    #[test]
+    fn wrap_method_call_no_false_positive() {
+        // Function call without type annotations should NOT trigger
+        let src = "\treturn someFunction(a, b, c, d, e, f);\n";
+        let result = wrap_long_function_params(src, 40);
+        assert_eq!(result, src, "Function calls without type annotations should not trigger");
+    }
+
+    #[test]
+    fn wrap_method_3_params_only() {
+        // Method with 3 params should NOT split
+        let src = "\tgetName(a: string, b: string, c: string): string {\n";
+        let result = wrap_long_function_params(src, 40);
+        assert_eq!(result, src, "Methods with <=3 params should not split");
+    }
+
+    #[test]
+    fn wrap_method_fits_width() {
+        // Method with 4 params that fits within width should NOT split
+        let src = "\tgetShort(a: string, b: string, c: string, d: string) {\n";
+        assert!(src.len() <= 80, "line should fit within 80 cols");
+        let result = wrap_long_function_params(src, 80);
+        assert_eq!(result, src, "Method that fits within max_width should not split");
+    }
+
+    #[test]
+    fn wrap_arrow_function_split() {
+        // Arrow function expression assigned to a const
+        let src = "const processData = (a: string, b: number, c: string, d: boolean): void => {\n";
+        assert!(src.len() > 70, "line should exceed 70 chars for this test");
+        let result = wrap_long_function_params(src, 70);
+        assert!(result.starts_with("const processData = ("), "Should keep const + arrow function + open paren");
+        assert!(result.contains("\n\ta: string,"), "First param indented");
+        assert!(result.contains("\n): void => {"), "Close paren at original indent");
+        assert!(result.contains("=> {"), "Arrow function body preserved");
+    }
+
+    #[test]
+    fn wrap_arrow_async_function_split() {
+        // Async arrow function assigned to a const
+        let src = "const fetchData = async (id: number, name: string, value: number, options: Record<string, any>, callback: () => void): Promise<void> => {\n";
+        assert!(src.len() > 130, "line should exceed 130 chars for this test");
+        let result = wrap_long_function_params(src, 130);
+        assert!(result.starts_with("const fetchData = async ("), "Should keep const + async + open paren");
+        assert!(result.contains("\n\tid: number,"), "Params indented");
+        assert!(result.contains("\n): Promise<void> => {"), "Close paren + arrow at original indent");
+        // Verify idempotency
+        let pass2 = wrap_long_function_params(&result, 150);
+        assert_eq!(result, pass2, "Arrow function split should be idempotent");
+    }
+
+    #[test]
+    fn wrap_arrow_function_3_params_no_split() {
+        // Arrow function with 3 params should NOT split
+        let src = "const fn = (a: string, b: string, c: string): void => {\n";
+        let result = wrap_long_function_params(src, 40);
+        assert_eq!(result, src);
+    }
+
+    #[test]
+    fn wrap_arrow_function_call_no_false_positive() {
+        // Regular function call assigned to const (no type annotations) should NOT trigger
+        let src = "const result = someFunction(a, b, c, d, e, f);\n";
+        let result = wrap_long_function_params(src, 40);
+        assert_eq!(result, src, "Function calls without type annotations should not trigger");
+    }
+
+    #[test]
+    fn wrap_inside_body_no_false_positive() {
+        // Function call or method call inside function body should not trigger
+        let src = "\treturn someFunction(a, b, c, d, e, f);\n";
+        let result = wrap_long_function_params(src, 40);
+        assert_eq!(result, src, "Function calls without 'function' keyword should not trigger");
     }
 
     #[test]
