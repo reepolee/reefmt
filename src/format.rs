@@ -451,7 +451,27 @@ pub(crate) fn print_diff(path: &Path, original: &str, formatted: &str) {
 ///
 /// Detection heuristic: a line ending with `{` where the body consists of lines
 /// ending with `;` (TS type members), followed by a properly brace-matched `}`.
+///
+/// Runs iteratively until stable — collapsing one type literal may reveal another
+/// on the same line (e.g. collapsing a parameter type literal exposes a return type
+/// type literal in `Promise<{...}>`).
 fn collapse_inline_type_literals(code: &str, max_width: usize, max_members: usize) -> String {
+    let mut result = collapse_inline_type_literals_pass(code, max_width, max_members);
+    // Run multiple passes until stable — collapsing one type literal may reveal another
+    // (e.g. collapsing a parameter type literal reveals a return type type literal
+    // on the same line).
+    loop {
+        let next = collapse_inline_type_literals_pass(&result, max_width, max_members);
+        if next == result {
+            return result;
+        }
+        result = next;
+    }
+}
+
+/// Single pass of `collapse_inline_type_literals`. Returns the code with some
+/// inline type literals collapsed. May need multiple passes for cascading cases.
+fn collapse_inline_type_literals_pass(code: &str, max_width: usize, max_members: usize) -> String {
     let mut result = String::with_capacity(code.len());
     let lines: Vec<&str> = code.lines().collect();
     let mut i = 0;
@@ -535,7 +555,14 @@ fn collapse_inline_type_literals(code: &str, max_width: usize, max_members: usiz
                         rest_of_closing_line
                     );
 
-                    if collapsed.len() <= max_width {
+                    // Check if collapsing is reasonable: measure the LOCAL type literal
+                    // part (inner + braces), not the entire line which may already be
+                    // long due to SWC collapsing function parameters onto one line.
+                    // The max_members check above already prevents collapsing large
+                    // type literals. Only reject if even the local { ... } part alone
+                    // exceeds max_width (e.g. a single member with an absurdly long name).
+                    let type_lit_local_len = 2 + inner.len(); // { + inner + }
+                    if collapsed.len() <= max_width || type_lit_local_len <= max_width {
                         result.push_str(&collapsed);
                         result.push('\n');
                         i = end_idx + 1;
@@ -1484,6 +1511,77 @@ mod tests {
         assert_eq!(
             result,
             "\tconst proc = Bun.spawn([\"vipsheader\", safe_path], { windowsHide: true });\n"
+        );
+    }
+
+    #[test]
+    fn collapse_inline_type_literal_in_param_with_swc_like_output() {
+        // SWC may expand BOTH the filter_clauses type literal and the return type.
+        // collapse_inline_type_literals must collapse both via iterative scanning.
+        let swc_like = "export async function search_records(search: string = \"\", offset: number = 0, limit: number = 20, order_by: string = \"id::asc\", scope_clause: string = \"\", filter_clauses: {\n\tclause: string;\n\tparams: any[];\n}[] = []): Promise<{\n\trecords: Record[];\n\ttotal: number;\n}> {\n\ttry {\n\t\treturn { records: [], total: 0 };\n\t} catch (error) {\n\t\tconsole.error(\"Error:\", error);\n\t\treturn { records: [], total: 0 };\n\t}\n}\n";
+        let result = collapse_inline_type_literals(swc_like, 180, 3);
+        // Both type literals should be collapsed
+        assert!(
+            result.contains("{ records: Record[]; total: number; }"),
+            "Return type should be collapsed: got {:?}",
+            result
+        );
+        assert!(
+            result.contains("{ clause: string; params: any[]; }"),
+            "filter_clauses type literal should be collapsed: got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn collapse_single_stmt_does_not_expand_return_type() {
+        // After collapse_inline_type_literals, the output should not be re-expanded
+        // by collapse_single_stmt_blocks
+        let after_type_collapse = "export async function search_records(search: string = \"\", offset: number = 0, limit: number = 20, order_by: string = \"id::asc\", scope_clause: string = \"\", filter_clauses: { clause: string; params: any[]; }[] = []): Promise<{ records: Record[]; total: number; }> {\n\ttry {\n\t\treturn { records: [], total: 0 };\n\t} catch (error) {\n\t\tconsole.error(\"Error:\", error);\n\t\treturn { records: [], total: 0 };\n\t}\n}\n";
+        let result = collapse_single_stmt_blocks(after_type_collapse, 180, 3);
+        assert!(
+            result.contains("{ records: Record[]; total: number; }"),
+            "collapse_single_stmt_blocks should NOT expand inline type literals: got {:?}",
+            result
+        );
+        let result2 = collapse_single_stmt_blocks(after_type_collapse, 180, 3);
+        assert_eq!(result, result2, "Should be idempotent");
+    }
+
+    #[test]
+    fn full_pipeline_collapses_type_literal_in_param() {
+        // Full pipeline test: multi-param function with inline type literal
+        let input = "export async function search_records(\n\tsearch: string = \"\",\n\toffset: number = 0,\n\tlimit: number = 20,\n\torder_by: string = \"id::asc\",\n\tscope_clause: string = \"\",\n\tfilter_clauses: { clause: string; params: any[]; }[] = [],\n): Promise<{ records: Record[]; total: number; }> {\n\ttry {\n\t\treturn { records: [], total: 0 };\n\t} catch (error) {\n\t\tconsole.error(\"Error:\", error);\n\t\treturn { records: [], total: 0 };\n\t}\n}\n";
+        let result = format_code_content(input, "ts", 180, true, 3, false);
+        // The type literal { clause: string; params: any[]; } should be collapsed to one line
+        assert!(
+            result.contains("{ clause: string; params: any[]; }"),
+            "Inline type literal should be collapsed in full pipeline: got {:?}",
+            result
+        );
+        // The return type { records: Record[]; total: number; } should be collapsed too
+        assert!(
+            result.contains("{ records: Record[]; total: number; }"),
+            "Return type literal should also be collapsed. Got: {:?}",
+            result
+        );
+        // Verify idempotency
+        let pass2 = format_code_content(&result, "ts", 180, true, 3, false);
+        assert_eq!(result, pass2, "Full pipeline output should be idempotent");
+    }
+
+    #[test]
+    fn collapse_inline_type_literal_in_param() {
+        // Regression: inline type literal inside a function parameter like
+        // filter_clauses: { clause: string; params: any[]; }[] = [] should be
+        // collapsed back to single line after SWC expands it.
+        let src = "\tfilter_clauses: {\n\t\tclause: string;\n\t\tparams: any[];\n\t}[] = []): Promise<{ records: Record[]; total: number; }> {\n";
+        let result = collapse_inline_type_literals(src, 180, 3);
+        assert_eq!(
+            result,
+            "\tfilter_clauses: { clause: string; params: any[]; }[] = []): Promise<{ records: Record[]; total: number; }> {\n",
+            "Inline type literal in function param should be collapsed: got {:?}",
+            result
         );
     }
 
