@@ -384,6 +384,17 @@ fn parse_attrs(input: &str) -> (Vec<String>, &str) {
 }
 
 fn parse_one_attr(input: &str) -> Option<(String, &str)> {
+    // Detect Ree constructs ({#if, {#each, {#with, {=, {~, {/if, {/each, {/with, {:else})
+    // inside HTML attribute position and handle them as a single token.
+    // Without this, {#if condition}selected{/if} inside <option> would be parsed as
+    // separate broken attributes ({#if, m.code===, record.module_code, }selected{/if}).
+    if input.starts_with('{') {
+        let end = find_brace_end(input);
+        if end > 0 {
+            return Some((input[..end].to_string(), &input[end..]));
+        }
+    }
+
     let name_end = input
         .find(|c: char| c == '=' || c == '>' || c.is_whitespace())
         .unwrap_or(input.len());
@@ -588,7 +599,7 @@ fn parse_raw_block_content<'a>(input: &'a str, close_marker: &str) -> (Vec<Node>
             let (node, after) = parse_ree_block_open(remaining);
             if let Some(n) = node { nodes.push(n); }
             remaining = after;
-        } else if remaining.starts_with("{:else") || remaining.starts_with("{/if}") || remaining.starts_with("{/each}") || remaining.starts_with("{/with}") {
+        } else if remaining.starts_with("{:else") || remaining.starts_with(            "{{/if}}") || remaining.starts_with("{/each}") || remaining.starts_with("{/with}") {
             // Pass through close/else tokens — they're part of Ree blocks
             let end = find_brace_end(remaining);
             if end > 0 {
@@ -1022,8 +1033,7 @@ mod tests {
     #[test]
     fn ree_block() {
         let input = "{#if show}<div>yes</div>{/if}";
-        let output = format_ree(input, 120);
-        assert!(output.contains("{#if show}"));
+        let output = format_ree(input, 120);        assert!(output.contains("{#if show}"));
         assert!(output.contains("<div>yes</div>"));
         assert!(output.contains("{/if}"));
     }
@@ -1047,6 +1057,35 @@ mod tests {
         let input = "<!-- hello -->";
         let output = format_ree(input, 120);
         assert_eq!(output, "<!-- hello -->\n");
+    }
+
+    #[test]
+    fn ree_block_inside_html_attr_preserved() {
+        // Regression: {#if} blocks inside HTML tag attributes (like <option {#if cond}selected{/if}>)
+        // were being parsed as separate broken attributes ({#if, name===, value, }...}selected...{/if}).
+        let input = "{#each items as item }\n\t<option value=\"{= item.code }\" {#if item.selected}selected{/if}>{= item.label }</option>\n{/each}\n";
+        let output = format_ree(input, 120);
+        assert!(            output.contains("{#if item.selected}"),
+            "{{#if}} block should be preserved in output, got: {:?}",
+            output
+        );
+        assert!(
+            output.contains("{/if}"),
+            "{{/if}} close should be preserved in output"
+        );
+        assert!(
+            output.contains("selected"),
+            "selected attribute inside {{#if}} block should be preserved"
+        );
+        // Ensure {#if} is NOT split across lines (the old bug: {#if would become
+        // a separate attribute name, put on its own line)
+        assert!(
+            !output.contains("{#if\n"),
+            "{{#if}} should NOT be split at attribute name boundary"
+        );
+        // Verify idempotency
+        let pass2 = format_ree(&output, 120);
+        assert_eq!(output, pass2, "format_ree should be idempotent with Ree blocks inside HTML attrs");
     }
 
     #[test]
