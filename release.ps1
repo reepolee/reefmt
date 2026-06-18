@@ -171,8 +171,10 @@ Copy-Item ".\target\release\$AppName.exe" ".\$binaryName"
 
 if ($doBump) {
     Write-Host "`n→ Committing version bump..."
-    git add "Cargo.toml", "CHANGELOG.md"
+    git add Cargo.toml CHANGELOG.md
+    if ($LASTEXITCODE -ne 0) { Write-Error "git add failed"; exit 1 }
     git commit -m "Bump version to $version"
+    if ($LASTEXITCODE -ne 0) { Write-Error "git commit failed"; exit 1 }
     Write-Host "  Committed: Bump version to $version"
 }
 
