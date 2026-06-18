@@ -54,11 +54,26 @@ fn parse(input: &str) -> Vec<Node> {
 
 enum Stop {
     None,
-    CloseTag(String),
+    /// (tag_name, optional_ree_keyword) — when nested inside a Ree block,
+    /// also stop at {:else} and {/keyword} so they aren't consumed as
+    /// children of the element.
+    CloseTag(String, Option<String>),
     ReeClose(String),
 }
 
+/// Extract the Ree block keyword from a Stop condition, if any.
+/// This is threaded through to element parsers so they also stop at
+/// {:else} and {/keyword} markers when nested inside a Ree block.
+fn ree_keyword_from_stop(stop: &Stop) -> Option<String> {
+    match stop {
+        Stop::ReeClose(kw) => Some(kw.clone()),
+        Stop::CloseTag(_, kw) => kw.clone(),
+        Stop::None => None,
+    }
+}
+
 fn parse_nodes(input: &str, stop: Stop) -> (Vec<Node>, &str) {
+    let ree_keyword = ree_keyword_from_stop(&stop);
     let mut remaining = input;
     let mut nodes = Vec::new();
 
@@ -85,7 +100,7 @@ fn parse_nodes(input: &str, stop: Stop) -> (Vec<Node>, &str) {
             return (nodes, remaining);
         }
 
-        let (node_opt, after) = parse_token(remaining);
+        let (node_opt, after) = parse_token(remaining, &ree_keyword);
         if let Some(node) = node_opt {
             nodes.push(node);
         }
@@ -98,11 +113,26 @@ fn parse_nodes(input: &str, stop: Stop) -> (Vec<Node>, &str) {
 fn check_stop(remaining: &str, stop: &Stop) -> bool {
     match stop {
         Stop::None => false,
-        Stop::CloseTag(tag) => {
+        Stop::CloseTag(tag, ree_keyword) => {
+            // Check for closing </tag>
             if let Some(after) = remaining.strip_prefix("</") {
                 if let Some(gt) = after.find('>') {
                     let name = after[..gt].trim();
-                    return name.eq_ignore_ascii_case(tag);
+                    if name.eq_ignore_ascii_case(tag) {
+                        return true;
+                    }
+                }
+            }
+            // Also stop at Ree block markers when nested inside a Ree block.
+            // Otherwise {:else} and {/if} get consumed as children of this element.
+            if let Some(ref kw) = ree_keyword {
+                let c1 = format!("{{/{}}}", kw);
+                let c2 = format!("{{/ {}}}", kw);
+                if remaining.starts_with(&c1) || remaining.starts_with(&c2) {
+                    return true;
+                }
+                if remaining.starts_with("{:else}") || remaining.starts_with("{:else if") {
+                    return true;
                 }
             }
             false
@@ -184,7 +214,7 @@ fn find_next_special_in_raw(input: &str, close_marker: &str) -> usize {
     len
 }
 
-fn parse_token(input: &str) -> (Option<Node>, &str) {
+fn parse_token<'a>(input: &'a str, ree_keyword: &Option<String>) -> (Option<Node>, &'a str) {
     if input.starts_with("<!--") {
         parse_comment(input)
     } else if input.to_ascii_lowercase().starts_with("<!doctype") {
@@ -202,7 +232,7 @@ fn parse_token(input: &str) -> (Option<Node>, &str) {
             (None, "")
         }
     } else if input.starts_with('<') {
-        parse_html_tag(input)
+        parse_html_tag(input, ree_keyword)
     } else if input.starts_with("{#if")
         || input.starts_with("{#each")
         || input.starts_with("{#with")
@@ -299,7 +329,7 @@ fn parse_comment(input: &str) -> (Option<Node>, &str) {
 
 // ── HTML Element ─────────────────────────────────────────────
 
-fn parse_html_tag(input: &str) -> (Option<Node>, &str) {
+fn parse_html_tag<'a>(input: &'a str, ree_keyword: &Option<String>) -> (Option<Node>, &'a str) {
     let after_lt = &input[1..];
 
     let name_end = after_lt
@@ -344,7 +374,9 @@ fn parse_html_tag(input: &str) -> (Option<Node>, &str) {
             );
         }
 
-        let stop = Stop::CloseTag(tag.clone());
+        // Thread the Ree keyword into the element's CloseTag stop so that
+        // {:else} and {/keyword} markers stop the inner parse_nodes.
+        let stop = Stop::CloseTag(tag.clone(), ree_keyword.clone());
         let (children, rem) = parse_nodes(after_gt, stop);
         if rem.starts_with("</") {
             if let Some(gt) = rem.find('>') {
