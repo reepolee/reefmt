@@ -2,6 +2,7 @@ mod ree_format;
 mod format;
 mod ree_parser;
 mod swc_format;
+mod swc_printer;
 mod remove_unused_imports;
 
 use serde::Deserialize;
