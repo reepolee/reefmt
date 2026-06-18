@@ -1931,23 +1931,13 @@ pub(crate) fn format_code_content(
         "ts" | "js" => {
             let flattened = flatten_concat(&normalized);
             let (preprocessed, placeholders) = preprocess_for_swc(&flattened);
-            let swc_formatted = crate::swc_format::format_js_with_indent(&preprocessed, "\t", remove_unused);
-            let restored = if placeholders.is_empty() {
-                swc_formatted
+            let custom_formatted = crate::swc_printer::format_js_with_printer(
+                &preprocessed, "\t", wrap_width, collapse_blocks, max_members, remove_unused,
+            );
+            if placeholders.is_empty() {
+                custom_formatted
             } else {
-                postprocess_from_swc(&swc_formatted, &placeholders)
-            };
-            let spaced = fix_arrow_spacing(&restored);
-            let brace_fixed = fix_brace_spacing(&spaced);
-            let keyword_fixed = fix_keyword_spacing(&brace_fixed);
-            let fixed_do = fix_do_while_semicolon(&keyword_fixed);
-            let collapsed = collapse_inline_type_literals(&fixed_do, wrap_width, max_members);
-            let params_split = wrap_long_function_params(&collapsed, wrap_width);
-            let chains_split = wrap_long_method_chains(&params_split, wrap_width);
-            if collapse_blocks {
-                collapse_single_stmt_blocks(&chains_split, wrap_width, max_members)
-            } else {
-                chains_split
+                postprocess_from_swc(&custom_formatted, &placeholders)
             }
         }
         _ => normalized.clone(),

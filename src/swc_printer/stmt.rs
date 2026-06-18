@@ -1,0 +1,198 @@
+use swc_core::ecma::ast::*;
+use swc_core::common::Spanned;
+use super::Printer;
+
+impl<'a> Printer<'a> {
+    pub(super) fn print_stmt(&mut self, stmt: &Stmt) {
+        self.emit_leading_comments(stmt.span().lo());
+        match stmt {
+            Stmt::Block(b) => { self.print_block(b); }
+            Stmt::Empty(_) => { self.w(";"); self.nl(); }
+            Stmt::Debugger(_) => { self.w("debugger;"); self.nl(); }
+            Stmt::With(w) => {
+                self.w("with (");
+                self.print_expr(&w.obj);
+                self.w(") ");
+                self.print_stmt(&w.body);
+            }
+            Stmt::Return(r) => {
+                self.w("return");
+                if let Some(arg) = &r.arg { self.w(" "); self.print_expr(arg); }
+                self.w(";");
+                self.nl();
+            }
+            Stmt::If(i) => {
+                self.w("if (");
+                self.print_expr(&i.test);
+                self.w(") ");
+                self.print_stmt(&i.cons);
+                if let Some(alt) = &i.alt {
+                    self.w(" else ");
+                    self.print_stmt(alt);
+                }
+            }
+            Stmt::While(w) => {
+                self.w("while (");
+                self.print_expr(&w.test);
+                self.w(") ");
+                self.print_stmt(&w.body);
+            }
+            Stmt::DoWhile(d) => {
+                self.w("do ");
+                self.print_stmt(&d.body);
+                self.w(" while (");
+                self.print_expr(&d.test);
+                self.w(");");
+                self.nl();
+            }
+            Stmt::For(f) => {
+                self.w("for (");
+                if let Some(init) = &f.init {
+                    match init {
+                        VarDeclOrExpr::VarDecl(v) => self.print_var_decl(v, false),
+                        VarDeclOrExpr::Expr(e) => self.print_expr(e),
+                    }
+                }
+                self.w("; ");
+                if let Some(test) = &f.test { self.print_expr(test); }
+                self.w("; ");
+                if let Some(update) = &f.update { self.print_expr(update); }
+                self.w(") ");
+                self.print_stmt(&f.body);
+            }
+            Stmt::ForIn(fi) => {
+                self.w("for (");
+                self.print_for_head(&fi.left);
+                self.w(" in ");
+                self.print_expr(&fi.right);
+                self.w(") ");
+                self.print_stmt(&fi.body);
+            }
+            Stmt::ForOf(fo) => {
+                self.w("for ");
+                if fo.is_await { self.w("await "); }
+                self.w("(");
+                self.print_for_head(&fo.left);
+                self.w(" of ");
+                self.print_expr(&fo.right);
+                self.w(") ");
+                self.print_stmt(&fo.body);
+            }
+            Stmt::Try(t) => {
+                self.w("try ");
+                self.print_block(&t.block);
+                if let Some(catch) = &t.handler {
+                    self.w(" catch (");
+                    if let Some(param) = &catch.param { self.print_pat(param); }
+                    self.w(") ");
+                    self.print_block(&catch.body);
+                }
+                if let Some(finalizer) = &t.finalizer {
+                    self.w(" finally ");
+                    self.print_block(finalizer);
+                }
+            }
+            Stmt::Switch(s) => {
+                self.w("switch (");
+                self.print_expr(&s.discriminant);
+                self.w(") {");
+                self.nl();
+                self.indent();
+                for case in &s.cases {
+                    self.wi();
+                    if let Some(test) = &case.test {
+                        self.w("case ");
+                        self.print_expr(test);
+                        self.w(":");
+                    } else {
+                        self.w("default:");
+                    }
+                    self.nl();
+                    self.indent();
+                    for s in &case.cons { self.print_stmt(s); }
+                    self.dedent();
+                }
+                self.dedent();
+                self.wi();
+                self.w("}");
+                self.nl();
+            }
+            Stmt::Throw(t) => { self.w("throw "); self.print_expr(&t.arg); self.w(";"); self.nl(); }
+            Stmt::Decl(d) => self.print_decl(d),
+            Stmt::Expr(e) => { self.print_expr(&e.expr); self.w(";"); self.nl(); }
+            Stmt::Break(b) => {
+                self.w("break");
+                if let Some(label) = &b.label { self.w(" "); self.w(&*label.sym); }
+                self.w(";"); self.nl();
+            }
+            Stmt::Continue(c) => {
+                self.w("continue");
+                if let Some(label) = &c.label { self.w(" "); self.w(&*label.sym); }
+                self.w(";"); self.nl();
+            }
+            Stmt::Labeled(l) => {
+                self.w(&*l.label.sym);
+                self.w(": ");
+                self.print_stmt(&l.body);
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn print_for_head(&mut self, left: &ForHead) {
+        match left {
+            ForHead::VarDecl(v) => self.print_var_decl(v, false),
+            ForHead::Pat(p) => self.print_pat(p),
+            ForHead::UsingDecl(_) => self.w("using _"),
+        }
+    }
+
+    pub(super) fn print_block(&mut self, block: &BlockStmt) {
+        // Try single-statement collapse: `if (cond) { stmt; }` on one line
+        if self.collapse_blocks && block.stmts.len() == 1 {
+            let stmt = &block.stmts[0];
+            // Don't collapse blocks containing blocks (would look weird)
+            let should_collapse = !matches!(stmt, Stmt::Block(_));
+            if should_collapse {
+                let checkpoint = self.buf.len();
+                self.w("{ ");
+                self.print_stmt(stmt);
+                // Remove trailing newline added by print_stmt
+                if self.buf.ends_with('\n') {
+                    self.buf.pop();
+                }
+                self.w(" }");
+                self.nl();
+                // Check if inline fits
+                if self.current_line_len() <= self.wrap_width {
+                    return;
+                }
+                // Rollback to expanded form
+                self.buf.truncate(checkpoint);
+            }
+        }
+
+        // Expanded form
+        if block.stmts.is_empty() {
+            self.w("{}");
+            self.nl();
+            return;
+        }
+        self.w("{");
+        self.nl();
+        self.indent();
+        for s in &block.stmts {
+            self.print_stmt(s);
+            // Emit trailing comments inline for statements inside blocks
+            if self.buf.ends_with('\n') {
+                self.buf.pop();
+            }
+            self.emit_trailing_comments(s.span().hi);
+            self.nl();
+        }
+        self.dedent();
+        self.wi();
+        self.w("}");
+        self.nl();
+    }
+}
