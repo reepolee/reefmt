@@ -1145,4 +1145,77 @@ mod tests {
         assert!(output.contains("\n<html"), "html should be at depth 0 after blank line");
         assert!(!output.contains("\n\t<html"), "html should NOT be indented");
     }
+
+    #[test]
+    fn inline_element_preserves_spacing_around_ree_expr() {
+        // Regression: text nodes between Ree expressions were trimmed, removing
+        // semantically significant spaces like "{= name } © Year {= year }" →
+        // "{= name }© Year{= year }" (missing spaces around ©).
+        let input = "<p>{= props.site_name } © Reepolee {= props.year }</p>";
+        let output = format_ree(input, 120);
+        assert_eq!(
+            output,
+            "<p>{= props.site_name } © Reepolee {= props.year }</p>\n",
+            "Spaces around copyright symbol and Ree expressions should be preserved"
+        );
+    }
+
+    #[test]
+    fn inline_element_spacing_idempotent() {
+        // The output of the previous test must be idempotent — formatting twice
+        // should produce the same result.
+        let input = "<p>{= props.site_name } © Reepolee {= props.year }</p>";
+        let pass1 = format_ree(input, 120);
+        let pass2 = format_ree(&pass1, 120);
+        assert_eq!(pass1, pass2, "Inline element with Ree expressions should be idempotent");
+    }
+
+    #[test]
+    fn inline_element_ree_expr_with_text_before() {
+        // Regression: text before a Ree expression should not lose its trailing space.
+        // E.g. "<span>text {= expr }</span>" should stay as-is.
+        let input = "<span>hello {= name }</span>";
+        let output = format_ree(input, 120);
+        assert_eq!(
+            output,
+            "<span>hello {= name }</span>\n",
+            "Space before Ree expression should be preserved"
+        );
+    }
+
+    #[test]
+    fn inline_element_ree_expr_with_text_after() {
+        // Regression: text after a Ree expression should not lose its leading space.
+        let input = "<span>{= name } world</span>";
+        let output = format_ree(input, 120);
+        assert_eq!(
+            output,
+            "<span>{= name } world</span>\n",
+            "Space after Ree expression should be preserved"
+        );
+    }
+
+    #[test]
+    fn inline_element_ree_expr_text_ree_expr() {
+        // Multiple Ree expressions with text between — all spacing should be preserved.
+        let input = "<span>{= a } between {= b }</span>";
+        let output = format_ree(input, 120);
+        assert_eq!(
+            output,
+            "<span>{= a } between {= b }</span>\n",
+            "Spacing between multiple Ree expressions should be preserved"
+        );
+    }
+
+    #[test]
+    fn inline_element_ree_call_text() {
+        // Ree calls ({~ expr}) should also preserve spacing.
+        let input = "<span>{~ props.greeting } user</span>";
+        let output = format_ree(input, 120);
+        assert_eq!(
+            output,
+            "<span>{~ props.greeting } user</span>\n",
+            "Spacing around Ree calls should be preserved"
+        );
+    }
 }

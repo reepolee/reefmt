@@ -1610,4 +1610,87 @@ mod tests {
         let result = collapse_single_stmt_blocks(src, 24, 3);
         assert_eq!(result, "\twhile (c) { stmt(); }\n");
     }
+
+    // ─── Template literal formatting correctness tests ────────────
+
+    #[test]
+    fn ts_with_template_literal_preserves_tabs() {
+        // Regression: TS code containing template literals with tab-indented
+        // content should preserve the template literal tabs AND correctly
+        // indent the surrounding code with single tabs (not 4x tabs).
+        let src = "export function foo() {\n\tconst x = `\n\t\t<p>text</p>\n\t`;\n}\n";
+        let result = format_code_content(src, "ts", 180, true, 3, false);
+        // Code should use single-tab indentation
+        assert!(
+            result.contains("\tconst x ="),
+            "Function body should use single tab, got: {:?}",
+            result
+        );
+        // Template literal HTML should keep its tab indentation
+        assert!(
+            result.contains("\t\t<p>text</p>"),
+            "Template literal content with tabs should be preserved"
+        );
+        // Closing backtick should keep its tab
+        assert!(
+            result.contains("\t`;"),
+            "Closing backtick should have tab indentation"
+        );
+    }
+
+    #[test]
+    fn ts_with_template_literal_idempotent() {
+        // Formatting a TS file with template literals must be idempotent.
+        let src = "export function foo() {\n\tconst x = `\n\t\t<p>text</p>\n\t`;\n}\n";
+        let pass1 = format_code_content(src, "ts", 180, true, 3, false);
+        let pass2 = format_code_content(&pass1, "ts", 180, true, 3, false);
+        assert_eq!(
+            pass1, pass2,
+            "format_code_content with template literals should be idempotent"
+        );
+    }
+
+    #[test]
+    fn ts_with_template_literal_no_excess_indent() {
+        // Regression: the function body should NOT be indented with 4x tabs.
+        // Each line at body level should have exactly 1 tab.
+        let src = "export function foo() {\n\tconst x = `\n\t\t<p>text</p>\n\t`;\n}\n";
+        let result = format_code_content(src, "ts", 180, true, 3, false);
+        // Check that the result doesn't have 4 tabs at body level (old bug)
+        assert!(
+            !result.contains("\t\t\t\tconst x ="),
+            "Should NOT have 4 tabs at function body level: got {:?}",
+            result
+        );
+        // Check that function body lines have exactly 1 tab, not more
+        for line in result.lines() {
+            if line.contains("const x") {
+                let trimmed = line.trim_start();
+                let leading = line.len() - trimmed.len();
+                assert_eq!(
+                    leading, 1,
+                    "Function body line should have exactly 1 tab, got {} leading chars",
+                    leading
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ts_complex_template_literal_preserved() {
+        // A more realistic template literal with multiple levels of nesting.
+        let src = "export function page() {\n\tconst html = `\n\t\t<div>\n\t\t\t<p>content</p>\n\t\t</div>\n\t`;\n\treturn html;\n}\n";
+        let result = format_code_content(src, "ts", 180, true, 3, false);
+        // Code indentation: single tab
+        assert!(result.contains("\tconst html ="), "Code should use single tab");
+        assert!(result.contains("\treturn html;"), "Return should use single tab");
+        // Template literal: deep tabs preserved
+        assert!(result.contains("\t\t\t<p>content</p>"), "Deep template tabs preserved");
+        // Closing brace at column 0
+        let lines: Vec<&str> = result.lines().collect();
+        assert_eq!(lines.last(), Some(&"}"), "Closing brace should be at column 0");
+        // Idempotent
+        let pass2 = format_code_content(&result, "ts", 180, true, 3, false);
+        assert_eq!(result, pass2, "Complex template literal should be idempotent");
+    }
 }
