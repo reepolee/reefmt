@@ -90,6 +90,8 @@ fn parse_es(
 /// Detects SWC's indentation width and converts to the target indent.
 /// Any remainder whitespace (leading spaces that don't divide evenly into
 /// full indent levels) is preserved as literal spaces.
+/// Lines containing tab characters are passed through unchanged — these are
+/// template literal content preserved by SWC and should not be re-indented.
 fn reindent(code: &str, target_indent: &str) -> String {
     let indent_width = detect_indent_width(code);
 
@@ -97,6 +99,13 @@ fn reindent(code: &str, target_indent: &str) -> String {
     for line in code.lines() {
         let trimmed = line.trim_start();
         if trimmed.is_empty() {
+            out.push('\n');
+            continue;
+        }
+        // Skip lines containing tab characters — they're template literal
+        // content preserved by SWC and should not be re-indented.
+        if line.contains('\t') {
+            out.push_str(line);
             out.push('\n');
             continue;
         }
