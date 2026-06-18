@@ -1,6 +1,6 @@
 [package]
 name = "reefmt"
-version = "0.7.25"
+version = "0.7.26"
 edition = "2021"
 
 [[bin]]
@@ -16,6 +16,7 @@ rayon = "1"
 
 # SWC for native JS/TS formatting (no subprocess)
 swc_core = { version = "69", features = ["ecma_parser", "ecma_codegen", "ecma_ast", "common", "ecma_visit"] }
+
 
 
 
