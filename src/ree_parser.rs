@@ -110,6 +110,15 @@ fn parse_nodes(input: &str, stop: Stop) -> (Vec<Node>, &str) {
     (nodes, remaining)
 }
 
+/// Check if a string starts with a Ree else marker: {:else}, {:else }, {:else if ...}
+fn is_ree_else_marker(s: &str) -> bool {
+    if let Some(rest) = s.strip_prefix("{:else") {
+        rest.starts_with('}') || rest.starts_with(" }") || rest.starts_with(" if") || rest.starts_with("\tif")
+    } else {
+        false
+    }
+}
+
 fn check_stop(remaining: &str, stop: &Stop) -> bool {
     match stop {
         Stop::None => false,
@@ -131,7 +140,7 @@ fn check_stop(remaining: &str, stop: &Stop) -> bool {
                 if remaining.starts_with(&c1) || remaining.starts_with(&c2) {
                     return true;
                 }
-                if remaining.starts_with("{:else}") || remaining.starts_with("{:else if") {
+                if is_ree_else_marker(remaining) {
                     return true;
                 }
             }
@@ -143,7 +152,7 @@ fn check_stop(remaining: &str, stop: &Stop) -> bool {
             if remaining.starts_with(&c1) || remaining.starts_with(&c2) {
                 return true;
             }
-            remaining.starts_with("{:else}") || remaining.starts_with("{:else if")
+            is_ree_else_marker(remaining)
         }
     }
 }
@@ -510,6 +519,7 @@ fn parse_else_branch<'a>(input: &'a str, keyword: &str) -> (Option<Vec<Node>>, &
     let trimmed = input.trim_start();
     let offset = input.len() - trimmed.len();
 
+    // Handle {:else if ...} with optional space before }
     if trimmed.starts_with("{:else if ") || trimmed.starts_with("{:else if\t") {
         if let Some(end) = trimmed.find('}') {
             let rem = &input[offset + end + 1..];
@@ -517,11 +527,17 @@ fn parse_else_branch<'a>(input: &'a str, keyword: &str) -> (Option<Vec<Node>>, &
             let (children, rem) = parse_nodes(rem, stop);
             return (Some(children), rem);
         }
-    } else if trimmed.starts_with("{:else}") {
-        let rem = &input[offset + 7..];
-        let stop = Stop::ReeClose(keyword.to_string());
-        let (children, rem) = parse_nodes(rem, stop);
-        return (Some(children), rem);
+    // Handle {:else} and {:else } — both are valid else markers
+    } else if let Some(rest) = trimmed.strip_prefix("{:else") {
+        if rest.starts_with('}') || rest.starts_with(" }") {
+            // Find the actual closing brace
+            if let Some(end) = trimmed.find('}') {
+                let rem = &input[offset + end + 1..];
+                let stop = Stop::ReeClose(keyword.to_string());
+                let (children, rem) = parse_nodes(rem, stop);
+                return (Some(children), rem);
+            }
+        }
     }
 
     (None, input)
