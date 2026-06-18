@@ -812,6 +812,49 @@ fn is_obj_lit_opener(trimmed: &str) -> bool {
     before_brace.ends_with('(') || before_brace.ends_with(',') || before_brace.ends_with(']')
 }
 
+/// Restore the trailing semicolon and spacing on `do { ... } while (cond)` statements
+/// that SWC's codegen strips. SWC outputs `}while (cond)` instead of `} while (cond);`.
+/// This runs as a post-processing step to ensure proper spacing and semicolon termination.
+fn fix_do_while_semicolon(code: &str) -> String {
+    let mut out = String::with_capacity(code.len());
+    for line in code.lines() {
+        let trimmed = line.trim();
+        // Match lines that look like the closing of a do-while statement:
+        //   `}while (cond)` or `} while (cond)` — where SWC stripped the
+        // trailing `;` and possibly the space between `}` and `while`.
+        // SWC outputs `}while (cond)` with space after while but NOT
+        // between } and while, and without the trailing semicolon.
+        if (trimmed.starts_with("}while") || trimmed.starts_with("} while"))
+            && !trimmed.ends_with(';')
+        {
+            let indent = &line[..line.len() - trimmed.len()];
+            // Find the word "while" to locate the start of the condition
+            if let Some(while_pos) = trimmed.find("while") {
+                // Skip past "while" and any whitespace to find the opening paren
+                let after_while = &trimmed[while_pos + 5..]; // 5 = len("while")
+                let after_while_trimmed = after_while.trim_start();
+                if after_while_trimmed.starts_with('(') {
+                    // Find the last `)` for the condition
+                    if let Some(close_paren) = after_while_trimmed.rfind(')') {
+                        let cond = &after_while_trimmed[1..close_paren];
+                        out.push_str(indent);
+                        out.push_str("} while (");
+                        out.push_str(cond);
+                        out.push_str(");\n");
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !code.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
 /// Ensures proper spacing around arrow function `=>` tokens:
 /// `()=>{` → `() => {`, `param=>` → `param => `, etc.
 /// Avoids modifying `<=` and `>=` comparison operators.
@@ -883,7 +926,8 @@ pub(crate) fn format_code_content(
                 postprocess_from_swc(&swc_formatted, &placeholders)
             };
             let spaced = fix_arrow_spacing(&restored);
-            let collapsed = collapse_inline_type_literals(&spaced, wrap_width, max_members);
+            let fixed_do = fix_do_while_semicolon(&spaced);
+            let collapsed = collapse_inline_type_literals(&fixed_do, wrap_width, max_members);
             if collapse_blocks {
                 collapse_single_stmt_blocks(&collapsed, wrap_width, max_members)
             } else {
@@ -1210,6 +1254,55 @@ mod tests {
         let src = "if (cond) { doSomething(); }\n";
         let result = collapse_single_stmt_blocks(src, 180, 3);
         assert_eq!(result, src);
+    }
+
+    // ─── fix_do_while_semicolon tests ───────────────────────────
+
+    #[test]
+    fn do_while_adds_space_and_semicolon() {
+        // SWC outputs `}while (cond)` — fix adds space + semicolon
+        assert_eq!(fix_do_while_semicolon("}while (cond)\n"), "} while (cond);\n");
+    }
+
+    #[test]
+    fn do_while_already_has_space_adds_semicolon() {
+        // `} while (cond)` — space is fine, just add semicolon
+        assert_eq!(fix_do_while_semicolon("} while (cond)\n"), "} while (cond);\n");
+    }
+
+    #[test]
+    fn do_while_already_correct_untouched() {
+        // Already has semicolon — no change
+        let src = "} while (cond);\n";
+        assert_eq!(fix_do_while_semicolon(src), src);
+    }
+
+    #[test]
+    fn do_while_nested_parens() {
+        // Multiple nested parens — only strip the last `)`
+        assert_eq!(
+            fix_do_while_semicolon("}while (fn())\n"),
+            "} while (fn());\n"
+        );
+    }
+
+    #[test]
+    fn do_while_indented() {
+        // Preserves indentation
+        assert_eq!(
+            fix_do_while_semicolon("\t\t}while (cond)\n"),
+            "\t\t} while (cond);\n"
+        );
+    }
+
+    #[test]
+    fn do_while_no_false_positive() {
+        // Lines that don't match do-while pattern should be unchanged
+        let src = "if (cond) {\n\tstmt;\n}\n";
+        assert_eq!(fix_do_while_semicolon(src), src);
+        // Lines ending with semicolon that happen to start with }while
+        let src2 = "}while (cond);";
+        assert_eq!(fix_do_while_semicolon(src2), src2);
     }
 
     // ─── fix_arrow_spacing tests ────────────────────────────────
