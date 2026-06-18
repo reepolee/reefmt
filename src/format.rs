@@ -1049,6 +1049,189 @@ fn fix_brace_spacing(code: &str) -> String {
     out
 }
 
+/// Ensure proper spacing between control flow keywords and `(` or `{` that SWC's
+/// codegen strips. Specifically handles:
+/// - `for(` → `for (`
+/// - `while(` → `while (`
+/// - `switch(` → `switch (`
+/// - `finally{` → `finally {`
+///
+/// Operates character-by-character, properly skipping strings, template
+/// literals, and comments to avoid false positives. Only matches keywords at
+/// word boundaries (preceded by a non-identifier character).
+fn fix_keyword_spacing(code: &str) -> String {
+    let mut out = String::with_capacity(code.len());
+    let bytes = code.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    /// Check if byte at position `pos` (if it exists) is an identifier character.
+    fn is_ident_char(bytes: &[u8], pos: usize) -> bool {
+        if pos >= bytes.len() {
+            return false;
+        }
+        let b = bytes[pos];
+        b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
+    }
+
+    while i < len {
+        let b = bytes[i];
+
+        // Skip double-quoted strings
+        if b == b'"' {
+            out.push('"');
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    out.push('\\');
+                    i += 1;
+                    copy_utf8_char(code, bytes, &mut out, &mut i);
+                } else if bytes[i] == b'"' {
+                    out.push('"');
+                    i += 1;
+                    break;
+                } else {
+                    copy_utf8_char(code, bytes, &mut out, &mut i);
+                }
+            }
+            continue;
+        }
+
+        // Skip single-quoted strings
+        if b == b'\'' {
+            out.push('\'');
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    out.push('\\');
+                    i += 1;
+                    copy_utf8_char(code, bytes, &mut out, &mut i);
+                } else if bytes[i] == b'\'' {
+                    out.push('\'');
+                    i += 1;
+                    break;
+                } else {
+                    copy_utf8_char(code, bytes, &mut out, &mut i);
+                }
+            }
+            continue;
+        }
+
+        // Skip template literals (handling nested `${}`)
+        if b == b'`' {
+            out.push('`');
+            i += 1;
+            let mut depth = 0u32;
+            while i < len {
+                let tb = bytes[i];
+                if tb == b'\\' && i + 1 < len {
+                    out.push('\\');
+                    i += 1;
+                    copy_utf8_char(code, bytes, &mut out, &mut i);
+                } else if tb == b'$' && i + 1 < len && bytes[i + 1] == b'{' {
+                    out.push_str("${");
+                    i += 2;
+                    depth += 1;
+                } else if tb == b'}' && depth > 0 {
+                    out.push('}');
+                    i += 1;
+                    depth -= 1;
+                } else if tb == b'`' && depth == 0 {
+                    out.push('`');
+                    i += 1;
+                    break;
+                } else {
+                    copy_utf8_char(code, bytes, &mut out, &mut i);
+                }
+            }
+            continue;
+        }
+
+        // Skip single-line `//` comments
+        if b == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
+            while i < len && bytes[i] != b'\n' {
+                copy_utf8_char(code, bytes, &mut out, &mut i);
+            }
+            continue;
+        }
+
+        // Check for `for(` — 3-letter keyword followed by `(` without space
+        if i + 3 < len
+            && bytes[i] == b'f'
+            && bytes[i + 1] == b'o'
+            && bytes[i + 2] == b'r'
+            && bytes[i + 3] == b'('
+            && (i == 0 || !is_ident_char(bytes, i - 1))
+        {
+            out.push_str("for ");
+            i += 3;
+            continue;
+        }
+
+        // Check for `while(` — 5-letter keyword followed by `(` without space
+        if i + 5 < len
+            && bytes[i] == b'w'
+            && bytes[i + 1] == b'h'
+            && bytes[i + 2] == b'i'
+            && bytes[i + 3] == b'l'
+            && bytes[i + 4] == b'e'
+            && bytes[i + 5] == b'('
+            && (i == 0 || !is_ident_char(bytes, i - 1))
+        {
+            out.push_str("while ");
+            i += 5;
+            continue;
+        }
+
+        // Check for `switch(` — 6-letter keyword followed by `(` without space
+        if i + 6 < len
+            && bytes[i] == b's'
+            && bytes[i + 1] == b'w'
+            && bytes[i + 2] == b'i'
+            && bytes[i + 3] == b't'
+            && bytes[i + 4] == b'c'
+            && bytes[i + 5] == b'h'
+            && bytes[i + 6] == b'('
+            && (i == 0 || !is_ident_char(bytes, i - 1))
+        {
+            out.push_str("switch ");
+            i += 6;
+            continue;
+        }
+
+        // Check for `finally{` — 7-letter keyword followed by `{` without space
+        if i + 6 < len
+            && bytes[i] == b'f'
+            && bytes[i + 1] == b'i'
+            && bytes[i + 2] == b'n'
+            && bytes[i + 3] == b'a'
+            && bytes[i + 4] == b'l'
+            && bytes[i + 5] == b'l'
+            && bytes[i + 6] == b'y'
+            && i + 7 < len
+            && bytes[i + 7] == b'{'
+            && (i == 0 || !is_ident_char(bytes, i - 1))
+            && !is_ident_char(bytes, i + 7) // Ensure `y` is end of keyword
+        {
+            out.push_str("finally ");
+            i += 7;
+            continue;
+        }
+
+        // Regular character: ASCII fast path, multi-byte fallback
+        if b & 0x80 == 0 {
+            out.push(b as char);
+            i += 1;
+        } else {
+            let ch = code[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+
+    out
+}
+
 /// Check if a trimmed line contains the `function` keyword as a standalone word
 /// (not inside an identifier like "myFunction" or "functionality").
 fn contains_function_keyword(trimmed: &str) -> bool {
@@ -1745,7 +1928,8 @@ pub(crate) fn format_code_content(
             };
             let spaced = fix_arrow_spacing(&restored);
             let brace_fixed = fix_brace_spacing(&spaced);
-            let fixed_do = fix_do_while_semicolon(&brace_fixed);
+            let keyword_fixed = fix_keyword_spacing(&brace_fixed);
+            let fixed_do = fix_do_while_semicolon(&keyword_fixed);
             let collapsed = collapse_inline_type_literals(&fixed_do, wrap_width, max_members);
             let params_split = wrap_long_function_params(&collapsed, wrap_width);
             let chains_split = wrap_long_method_chains(&params_split, wrap_width);
@@ -2124,6 +2308,85 @@ mod tests {
         // Lines ending with semicolon that happen to start with }while
         let src2 = "}while (cond);";
         assert_eq!(fix_do_while_semicolon(src2), src2);
+    }
+
+    // ─── fix_keyword_spacing tests ────────────────────────────────
+
+    #[test]
+    fn keyword_spacing_for() {
+        // `for(let i = 0` → `for (let i = 0`
+        assert_eq!(fix_keyword_spacing("for(let i = 0; i < 10; i++)"), "for (let i = 0; i < 10; i++)");
+    }
+
+    #[test]
+    fn keyword_spacing_while() {
+        assert_eq!(fix_keyword_spacing("while(cond)"), "while (cond)");
+    }
+
+    #[test]
+    fn keyword_spacing_switch() {
+        assert_eq!(fix_keyword_spacing("switch(val)"), "switch (val)");
+    }
+
+    #[test]
+    fn keyword_spacing_finally() {
+        assert_eq!(fix_keyword_spacing("} finally{"), "} finally {");
+    }
+
+    #[test]
+    fn keyword_spacing_already_correct() {
+        // Already has space — no change
+        assert_eq!(fix_keyword_spacing("for (;;)"), "for (;;)");
+        assert_eq!(fix_keyword_spacing("while (cond)"), "while (cond)");
+        assert_eq!(fix_keyword_spacing("switch (val)"), "switch (val)");
+        assert_eq!(fix_keyword_spacing("} finally {"), "} finally {");
+    }
+
+    #[test]
+    fn keyword_spacing_no_false_positive() {
+        // `for` inside an identifier should NOT trigger
+        assert_eq!(fix_keyword_spacing("before(a)"), "before(a)");
+        assert_eq!(fix_keyword_spacing("transform(a)"), "transform(a)");
+        assert_eq!(fix_keyword_spacing("shortchange(a)"), "shortchange(a)");
+        assert_eq!(fix_keyword_spacing("after(a)"), "after(a)");
+    }
+
+    #[test]
+    fn keyword_spacing_no_false_positive_in_string() {
+        // Keywords inside strings should NOT trigger
+        assert_eq!(fix_keyword_spacing("const s = \"for(x)\";"), "const s = \"for(x)\";");
+        assert_eq!(fix_keyword_spacing("const s = \"while(x)\";"), "const s = \"while(x)\";");
+    }
+
+    #[test]
+    fn keyword_spacing_labeled_for() {
+        // Labeled `loop: for(;;)` — `for` after `: `
+        assert_eq!(fix_keyword_spacing("loop: for(;;)"), "loop: for (;;)");
+    }
+
+    #[test]
+    fn keyword_spacing_mixed() {
+        let input = "for(let i = 0; i < 10; i++){\n\twhile(cond){\n\t\tswitch(val){}\n\t}\n}";
+        let expected = "for (let i = 0; i < 10; i++) {\n\twhile (cond) {\n\t\tswitch (val) {}\n\t}\n}";
+        // Note: fix_keyword_spacing handles for/while/switch spacing
+        // fix_brace_spacing handles ){ spacing
+        let result = fix_keyword_spacing(input);
+        assert_eq!(result, "for (let i = 0; i < 10; i++){\n\twhile (cond){\n\t\tswitch (val){}\n\t}\n}", "fix_keyword_spacing only fixes keyword spacing");
+        let final_result = fix_brace_spacing(&result);
+        assert_eq!(final_result, expected);
+    }
+
+    #[test]
+    fn keyword_spacing_full_pipeline() {
+        // Full pipeline should fix both keyword spacing and ){ spacing
+        // Use valid JS syntax: try/catch/finally
+        let input = "try {\n\tdoSomething();\n} catch(e){\n\t// handle\n} finally{\n\tcleanup();\n}\n";
+        let result = format_code_content(input, "ts", 180, true, 3, false);
+        assert!(result.contains("catch (e) {"), "Should fix catch ( spacing");
+        assert!(result.contains("finally {"), "Should fix finally {{ spacing");
+        // Verify idempotency
+        let pass2 = format_code_content(&result, "ts", 180, true, 3, false);
+        assert_eq!(result, pass2, "Full pipeline should be idempotent");
     }
 
     // ─── fix_brace_spacing tests ─────────────────────────────────
