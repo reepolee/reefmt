@@ -931,6 +931,124 @@ pub(crate) fn fix_arrow_spacing(code: &str) -> String {
     out
 }
 
+/// Ensure proper spacing between `)` and `{` that SWC's codegen strips.
+/// SWC outputs `if (cond){` or `for (;;){` — this restores the space to
+/// `if (cond) {` or `for (;;) {`.
+///
+/// Also handles function/method declarations where SWC strips the space:
+/// `function foo(){` → `function foo() {`, `bar(){` → `bar() {`.
+///
+/// Operates character-by-character, properly skipping strings, template
+/// literals, and comments to avoid false positives.
+fn fix_brace_spacing(code: &str) -> String {
+    let mut out = String::with_capacity(code.len());
+    let bytes = code.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i < len {
+        let b = bytes[i];
+
+        // Skip double-quoted strings — push bytes as UTF-8 characters
+        if b == b'"' {
+            out.push('"');
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    out.push('\\');
+                    i += 1;
+                    copy_utf8_char(code, bytes, &mut out, &mut i);
+                } else if bytes[i] == b'"' {
+                    out.push('"');
+                    i += 1;
+                    break;
+                } else {
+                    copy_utf8_char(code, bytes, &mut out, &mut i);
+                }
+            }
+            continue;
+        }
+
+        // Skip single-quoted strings
+        if b == b'\'' {
+            out.push('\'');
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    out.push('\\');
+                    i += 1;
+                    copy_utf8_char(code, bytes, &mut out, &mut i);
+                } else if bytes[i] == b'\'' {
+                    out.push('\'');
+                    i += 1;
+                    break;
+                } else {
+                    copy_utf8_char(code, bytes, &mut out, &mut i);
+                }
+            }
+            continue;
+        }
+
+        // Skip template literals (handling nested `${}`)
+        if b == b'`' {
+            out.push('`');
+            i += 1;
+            let mut depth = 0u32;
+            while i < len {
+                let tb = bytes[i];
+                if tb == b'\\' && i + 1 < len {
+                    out.push('\\');
+                    i += 1;
+                    copy_utf8_char(code, bytes, &mut out, &mut i);
+                } else if tb == b'$' && i + 1 < len && bytes[i + 1] == b'{' {
+                    out.push_str("${");
+                    i += 2;
+                    depth += 1;
+                } else if tb == b'}' && depth > 0 {
+                    out.push('}');
+                    i += 1;
+                    depth -= 1;
+                } else if tb == b'`' && depth == 0 {
+                    out.push('`');
+                    i += 1;
+                    break;
+                } else {
+                    copy_utf8_char(code, bytes, &mut out, &mut i);
+                }
+            }
+            continue;
+        }
+
+        // Skip single-line `//` comments
+        if b == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
+            while i < len && bytes[i] != b'\n' {
+                copy_utf8_char(code, bytes, &mut out, &mut i);
+            }
+            continue;
+        }
+
+        // Look for `){` — `)` followed by `{` without a space
+        if b == b')' && i + 1 < len && bytes[i + 1] == b'{' {
+            out.push(')');
+            out.push(' ');
+            i += 1;
+            continue;
+        }
+
+        // Regular character: ASCII fast path, multi-byte fallback
+        if b & 0x80 == 0 {
+            out.push(b as char);
+            i += 1;
+        } else {
+            let ch = code[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+
+    out
+}
+
 /// Check if a trimmed line contains the `function` keyword as a standalone word
 /// (not inside an identifier like "myFunction" or "functionality").
 fn contains_function_keyword(trimmed: &str) -> bool {
@@ -1626,7 +1744,8 @@ pub(crate) fn format_code_content(
                 postprocess_from_swc(&swc_formatted, &placeholders)
             };
             let spaced = fix_arrow_spacing(&restored);
-            let fixed_do = fix_do_while_semicolon(&spaced);
+            let brace_fixed = fix_brace_spacing(&spaced);
+            let fixed_do = fix_do_while_semicolon(&brace_fixed);
             let collapsed = collapse_inline_type_literals(&fixed_do, wrap_width, max_members);
             let params_split = wrap_long_function_params(&collapsed, wrap_width);
             let chains_split = wrap_long_method_chains(&params_split, wrap_width);
@@ -2005,6 +2124,80 @@ mod tests {
         // Lines ending with semicolon that happen to start with }while
         let src2 = "}while (cond);";
         assert_eq!(fix_do_while_semicolon(src2), src2);
+    }
+
+    // ─── fix_brace_spacing tests ─────────────────────────────────
+
+    #[test]
+    fn brace_spacing_for_loop() {
+        // `for (;;){` → `for (;;) {`
+        assert_eq!(fix_brace_spacing("for (;;){\n"), "for (;;) {\n");
+    }
+
+    #[test]
+    fn brace_spacing_if() {
+        // `if (cond){` → `if (cond) {`
+        assert_eq!(fix_brace_spacing("if (x > 0){\n"), "if (x > 0) {\n");
+    }
+
+    #[test]
+    fn brace_spacing_while() {
+        assert_eq!(fix_brace_spacing("while (cond){\n"), "while (cond) {\n");
+    }
+
+    #[test]
+    fn brace_spacing_catch() {
+        assert_eq!(fix_brace_spacing("} catch (e){\n"), "} catch (e) {\n");
+    }
+
+    #[test]
+    fn brace_spacing_function() {
+        // Function declarations
+        assert_eq!(fix_brace_spacing("function foo(){\n"), "function foo() {\n");
+    }
+
+    #[test]
+    fn brace_spacing_method() {
+        // Class method
+        assert_eq!(fix_brace_spacing("\tbar(){\n"), "\tbar() {\n");
+    }
+
+    #[test]
+    fn brace_spacing_else_if() {
+        // `} else if (cond){` → `} else if (cond) {`
+        assert_eq!(fix_brace_spacing("} else if (x){\n"), "} else if (x) {\n");
+    }
+
+    #[test]
+    fn brace_spacing_already_correct() {
+        // Already has space — no change
+        let src = "for (;;) {\n";
+        assert_eq!(fix_brace_spacing(src), src);
+    }
+
+    #[test]
+    fn brace_spacing_no_false_positive_in_string() {
+        // `){` inside a string should not be modified
+        let src = "const s = \"text){more\";\n";
+        assert_eq!(fix_brace_spacing(src), src);
+    }
+
+    #[test]
+    fn brace_spacing_mixed_code() {
+        let input = "for (const lang of languages){\n\tawait foo();\n}\n";
+        let expected = "for (const lang of languages) {\n\tawait foo();\n}\n";
+        assert_eq!(fix_brace_spacing(input), expected);
+    }
+
+    #[test]
+    fn brace_spacing_full_pipeline() {
+        // Full pipeline: the ){ should be fixed by the pipeline
+        let input = "for (const lang of languages){\n\tawait foo();\n}\n";
+        let result = format_code_content(input, "ts", 180, true, 3, false);
+        assert!(result.contains("for (const lang of languages) {"), "Should fix ){{ spacing in for loop");
+        // Verify idempotency
+        let pass2 = format_code_content(&result, "ts", 180, true, 3, false);
+        assert_eq!(result, pass2, "Full pipeline should be idempotent");
     }
 
     // ─── fix_arrow_spacing tests ────────────────────────────────
