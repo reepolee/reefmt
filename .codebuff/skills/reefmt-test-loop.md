@@ -55,23 +55,23 @@ already cover the affected code paths.
    ```
    Verify the binary exists at `target/release/reefmt`.
 
-2. **Commit the current state so we can examine a clean diff later:**
-   ```bash
-   git add -A
-   git commit -m "checkpoint before reefmt test loop"
-   ```
-   This creates a reference point. After formatting, `git diff HEAD -- test-files/output/`
-   will show only the formatting changes, making it easy to spot bugs.
-
-3. **Seed output with a snapshot of originals:**
+2. **Seed output with a snapshot of originals:**
    ```bash
    rm -rf test-files/output
    cp -r test-files/originals test-files/output
    ```
    This copies all originals into the output directory. After formatting, formatted
-   versions overwrite the copies, so the output directory always contains both
-   originals (in unchanged subdirectories) and formatted results side by side,
-   and `git diff` shows exactly what the formatter changed per file.
+   versions overwrite the copies, so `git diff` shows exactly what the formatter
+   changed per file — the originals (before) vs the formatted versions (after).
+
+3. **Commit the seed state so we can examine a clean diff later:**
+   ```bash
+   git add -A
+   git commit -m "checkpoint before reefmt test loop"
+   ```
+   This creates a reference point with the output directory tracked in version
+   control. After formatting, `git diff HEAD -- test-files/output/` will show
+   only the formatting changes — the snapshot before vs the formatted result.
 
 ### Phase 2 — Format Originals
 
