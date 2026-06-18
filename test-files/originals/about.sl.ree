@@ -1,0 +1,9 @@
+{#layout("layout")}
+
+<div class="p-4 grid gap-4 bg-blue-100">
+	<h1>{= props.ui.title }</h1>
+	<h2>{= props.ui.description }</h2>
+	<p>{= props.site_name } © Reepolee {= props.year }</p>
+
+	<p>{~ props.slovenski_html }</p>
+</div>
