@@ -656,7 +656,18 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, max_members: u
                     .filter(|l| !l.is_empty())
                     .collect();
 
-                if !body.is_empty() && body.len() <= max_members && body.iter().all(|l| l.contains(':')) {
+                // Validate: body must contain no statements (no `;`), and each line
+                // must be a key:value pair, shorthand identifier, or spread operator.
+                let is_valid_obj_lit = !body.is_empty() && body.len() <= max_members && body.iter().all(|l| {
+                    let cleaned = l.trim_end_matches(',').trim();
+                    // No statements (`;`). Brace-depth tracking handles nested
+                    // structures correctly, and template literals like `${expr}`
+                    // may contain `{`/`}` inside the expression.
+                    !cleaned.contains(';')
+                        && (cleaned.contains(':') || cleaned.starts_with("...") || is_simple_ident(cleaned))
+                });
+
+                if is_valid_obj_lit {
                     let prefix = &line[..line.len() - trimmed.len()];
                     let before_paren = trimmed.strip_suffix('{').unwrap_or(trimmed);
                     let after_close_str = &lines[end_idx][after_close..];
@@ -2558,6 +2569,22 @@ mod tests {
         let result = collapse_single_stmt_blocks(src, 180, 3);
         assert_eq!(result, "if (cond) { doIt(); }",
             "Should preserve absence of trailing newline");
+    }
+
+    #[test]
+    fn collapse_obj_lit_with_shorthand_prop() {
+        // Object literal with shorthand property `id` should collapse
+        let src = "sql_log({\n\ts: \"Delete\",\n\tt: \"text\",\n\tid\n}, req);\n";
+        let result = collapse_single_stmt_blocks(src, 180, 3);
+        assert_eq!(result, "sql_log({ s: \"Delete\", t: \"text\", id }, req);\n");
+    }
+
+    #[test]
+    fn collapse_obj_lit_with_shorthand_and_template() {
+        // Object literal with shorthand `id` AND template literal `${feature}`
+        let src = "sql_log({\n\ts: \"Delete\",\n\tt: `${feature}`,\n\tid\n}, req);\n";
+        let result = collapse_single_stmt_blocks(src, 180, 3);
+        assert_eq!(result, "sql_log({ s: \"Delete\", t: `${feature}`, id }, req);\n");
     }
 
     #[test]
