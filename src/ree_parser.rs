@@ -119,6 +119,20 @@ fn is_ree_else_marker(s: &str) -> bool {
     }
 }
 
+/// Check whether `input` starts with a Ree close tag for `keyword`, including
+/// variants with trailing whitespace before `}` (e.g. `{/if }`).
+fn is_ree_close_tag(input: &str, keyword: &str) -> bool {
+    if !input.starts_with("{/") {
+        return false;
+    }
+    let end = find_brace_end(input);
+    if end <= 1 {
+        return false;
+    }
+    let inner = input[1..end - 1].trim();
+    inner == format!("/{}", keyword) || inner == format!("/ {}", keyword)
+}
+
 fn check_stop(remaining: &str, stop: &Stop) -> bool {
     match stop {
         Stop::None => false,
@@ -135,24 +149,14 @@ fn check_stop(remaining: &str, stop: &Stop) -> bool {
             // Also stop at Ree block markers when nested inside a Ree block.
             // Otherwise {:else} and {/if} get consumed as children of this element.
             if let Some(ref kw) = ree_keyword {
-                let c1 = format!("{{/{}}}", kw);
-                let c2 = format!("{{/ {}}}", kw);
-                if remaining.starts_with(&c1) || remaining.starts_with(&c2) {
-                    return true;
-                }
-                if is_ree_else_marker(remaining) {
+                if is_ree_close_tag(remaining, kw) || is_ree_else_marker(remaining) {
                     return true;
                 }
             }
             false
         }
         Stop::ReeClose(keyword) => {
-            let c1 = format!("{{/{}}}", keyword);
-            let c2 = format!("{{/ {}}}", keyword);
-            if remaining.starts_with(&c1) || remaining.starts_with(&c2) {
-                return true;
-            }
-            is_ree_else_marker(remaining)
+            is_ree_close_tag(remaining, &keyword) || is_ree_else_marker(remaining)
         }
     }
 }
@@ -496,13 +500,12 @@ fn parse_ree_block_open(input: &str) -> (Option<Node>, &str) {
         return (Some(Node::Text(input[..1].to_string())), &input[1..]);
     }
 
-    let directive = input[1..end - 1].trim_start();
+    let directive = input[1..end - 1].trim();
     let directive_stripped = directive.strip_prefix('#').unwrap_or(directive);
-    // Preserve trailing whitespace in block expressions (e.g. "{#if expr }")
     let (keyword, expr) = match directive_stripped.find(' ') {
         Some(pos) => (
             directive_stripped[..pos].to_string(),
-            directive_stripped[pos + 1..].trim_start().to_string(),
+            directive_stripped[pos + 1..].trim().to_string(),
         ),
         None => (directive_stripped.to_string(), String::new()),
     };
@@ -546,12 +549,9 @@ fn parse_else_branch<'a>(input: &'a str, keyword: &str) -> (Option<Vec<Node>>, &
 fn skip_ree_close<'a>(input: &'a str, keyword: &str) -> &'a str {
     let trimmed = input.trim_start();
     let offset = input.len() - trimmed.len();
-    let c1 = format!("{{/{}}}", keyword);
-    let c2 = format!("{{/ {}}}", keyword);
-    if trimmed.starts_with(&c1) {
-        &input[offset + c1.len()..]
-    } else if trimmed.starts_with(&c2) {
-        &input[offset + c2.len()..]
+    if is_ree_close_tag(trimmed, keyword) {
+        let end = find_brace_end(trimmed);
+        &input[offset + end..]
     } else {
         input
     }
@@ -596,10 +596,10 @@ fn parse_ree_raw_js(input: &str) -> (Option<Node>, &str) {
 fn parse_ree_inline(input: &str, open_len: usize, is_expr: bool) -> (Option<Node>, &str) {
     let after = &input[open_len..];
     if let Some(pos) = after.find('}') {
-        // Use trim_start only — preserve trailing whitespace so the output
-        // matches the input's expression spacing (e.g. "{= expr }" stays as-is).
+        // Trim both sides so formatting is consistent regardless of source spacing.
+        // The printer always adds a space after {= / {~ and before }.
         let raw = &after[..pos];
-        let expr = raw.trim_start().to_string();
+        let expr = raw.trim().to_string();
         let remaining = &after[pos + 1..];
         if is_expr {
             (Some(Node::ReeExpr(expr)), remaining)
@@ -1090,7 +1090,7 @@ mod tests {
     fn ree_expression() {
         let input = "<span>{= title }</span>";
         let output = format_ree(input, 120);
-        assert_eq!(output, "<span>{= title }</span>\n");
+        assert_eq!(output, "<span>{= title}</span>\n");
     }
 
     #[test]
@@ -1155,7 +1155,7 @@ mod tests {
         let output = format_ree(input, 120);
         assert_eq!(
             output,
-            "<p>{= props.site_name } © Reepolee {= props.year }</p>\n",
+            "<p>{= props.site_name} © Reepolee {= props.year}</p>\n",
             "Spaces around copyright symbol and Ree expressions should be preserved"
         );
     }
@@ -1178,7 +1178,7 @@ mod tests {
         let output = format_ree(input, 120);
         assert_eq!(
             output,
-            "<span>hello {= name }</span>\n",
+            "<span>hello {= name}</span>\n",
             "Space before Ree expression should be preserved"
         );
     }
@@ -1190,7 +1190,7 @@ mod tests {
         let output = format_ree(input, 120);
         assert_eq!(
             output,
-            "<span>{= name } world</span>\n",
+            "<span>{= name} world</span>\n",
             "Space after Ree expression should be preserved"
         );
     }
@@ -1202,9 +1202,41 @@ mod tests {
         let output = format_ree(input, 120);
         assert_eq!(
             output,
-            "<span>{= a } between {= b }</span>\n",
+            "<span>{= a} between {= b}</span>\n",
             "Spacing between multiple Ree expressions should be preserved"
         );
+    }
+
+    #[test]
+    fn ree_block_close_trailing_space_if() {
+        // Regression: {/if } (with trailing space before }) should be consumed entirely.
+        let input = "{#if show}yes{/if }";
+        let output = format_ree(input, 120);
+        assert_eq!(output, "{#if show}\n\tyes\n{/if}\n");
+    }
+
+    #[test]
+    fn ree_block_close_trailing_space_each() {
+        // Same for {/each } with trailing space before }.
+        let input = "{#each items as item}{= item }{/each }";
+        let output = format_ree(input, 120);
+        assert_eq!(output, "{#each items as item}\n\t{= item}\n{/each}\n");
+    }
+
+    #[test]
+    fn ree_block_close_spaced_and_trailing_space() {
+        // {/ if } (space after /) with trailing space before }.
+        let input = "{#if show}yes{/ if }";
+        let output = format_ree(input, 120);
+        assert_eq!(output, "{#if show}\n\tyes\n{/if}\n");
+    }
+
+    #[test]
+    fn ree_block_close_trailing_space_idempotent() {
+        let input = "{#if show}yes{/if }";
+        let pass1 = format_ree(input, 120);
+        let pass2 = format_ree(&pass1, 120);
+        assert_eq!(pass1, pass2, "close tag with trailing space should be idempotent");
     }
 
     #[test]
@@ -1214,7 +1246,7 @@ mod tests {
         let output = format_ree(input, 120);
         assert_eq!(
             output,
-            "<span>{~ props.greeting } user</span>\n",
+            "<span>{~ props.greeting} user</span>\n",
             "Spacing around Ree calls should be preserved"
         );
     }
