@@ -122,6 +122,9 @@ fn reindent(code: &str, target_indent: &str) -> String {
 /// Uses the minimum non-zero indentation across all indented lines,
 /// skipping block comment continuation lines (which start with `*` after
 /// trimming — they use 1-space alignment that doesn't represent code indent).
+/// Also skips lines containing tab characters — SWC preserves template literal
+/// content with its original indentation (often tabs), which would otherwise
+/// skew the indent width detection.
 fn detect_indent_width(code: &str) -> usize {
     let mut min_indent = usize::MAX;
     for line in code.lines() {
@@ -132,6 +135,11 @@ fn detect_indent_width(code: &str) -> usize {
         // Skip block comment continuation lines like " * content" —
         // they have 1 space before `*` which is not a code indent level.
         if trimmed.starts_with('*') {
+            continue;
+        }
+        // Skip lines containing tab characters — they're template literal
+        // content preserved by SWC and not representative of code indentation.
+        if line.contains('\t') {
             continue;
         }
         let leading = line.len() - trimmed.len();

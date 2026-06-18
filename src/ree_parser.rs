@@ -981,7 +981,7 @@ fn render_children_text(children: &[Node]) -> String {
     let mut parts = Vec::new();
     for child in children {
         match child {
-            Node::Text(t) => parts.push(t.trim().to_string()),
+            Node::Text(t) => parts.push(t.to_string()),
             Node::ReeExpr(e) => parts.push(format!("{{= {}}}", e)),
             Node::ReeCall(e) => parts.push(format!("{{~ {}}}", e)),
             Node::Comment(c) => parts.push(c.trim().to_string()),
