@@ -619,7 +619,10 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, max_members: u
             let stmt_trimmed = lines[i + 1].trim();
             let close_trimmed = lines[i + 2].trim();
 
-            if !stmt_trimmed.is_empty() && close_trimmed == "}" {
+            if !stmt_trimmed.is_empty()
+                && close_trimmed == "}"
+                && !stmt_trimmed.starts_with("//")
+            {
                 let prefix = &line[..line.len() - trimmed.len()];
                 let before_brace = trimmed.trim_end();
                 let collapsed = format!("{} {} }}", before_brace, stmt_trimmed);
@@ -850,49 +853,6 @@ fn is_obj_lit_opener(trimmed: &str) -> bool {
     before_brace.ends_with('(') || before_brace.ends_with(',') || before_brace.ends_with(']')
 }
 
-/// Restore the trailing semicolon and spacing on `do { ... } while (cond)` statements
-/// that SWC's codegen strips. SWC outputs `}while (cond)` instead of `} while (cond);`.
-/// This runs as a post-processing step to ensure proper spacing and semicolon termination.
-fn fix_do_while_semicolon(code: &str) -> String {
-    let mut out = String::with_capacity(code.len());
-    for line in code.lines() {
-        let trimmed = line.trim();
-        // Match lines that look like the closing of a do-while statement:
-        //   `}while (cond)` or `} while (cond)` — where SWC stripped the
-        // trailing `;` and possibly the space between `}` and `while`.
-        // SWC outputs `}while (cond)` with space after while but NOT
-        // between } and while, and without the trailing semicolon.
-        if (trimmed.starts_with("}while") || trimmed.starts_with("} while"))
-            && !trimmed.ends_with(';')
-        {
-            let indent = &line[..line.len() - trimmed.len()];
-            // Find the word "while" to locate the start of the condition
-            if let Some(while_pos) = trimmed.find("while") {
-                // Skip past "while" and any whitespace to find the opening paren
-                let after_while = &trimmed[while_pos + 5..]; // 5 = len("while")
-                let after_while_trimmed = after_while.trim_start();
-                if after_while_trimmed.starts_with('(') {
-                    // Find the last `)` for the condition
-                    if let Some(close_paren) = after_while_trimmed.rfind(')') {
-                        let cond = &after_while_trimmed[1..close_paren];
-                        out.push_str(indent);
-                        out.push_str("} while (");
-                        out.push_str(cond);
-                        out.push_str(");\n");
-                        continue;
-                    }
-                }
-            }
-        }
-        out.push_str(line);
-        out.push('\n');
-    }
-    if !code.ends_with('\n') && out.ends_with('\n') {
-        out.pop();
-    }
-    out
-}
-
 /// Ensures proper spacing around arrow function `=>` tokens:
 /// `()=>{` → `() => {`, `param=>` → `param => `, etc.
 /// Avoids modifying `<=` and `>=` comparison operators.
@@ -942,306 +902,7 @@ pub(crate) fn fix_arrow_spacing(code: &str) -> String {
     out
 }
 
-/// Ensure proper spacing between `)` and `{` that SWC's codegen strips.
-/// SWC outputs `if (cond){` or `for (;;){` — this restores the space to
-/// `if (cond) {` or `for (;;) {`.
-///
-/// Also handles function/method declarations where SWC strips the space:
-/// `function foo(){` → `function foo() {`, `bar(){` → `bar() {`.
-///
-/// Operates character-by-character, properly skipping strings, template
-/// literals, and comments to avoid false positives.
-fn fix_brace_spacing(code: &str) -> String {
-    let mut out = String::with_capacity(code.len());
-    let bytes = code.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
 
-    while i < len {
-        let b = bytes[i];
-
-        // Skip double-quoted strings — push bytes as UTF-8 characters
-        if b == b'"' {
-            out.push('"');
-            i += 1;
-            while i < len {
-                if bytes[i] == b'\\' && i + 1 < len {
-                    out.push('\\');
-                    i += 1;
-                    copy_utf8_char(code, bytes, &mut out, &mut i);
-                } else if bytes[i] == b'"' {
-                    out.push('"');
-                    i += 1;
-                    break;
-                } else {
-                    copy_utf8_char(code, bytes, &mut out, &mut i);
-                }
-            }
-            continue;
-        }
-
-        // Skip single-quoted strings
-        if b == b'\'' {
-            out.push('\'');
-            i += 1;
-            while i < len {
-                if bytes[i] == b'\\' && i + 1 < len {
-                    out.push('\\');
-                    i += 1;
-                    copy_utf8_char(code, bytes, &mut out, &mut i);
-                } else if bytes[i] == b'\'' {
-                    out.push('\'');
-                    i += 1;
-                    break;
-                } else {
-                    copy_utf8_char(code, bytes, &mut out, &mut i);
-                }
-            }
-            continue;
-        }
-
-        // Skip template literals (handling nested `${}`)
-        if b == b'`' {
-            out.push('`');
-            i += 1;
-            let mut depth = 0u32;
-            while i < len {
-                let tb = bytes[i];
-                if tb == b'\\' && i + 1 < len {
-                    out.push('\\');
-                    i += 1;
-                    copy_utf8_char(code, bytes, &mut out, &mut i);
-                } else if tb == b'$' && i + 1 < len && bytes[i + 1] == b'{' {
-                    out.push_str("${");
-                    i += 2;
-                    depth += 1;
-                } else if tb == b'}' && depth > 0 {
-                    out.push('}');
-                    i += 1;
-                    depth -= 1;
-                } else if tb == b'`' && depth == 0 {
-                    out.push('`');
-                    i += 1;
-                    break;
-                } else {
-                    copy_utf8_char(code, bytes, &mut out, &mut i);
-                }
-            }
-            continue;
-        }
-
-        // Skip single-line `//` comments
-        if b == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
-            while i < len && bytes[i] != b'\n' {
-                copy_utf8_char(code, bytes, &mut out, &mut i);
-            }
-            continue;
-        }
-
-        // Look for `){` — `)` followed by `{` without a space
-        if b == b')' && i + 1 < len && bytes[i + 1] == b'{' {
-            out.push(')');
-            out.push(' ');
-            i += 1;
-            continue;
-        }
-
-        // Regular character: ASCII fast path, multi-byte fallback
-        if b & 0x80 == 0 {
-            out.push(b as char);
-            i += 1;
-        } else {
-            let ch = code[i..].chars().next().unwrap();
-            out.push(ch);
-            i += ch.len_utf8();
-        }
-    }
-
-    out
-}
-
-/// Ensure proper spacing between control flow keywords and `(` or `{` that SWC's
-/// codegen strips. Specifically handles:
-/// - `for(` → `for (`
-/// - `while(` → `while (`
-/// - `switch(` → `switch (`
-/// - `finally{` → `finally {`
-///
-/// Operates character-by-character, properly skipping strings, template
-/// literals, and comments to avoid false positives. Only matches keywords at
-/// word boundaries (preceded by a non-identifier character).
-fn fix_keyword_spacing(code: &str) -> String {
-    let mut out = String::with_capacity(code.len());
-    let bytes = code.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-
-    /// Check if byte at position `pos` (if it exists) is an identifier character.
-    fn is_ident_char(bytes: &[u8], pos: usize) -> bool {
-        if pos >= bytes.len() {
-            return false;
-        }
-        let b = bytes[pos];
-        b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
-    }
-
-    while i < len {
-        let b = bytes[i];
-
-        // Skip double-quoted strings
-        if b == b'"' {
-            out.push('"');
-            i += 1;
-            while i < len {
-                if bytes[i] == b'\\' && i + 1 < len {
-                    out.push('\\');
-                    i += 1;
-                    copy_utf8_char(code, bytes, &mut out, &mut i);
-                } else if bytes[i] == b'"' {
-                    out.push('"');
-                    i += 1;
-                    break;
-                } else {
-                    copy_utf8_char(code, bytes, &mut out, &mut i);
-                }
-            }
-            continue;
-        }
-
-        // Skip single-quoted strings
-        if b == b'\'' {
-            out.push('\'');
-            i += 1;
-            while i < len {
-                if bytes[i] == b'\\' && i + 1 < len {
-                    out.push('\\');
-                    i += 1;
-                    copy_utf8_char(code, bytes, &mut out, &mut i);
-                } else if bytes[i] == b'\'' {
-                    out.push('\'');
-                    i += 1;
-                    break;
-                } else {
-                    copy_utf8_char(code, bytes, &mut out, &mut i);
-                }
-            }
-            continue;
-        }
-
-        // Skip template literals (handling nested `${}`)
-        if b == b'`' {
-            out.push('`');
-            i += 1;
-            let mut depth = 0u32;
-            while i < len {
-                let tb = bytes[i];
-                if tb == b'\\' && i + 1 < len {
-                    out.push('\\');
-                    i += 1;
-                    copy_utf8_char(code, bytes, &mut out, &mut i);
-                } else if tb == b'$' && i + 1 < len && bytes[i + 1] == b'{' {
-                    out.push_str("${");
-                    i += 2;
-                    depth += 1;
-                } else if tb == b'}' && depth > 0 {
-                    out.push('}');
-                    i += 1;
-                    depth -= 1;
-                } else if tb == b'`' && depth == 0 {
-                    out.push('`');
-                    i += 1;
-                    break;
-                } else {
-                    copy_utf8_char(code, bytes, &mut out, &mut i);
-                }
-            }
-            continue;
-        }
-
-        // Skip single-line `//` comments
-        if b == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
-            while i < len && bytes[i] != b'\n' {
-                copy_utf8_char(code, bytes, &mut out, &mut i);
-            }
-            continue;
-        }
-
-        // Check for `for(` — 3-letter keyword followed by `(` without space
-        if i + 3 < len
-            && bytes[i] == b'f'
-            && bytes[i + 1] == b'o'
-            && bytes[i + 2] == b'r'
-            && bytes[i + 3] == b'('
-            && (i == 0 || !is_ident_char(bytes, i - 1))
-        {
-            out.push_str("for ");
-            i += 3;
-            continue;
-        }
-
-        // Check for `while(` — 5-letter keyword followed by `(` without space
-        if i + 5 < len
-            && bytes[i] == b'w'
-            && bytes[i + 1] == b'h'
-            && bytes[i + 2] == b'i'
-            && bytes[i + 3] == b'l'
-            && bytes[i + 4] == b'e'
-            && bytes[i + 5] == b'('
-            && (i == 0 || !is_ident_char(bytes, i - 1))
-        {
-            out.push_str("while ");
-            i += 5;
-            continue;
-        }
-
-        // Check for `switch(` — 6-letter keyword followed by `(` without space
-        if i + 6 < len
-            && bytes[i] == b's'
-            && bytes[i + 1] == b'w'
-            && bytes[i + 2] == b'i'
-            && bytes[i + 3] == b't'
-            && bytes[i + 4] == b'c'
-            && bytes[i + 5] == b'h'
-            && bytes[i + 6] == b'('
-            && (i == 0 || !is_ident_char(bytes, i - 1))
-        {
-            out.push_str("switch ");
-            i += 6;
-            continue;
-        }
-
-        // Check for `finally{` — 7-letter keyword followed by `{` without space
-        if i + 6 < len
-            && bytes[i] == b'f'
-            && bytes[i + 1] == b'i'
-            && bytes[i + 2] == b'n'
-            && bytes[i + 3] == b'a'
-            && bytes[i + 4] == b'l'
-            && bytes[i + 5] == b'l'
-            && bytes[i + 6] == b'y'
-            && i + 7 < len
-            && bytes[i + 7] == b'{'
-            && (i == 0 || !is_ident_char(bytes, i - 1))
-            && !is_ident_char(bytes, i + 7) // Ensure `y` is end of keyword
-        {
-            out.push_str("finally ");
-            i += 7;
-            continue;
-        }
-
-        // Regular character: ASCII fast path, multi-byte fallback
-        if b & 0x80 == 0 {
-            out.push(b as char);
-            i += 1;
-        } else {
-            let ch = code[i..].chars().next().unwrap();
-            out.push(ch);
-            i += ch.len_utf8();
-        }
-    }
-
-    out
-}
 
 /// Check if a trimmed line contains the `function` keyword as a standalone word
 /// (not inside an identifier like "myFunction" or "functionality").
@@ -1934,10 +1595,22 @@ pub(crate) fn format_code_content(
             let custom_formatted = crate::swc_printer::format_js_with_printer(
                 &preprocessed, "\t", wrap_width, collapse_blocks, max_members, remove_unused,
             );
-            if placeholders.is_empty() {
+            let restored = if placeholders.is_empty() {
                 custom_formatted
             } else {
                 postprocess_from_swc(&custom_formatted, &placeholders)
+            };
+            // Text-based post-passes: the printer emits function signatures and
+            // method chains on a single line; re-apply the line-wrapping passes
+            // (and type-literal / single-statement collapsing) that the old
+            // codegen path used, so long lines still wrap.
+            let collapsed = collapse_inline_type_literals(&restored, wrap_width, max_members);
+            let params_split = wrap_long_function_params(&collapsed, wrap_width);
+            let chains_split = wrap_long_method_chains(&params_split, wrap_width);
+            if collapse_blocks {
+                collapse_single_stmt_blocks(&chains_split, wrap_width, max_members)
+            } else {
+                chains_split
             }
         }
         _ => normalized.clone(),
@@ -2262,206 +1935,14 @@ mod tests {
         assert_eq!(result, src);
     }
 
-    // ─── fix_do_while_semicolon tests ───────────────────────────
-
     #[test]
-    fn do_while_adds_space_and_semicolon() {
-        // SWC outputs `}while (cond)` — fix adds space + semicolon
-        assert_eq!(fix_do_while_semicolon("}while (cond)\n"), "} while (cond);\n");
-    }
-
-    #[test]
-    fn do_while_already_has_space_adds_semicolon() {
-        // `} while (cond)` — space is fine, just add semicolon
-        assert_eq!(fix_do_while_semicolon("} while (cond)\n"), "} while (cond);\n");
-    }
-
-    #[test]
-    fn do_while_already_correct_untouched() {
-        // Already has semicolon — no change
-        let src = "} while (cond);\n";
-        assert_eq!(fix_do_while_semicolon(src), src);
-    }
-
-    #[test]
-    fn do_while_nested_parens() {
-        // Multiple nested parens — only strip the last `)`
-        assert_eq!(
-            fix_do_while_semicolon("}while (fn())\n"),
-            "} while (fn());\n"
-        );
-    }
-
-    #[test]
-    fn do_while_indented() {
-        // Preserves indentation
-        assert_eq!(
-            fix_do_while_semicolon("\t\t}while (cond)\n"),
-            "\t\t} while (cond);\n"
-        );
-    }
-
-    #[test]
-    fn do_while_no_false_positive() {
-        // Lines that don't match do-while pattern should be unchanged
-        let src = "if (cond) {\n\tstmt;\n}\n";
-        assert_eq!(fix_do_while_semicolon(src), src);
-        // Lines ending with semicolon that happen to start with }while
-        let src2 = "}while (cond);";
-        assert_eq!(fix_do_while_semicolon(src2), src2);
-    }
-
-    // ─── fix_keyword_spacing tests ────────────────────────────────
-
-    #[test]
-    fn keyword_spacing_for() {
-        // `for(let i = 0` → `for (let i = 0`
-        assert_eq!(fix_keyword_spacing("for(let i = 0; i < 10; i++)"), "for (let i = 0; i < 10; i++)");
-    }
-
-    #[test]
-    fn keyword_spacing_while() {
-        assert_eq!(fix_keyword_spacing("while(cond)"), "while (cond)");
-    }
-
-    #[test]
-    fn keyword_spacing_switch() {
-        assert_eq!(fix_keyword_spacing("switch(val)"), "switch (val)");
-    }
-
-    #[test]
-    fn keyword_spacing_finally() {
-        assert_eq!(fix_keyword_spacing("} finally{"), "} finally {");
-    }
-
-    #[test]
-    fn keyword_spacing_already_correct() {
-        // Already has space — no change
-        assert_eq!(fix_keyword_spacing("for (;;)"), "for (;;)");
-        assert_eq!(fix_keyword_spacing("while (cond)"), "while (cond)");
-        assert_eq!(fix_keyword_spacing("switch (val)"), "switch (val)");
-        assert_eq!(fix_keyword_spacing("} finally {"), "} finally {");
-    }
-
-    #[test]
-    fn keyword_spacing_no_false_positive() {
-        // `for` inside an identifier should NOT trigger
-        assert_eq!(fix_keyword_spacing("before(a)"), "before(a)");
-        assert_eq!(fix_keyword_spacing("transform(a)"), "transform(a)");
-        assert_eq!(fix_keyword_spacing("shortchange(a)"), "shortchange(a)");
-        assert_eq!(fix_keyword_spacing("after(a)"), "after(a)");
-    }
-
-    #[test]
-    fn keyword_spacing_no_false_positive_in_string() {
-        // Keywords inside strings should NOT trigger
-        assert_eq!(fix_keyword_spacing("const s = \"for(x)\";"), "const s = \"for(x)\";");
-        assert_eq!(fix_keyword_spacing("const s = \"while(x)\";"), "const s = \"while(x)\";");
-    }
-
-    #[test]
-    fn keyword_spacing_labeled_for() {
-        // Labeled `loop: for(;;)` — `for` after `: `
-        assert_eq!(fix_keyword_spacing("loop: for(;;)"), "loop: for (;;)");
-    }
-
-    #[test]
-    fn keyword_spacing_mixed() {
-        let input = "for(let i = 0; i < 10; i++){\n\twhile(cond){\n\t\tswitch(val){}\n\t}\n}";
-        let expected = "for (let i = 0; i < 10; i++) {\n\twhile (cond) {\n\t\tswitch (val) {}\n\t}\n}";
-        // Note: fix_keyword_spacing handles for/while/switch spacing
-        // fix_brace_spacing handles ){ spacing
-        let result = fix_keyword_spacing(input);
-        assert_eq!(result, "for (let i = 0; i < 10; i++){\n\twhile (cond){\n\t\tswitch (val){}\n\t}\n}", "fix_keyword_spacing only fixes keyword spacing");
-        let final_result = fix_brace_spacing(&result);
-        assert_eq!(final_result, expected);
-    }
-
-    #[test]
-    fn keyword_spacing_full_pipeline() {
-        // Full pipeline should fix both keyword spacing and ){ spacing
-        // Use valid JS syntax: try/catch/finally
-        let input = "try {\n\tdoSomething();\n} catch(e){\n\t// handle\n} finally{\n\tcleanup();\n}\n";
-        let result = format_code_content(input, "ts", 180, true, 3, false);
-        assert!(result.contains("catch (e) {"), "Should fix catch ( spacing");
-        assert!(result.contains("finally {"), "Should fix finally {{ spacing");
-        // Verify idempotency
-        let pass2 = format_code_content(&result, "ts", 180, true, 3, false);
-        assert_eq!(result, pass2, "Full pipeline should be idempotent");
-    }
-
-    // ─── fix_brace_spacing tests ─────────────────────────────────
-
-    #[test]
-    fn brace_spacing_for_loop() {
-        // `for (;;){` → `for (;;) {`
-        assert_eq!(fix_brace_spacing("for (;;){\n"), "for (;;) {\n");
-    }
-
-    #[test]
-    fn brace_spacing_if() {
-        // `if (cond){` → `if (cond) {`
-        assert_eq!(fix_brace_spacing("if (x > 0){\n"), "if (x > 0) {\n");
-    }
-
-    #[test]
-    fn brace_spacing_while() {
-        assert_eq!(fix_brace_spacing("while (cond){\n"), "while (cond) {\n");
-    }
-
-    #[test]
-    fn brace_spacing_catch() {
-        assert_eq!(fix_brace_spacing("} catch (e){\n"), "} catch (e) {\n");
-    }
-
-    #[test]
-    fn brace_spacing_function() {
-        // Function declarations
-        assert_eq!(fix_brace_spacing("function foo(){\n"), "function foo() {\n");
-    }
-
-    #[test]
-    fn brace_spacing_method() {
-        // Class method
-        assert_eq!(fix_brace_spacing("\tbar(){\n"), "\tbar() {\n");
-    }
-
-    #[test]
-    fn brace_spacing_else_if() {
-        // `} else if (cond){` → `} else if (cond) {`
-        assert_eq!(fix_brace_spacing("} else if (x){\n"), "} else if (x) {\n");
-    }
-
-    #[test]
-    fn brace_spacing_already_correct() {
-        // Already has space — no change
-        let src = "for (;;) {\n";
-        assert_eq!(fix_brace_spacing(src), src);
-    }
-
-    #[test]
-    fn brace_spacing_no_false_positive_in_string() {
-        // `){` inside a string should not be modified
-        let src = "const s = \"text){more\";\n";
-        assert_eq!(fix_brace_spacing(src), src);
-    }
-
-    #[test]
-    fn brace_spacing_mixed_code() {
-        let input = "for (const lang of languages){\n\tawait foo();\n}\n";
-        let expected = "for (const lang of languages) {\n\tawait foo();\n}\n";
-        assert_eq!(fix_brace_spacing(input), expected);
-    }
-
-    #[test]
-    fn brace_spacing_full_pipeline() {
-        // Full pipeline: the ){ should be fixed by the pipeline
-        let input = "for (const lang of languages){\n\tawait foo();\n}\n";
-        let result = format_code_content(input, "ts", 180, true, 3, false);
-        assert!(result.contains("for (const lang of languages) {"), "Should fix ){{ spacing in for loop");
-        // Verify idempotency
-        let pass2 = format_code_content(&result, "ts", 180, true, 3, false);
-        assert_eq!(result, pass2, "Full pipeline should be idempotent");
+    fn collapse_skips_single_line_comment_body() {
+        // A block whose only content is a `//` comment must NOT be collapsed:
+        // collapsing would make the closing `}` part of the comment, breaking JS parsing.
+        let src = "} catch (e) {\n\t// Silent fail\n}\n";
+        let result = collapse_single_stmt_blocks(src, 180, 3);
+        // Must stay multi-line — the comment body cannot be safely collapsed
+        assert_eq!(result, src);
     }
 
     // ─── fix_arrow_spacing tests ────────────────────────────────
