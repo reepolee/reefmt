@@ -1,4 +1,5 @@
 use swc_core::ecma::ast::*;
+use swc_core::common::{Spanned, BytePos};
 use super::Printer;
 
 impl<'a> Printer<'a> {
@@ -16,10 +17,13 @@ impl<'a> Printer<'a> {
                     for (i, e) in a.elems.iter().enumerate() {
                         if i > 0 { self.w(", "); }
                         if let Some(e) = e {
+                            self.emit_leading_comments(e.span().lo());
                             if e.spread.is_some() { self.w("..."); }
                             self.print_expr(&e.expr);
                         }
                     }
+                    // Emit closing-bracket comments so they force expansion when present
+                    self.emit_leading_comments(a.span.hi() - BytePos(1));
                     self.w("]");
                     let added = &self.buf[checkpoint..];
                     if !added.contains('\n') && self.current_line_len() <= self.wrap_width {
@@ -32,14 +36,18 @@ impl<'a> Printer<'a> {
                 self.nl();
                 self.indent();
                 for e in a.elems.iter() {
-                    self.wi();
                     if let Some(e) = e {
+                        self.emit_leading_comments(e.span().lo());
+                        self.wi();
                         if e.spread.is_some() { self.w("..."); }
                         self.print_expr(&e.expr);
+                    } else {
+                        self.wi();
                     }
                     self.w(",");
                     self.nl();
                 }
+                self.emit_leading_comments(a.span.hi() - BytePos(1));
                 self.dedent();
                 self.wi();
                 self.w("]");
@@ -57,6 +65,8 @@ impl<'a> Printer<'a> {
                         if i > 0 { self.w(", "); }
                         self.print_prop_or_spread(p);
                     }
+                    // Emit closing-brace comments so they force expansion when present
+                    self.emit_leading_comments(o.span.hi() - BytePos(1));
                     self.w(" }");
                     let added = &self.buf[checkpoint..];
                     if !added.contains('\n') && self.current_line_len() <= self.wrap_width {
@@ -69,11 +79,17 @@ impl<'a> Printer<'a> {
                 self.nl();
                 self.indent();
                 for p in o.props.iter() {
+                    let lo = match p {
+                        PropOrSpread::Spread(s) => s.span().lo(),
+                        PropOrSpread::Prop(p) => p.span().lo(),
+                    };
+                    self.emit_leading_comments(lo);
                     self.wi();
                     self.print_prop_or_spread(p);
                     self.w(",");
                     self.nl();
                 }
+                self.emit_leading_comments(o.span.hi() - BytePos(1));
                 self.dedent();
                 self.wi();
                 self.w("}");

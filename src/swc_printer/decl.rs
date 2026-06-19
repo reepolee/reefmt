@@ -1,4 +1,5 @@
 use swc_core::ecma::ast::*;
+use swc_core::common::{Spanned, BytePos};
 use super::Printer;
 
 impl<'a> Printer<'a> {
@@ -47,6 +48,7 @@ impl<'a> Printer<'a> {
                 self.nl();
                 self.indent();
                 for m in &i.body.body {
+                    self.emit_leading_comments(m.span().lo());
                     self.wi();
                     self.print_ts_member(m);
                 }
@@ -70,6 +72,7 @@ impl<'a> Printer<'a> {
                 self.indent();
                 for (i, m) in e.members.iter().enumerate() {
                     if i > 0 { self.w(","); self.nl(); }
+                    self.emit_leading_comments(m.span.lo());
                     self.wi();
                     match &m.id {
                         TsEnumMemberId::Ident(id) => self.w(&*id.sym),
@@ -176,8 +179,10 @@ impl<'a> Printer<'a> {
         self.nl();
         self.indent();
         for member in &cls.body {
+            self.emit_leading_comments(member.span().lo());
             self.print_class_member(member);
         }
+        self.emit_leading_comments(cls.span.hi() - BytePos(1));
         self.dedent();
         self.wi();
         self.w("}");
