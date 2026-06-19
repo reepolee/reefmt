@@ -19,6 +19,7 @@ use rayon::prelude::*;
 
 fn default_true() -> bool { true }
 fn default_three() -> usize { 3 }
+fn default_skip_extensions() -> Vec<String> { vec!["min.js".to_string()] }
 
 /// Reefmt configuration — loaded from `reefmt.jsonc` in the project root.
 /// Run `reefmt --init` to create one.
@@ -30,6 +31,10 @@ pub(crate) struct ReeConfig {
     /// Glob patterns for files to skip (e.g. "generator/templates/**/*.ts").
     #[serde(rename = "skipFiles")]
     skip_files: Vec<String>,
+    /// Compound extensions to skip (e.g. "min.js" skips any file ending in ".min.js").
+    /// Checked before `extensions` — matched files are always skipped.
+    #[serde(rename = "skipExtensions", default = "default_skip_extensions")]
+    skip_extensions: Vec<String>,
     /// File extensions to format.
     extensions: Vec<String>,
     /// Whether to skip dot directories (folders starting with '.').
@@ -96,6 +101,18 @@ pub(crate) fn should_skip_file(file_path: &Path, config: &ReeConfig) -> bool {
     })
 }
 
+/// Check whether a file's name ends with any of the `skipExtensions` compound extensions.
+fn should_skip_extension(path: &Path, config: &ReeConfig) -> bool {
+    if config.skip_extensions.is_empty() {
+        return false;
+    }
+    let name = match path.file_name().and_then(|s| s.to_str()) {
+        Some(n) => n,
+        None => return false,
+    };
+    config.skip_extensions.iter().any(|ext| name.ends_with(&format!(".{}", ext)))
+}
+
 /// Check whether a path is inside a directory that should be skipped.
 fn should_skip_path(path: &Path, config: &ReeConfig) -> bool {
     path.components().any(|c| {
@@ -128,7 +145,10 @@ fn collect_source_files(
                 }
                 collect_source_files(&path, files, config)?;
             } else if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-                if config.extensions.iter().any(|e| e == ext) && !should_skip_file(&path, config) {
+                if config.extensions.iter().any(|e| e == ext)
+                    && !should_skip_extension(&path, config)
+                    && !should_skip_file(&path, config)
+                {
                     files.push(path);
                 }
             }
@@ -191,7 +211,10 @@ fn get_git_changed_files(config: &ReeConfig) -> Vec<PathBuf> {
                 }
 
                 if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-                    if config.extensions.iter().any(|e| e == ext) && !should_skip_file(&path, config) {
+                    if config.extensions.iter().any(|e| e == ext)
+                        && !should_skip_extension(&path, config)
+                        && !should_skip_file(&path, config)
+                    {
                         files.push(path);
                     }
                 }
@@ -422,6 +445,7 @@ mod tests {
         let config = ReeConfig {
             skip_dirs: vec![],
             skip_files: vec![],
+            skip_extensions: vec![],
             extensions: vec!["ree".to_string()],
             skip_dot_dirs: false,
             wrap_width: 120,
@@ -475,6 +499,7 @@ mod tests {
         let config = ReeConfig {
             skip_dirs: vec![],
             skip_files: vec!["generator/templates/**/*.ts".to_string()],
+            skip_extensions: vec![],
             extensions: vec!["ts".to_string()],
             skip_dot_dirs: false,
             wrap_width: 120,
