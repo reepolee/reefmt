@@ -43,6 +43,11 @@ impl<'a> Printer<'a> {
     }
 
     pub fn print_module(mut self, module: &Module) -> String {
+        if let Some(shebang) = &module.shebang {
+            self.w("#!");
+            self.w(&**shebang);
+            self.nl();
+        }
         for item in &module.body {
             self.print_module_item(item);
         }
@@ -214,7 +219,12 @@ impl<'a> Printer<'a> {
                     }
                 }
 
-                self.w(" from \"");
+                if has_default || has_ns || !named.is_empty() {
+                    self.w(" from \"");
+                } else {
+                    // Side-effect import: `import "./module"` — no bindings, no `from`
+                    self.w("\"");
+                }
                 self.w(d.src.value.as_str().unwrap());
                 self.w("\";");
             }
@@ -225,7 +235,8 @@ impl<'a> Printer<'a> {
             ModuleDecl::ExportNamed(n) => {
                 self.w("export ");
                 if n.type_only { self.w("type "); }
-                self.w("{ ");
+                if !n.specifiers.is_empty() { self.w("{ "); }
+                else { self.w("{}"); }
                 for (i, s) in n.specifiers.iter().enumerate() {
                     if i > 0 { self.w(", "); }
                     match s {
@@ -234,9 +245,17 @@ impl<'a> Printer<'a> {
                                 ModuleExportName::Ident(id) => self.w(&*id.sym),
                                 ModuleExportName::Str(ss) => self.w(ss.value.as_str().unwrap()),
                             }
+                            if let Some(exported) = &ns.exported {
+                                self.w(" as ");
+                                match exported {
+                                    ModuleExportName::Ident(id) => self.w(&*id.sym),
+                                    ModuleExportName::Str(ss) => self.w(ss.value.as_str().unwrap()),
+                                }
+                            }
                         }
                         ExportSpecifier::Default(ds) => self.w(&*ds.exported.sym),
                         ExportSpecifier::Namespace(ns) => {
+                            self.w("* as ");
                             match &ns.name {
                                 ModuleExportName::Ident(id) => self.w(&*id.sym),
                                 ModuleExportName::Str(ss) => self.w(ss.value.as_str().unwrap()),
@@ -244,7 +263,7 @@ impl<'a> Printer<'a> {
                         }
                     }
                 }
-                self.w(" }");
+                if !n.specifiers.is_empty() { self.w(" }"); }
                 if let Some(src) = &n.src {
                     self.w(" from \"");
                     self.w(src.value.as_str().unwrap());
