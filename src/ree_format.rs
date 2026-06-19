@@ -1,8 +1,8 @@
 use std::fs;
 use std::path::Path;
 
-/// Flatten multiline string concatenation into single lines so biome's
-/// `useTemplate` rule can detect and convert it. Only joins lines where
+/// Flatten multiline string concatenation into single lines before formatting
+/// so the SWC printer can detect and convert it. Only joins lines where
 /// the continuation line starts with `+` (after trimming), which is the
 /// standard pattern for multiline string concatenation in JS.
 pub(crate) fn flatten_concat(src: &str) -> String {
