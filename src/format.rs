@@ -269,11 +269,7 @@ fn postprocess_from_swc(formatted: &str, placeholders: &[Placeholder]) -> String
             if let Some(tag) = extract_tag(trimmed) {
                 if let Some(ph) = by_tag.get(tag.as_str()) {
                     if ph.original.is_empty() {
-                        // Blank line — emit an empty line
-                        // Preserve the indentation context: use the same leading
-                        // whitespace as the SWC-formatted placeholder line had
-                        let indent = &line[..line.len() - trimmed.len()];
-                        result.push_str(indent);
+                        // Blank line — emit a truly empty line (no indentation)
                         result.push('\n');
                         continue;
                     }
@@ -615,7 +611,11 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, max_members: u
         let trimmed = line.trim();
 
         // ---- Single-statement block: `if (cond) {` stmt `}` ----
-        if i + 2 < lines.len() && is_block_opener(trimmed) {
+        // Skip catch/finally continuation clauses — collapsing `} catch (err) {`
+        // or `} finally {` merges them onto one line with the preceding `}`,
+        // producing unreadable one-liners. `} else {` / `} else if {` are fine.
+        let is_catch_or_finally = trimmed.starts_with("} catch") || trimmed.starts_with("} finally");
+        if i + 2 < lines.len() && is_block_opener(trimmed) && !is_catch_or_finally {
             let stmt_trimmed = lines[i + 1].trim();
             let close_trimmed = lines[i + 2].trim();
 
@@ -1636,6 +1636,19 @@ pub(crate) fn format_code_file(path: &Path, mode: Mode, wrap_width: usize, colla
     let normalized = content.replace("\r\n", "\n");
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
     let write_content = format_code_content(&normalized, ext, wrap_width, collapse_blocks, max_members, remove_unused);
+
+    // AST safety check: abort if semantics changed (only for TS/JS files)
+    if matches!(ext, "ts" | "js") {
+        if let Err(msg) = crate::ast_check::verify_semantics_preserved(&normalized, &write_content) {
+            eprintln!(
+                "\n\x1b[1;31mFATAL: reefmt would corrupt {}:\x1b[0m {}",
+                path.display(),
+                msg
+            );
+            eprintln!("File NOT written. Please report this as a bug.");
+            return false;
+        }
+    }
 
     if write_content == normalized {
         return false;

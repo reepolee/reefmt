@@ -1,6 +1,6 @@
 use swc_core::ecma::ast::*;
-use swc_core::common::Spanned;
-use swc_core::common::comments::Comments;
+use swc_core::common::{Spanned, BytePos};
+use swc_core::common::comments::{Comments, CommentKind};
 use super::Printer;
 
 impl<'a> Printer<'a> {
@@ -99,11 +99,14 @@ impl<'a> Printer<'a> {
                         self.w(")");
                     }
                     self.w(" ");
-                    self.print_block(&catch.body);
+                    // Always expand catch/finally bodies: collapsing them merges
+                    // the block with the following `finally`/`catch` keyword on
+                    // the same line, producing unreadable one-liners.
+                    self.print_block_expanded(&catch.body);
                 }
                 if let Some(finalizer) = &t.finalizer {
                     self.w(" finally ");
-                    self.print_block(finalizer);
+                    self.print_block_expanded(finalizer);
                 }
             }
             Stmt::Switch(s) => {
@@ -201,10 +204,30 @@ impl<'a> Printer<'a> {
                 self.buf.truncate(checkpoint);
             }
         }
+        self.print_block_expanded(block);
+    }
 
-        // Expanded form
+    /// Print a block always in expanded form — skips the single-statement
+    /// collapse check. Used for catch/finally bodies so they always open on
+    /// their own line and are never merged with following `finally`/`catch`.
+    pub(super) fn print_block_expanded(&mut self, block: &BlockStmt) {
         if block.stmts.is_empty() {
-            self.w("{}");
+            // Check for comments before the closing brace (attached as leading
+            // comments on the `}` token position, which is hi() - 1).
+            let closing_pos = block.span.hi() - BytePos(1);
+            let has_inner = self.comments.get_leading(closing_pos)
+                .map_or(false, |c| c.iter().any(|c| c.kind == CommentKind::Line));
+            if has_inner {
+                self.w("{");
+                self.nl();
+                self.indent();
+                self.emit_leading_comments(closing_pos);
+                self.dedent();
+                self.wi();
+                self.w("}");
+            } else {
+                self.w("{}");
+            }
             return;
         }
         self.w("{");

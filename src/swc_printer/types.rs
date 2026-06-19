@@ -125,8 +125,8 @@ impl<'a> Printer<'a> {
                         self.print_ts_member_inline(m);
                     }
                     self.w(" }");
-                    // Check if inline fits; rollback to expanded if not
-                    if self.current_line_len() <= self.wrap_width {
+                    let added = &self.buf[checkpoint..];
+                    if !added.contains('\n') && self.current_line_len() <= self.wrap_width {
                         break 'ty;
                     }
                     self.buf.truncate(checkpoint);
@@ -161,6 +161,25 @@ impl<'a> Printer<'a> {
             TsType::TsThisType(_) => self.w("this"),
             TsType::TsOptionalType(o) => { self.print_ts_type(&o.type_ann); self.w("?"); }
             TsType::TsRestType(r) => { self.w("..."); self.print_ts_type(&r.type_ann); }
+            TsType::TsTypeQuery(q) => {
+                self.w("typeof ");
+                match &q.expr_name {
+                    TsTypeQueryExpr::TsEntityName(name) => self.print_ts_entity_name(name),
+                    TsTypeQueryExpr::Import(i) => {
+                        self.w("import(\"");
+                        self.w(i.arg.value.as_str().unwrap());
+                        self.w("\")");
+                    }
+                }
+                if let Some(type_args) = &q.type_args {
+                    self.w("<");
+                    for (j, a) in type_args.params.iter().enumerate() {
+                        if j > 0 { self.w(", "); }
+                        self.print_ts_type(a);
+                    }
+                    self.w(">");
+                }
+            }
             _ => self.w("<type>"),
         }
     }
