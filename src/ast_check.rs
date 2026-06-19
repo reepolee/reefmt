@@ -759,3 +759,42 @@ fn walk_ts_fn_param(param: &TsFnParam, t: &mut Vec<String>) {
         TsFnParam::Object(o) => { for p in &o.props { walk_object_pat_prop(p, t); } }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verify_accepts_identical_tokens() {
+        let src = "const x = 1;\n";
+        assert!(verify_semantics_preserved(src, src).is_ok());
+    }
+
+    #[test]
+    fn verify_accepts_whitespace_only_change() {
+        let original  = "const x   =   1;\n";
+        let formatted = "const x = 1;\n";
+        assert!(verify_semantics_preserved(original, formatted).is_ok());
+    }
+
+    #[test]
+    fn verify_detects_changed_identifier() {
+        let original  = "const x = 1;\n";
+        let corrupted = "const y = 1;\n";
+        assert!(verify_semantics_preserved(original, corrupted).is_err());
+    }
+
+    #[test]
+    fn verify_detects_dropped_token() {
+        let original  = "const x = a + b;\n";
+        let corrupted = "const x = a;\n";
+        assert!(verify_semantics_preserved(original, corrupted).is_err());
+    }
+
+    #[test]
+    fn verify_detects_added_token() {
+        let original  = "const x = a;\n";
+        let corrupted = "const x = a + b;\n";
+        assert!(verify_semantics_preserved(original, corrupted).is_err());
+    }
+}
