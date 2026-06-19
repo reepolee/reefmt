@@ -268,25 +268,39 @@ fn postprocess_from_swc(formatted: &str, placeholders: &[Placeholder]) -> String
     }
 
     // ---- Pass 1: Restore blank lines ----
-    // Blank lines are single `// __REEFMT_BLANK_N__` lines → replace with `\n`
+    // Blank lines are `// __REEFMT_BLANK_N__` placeholders → replace with empty lines.
+    // SWC sometimes merges these inline with the preceding statement as a trailing comment
+    // (e.g. `} // __REEFMT_BLANK_23__`); the loop below handles both the standalone-line
+    // and inline cases by splitting on each occurrence of the marker.
     let mut result = String::with_capacity(formatted.len());
+    const BLANK_MARKER: &str = "// __REEFMT_BLANK_";
 
     for line in formatted.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("// __REEFMT_BLANK_") {
-            // Extract the tag
-            if let Some(tag) = extract_tag(trimmed) {
-                if let Some(ph) = by_tag.get(tag.as_str()) {
-                    if ph.original.is_empty() {
-                        // Blank line — emit a truly empty line (no indentation)
-                        result.push('\n');
-                        continue;
-                    }
-                }
-            }
+        if !line.contains(BLANK_MARKER) {
+            result.push_str(line);
+            result.push('\n');
+            continue;
         }
-        result.push_str(line);
-        result.push('\n');
+        // Split the line on blank-line placeholders; each placeholder becomes an empty line.
+        let mut remaining = line.trim_end();
+        while let Some(pos) = remaining.find(BLANK_MARKER) {
+            let before = remaining[..pos].trim_end();
+            if !before.is_empty() {
+                result.push_str(before);
+                result.push('\n');
+            }
+            // Skip past `// __REEFMT_BLANK_N__` (find closing `__` after the digits)
+            let after_prefix = &remaining[pos + BLANK_MARKER.len()..];
+            let tag_end = after_prefix.find("__")
+                .map(|p| pos + BLANK_MARKER.len() + p + 2)
+                .unwrap_or(remaining.len());
+            remaining = remaining[tag_end..].trim_start();
+            result.push('\n'); // blank line in place of the placeholder
+        }
+        if !remaining.is_empty() {
+            result.push_str(remaining);
+            result.push('\n');
+        }
     }
 
     // ---- Pass 2: Restore block comments ----
@@ -1653,11 +1667,9 @@ pub(crate) fn format_code_content(
                 &preprocessed, "\t", wrap_width, collapse_blocks, max_members, remove_unused,
             );
             log_stage!("after format_js_with_printer", custom_formatted);
-            let restored = if placeholders.is_empty() {
-                custom_formatted
-            } else {
-                postprocess_from_swc(&custom_formatted, &placeholders)
-            };
+            // Always run postprocess so it can also clean up stray __REEFMT_BLANK_ tokens
+            // that leaked into files from a previous buggy reefmt run.
+            let restored = postprocess_from_swc(&custom_formatted, &placeholders);
             log_stage!("after postprocess_from_swc", restored);
             // Text-based post-passes: the printer emits function signatures and
             // method chains on a single line; re-apply the line-wrapping passes
@@ -1918,6 +1930,47 @@ mod tests {
         let src = "export interface A {\n\tx: number;\n}\n\nexport interface B {\n\ty: number;\n}\n";
         let result = format_code_content(src, "ts", 180, true, 3, false);
         assert!(result.contains("}\n\nexport"), "blank line between interfaces should be preserved");
+    }
+
+    #[test]
+    fn inline_blank_placeholder_restored() {
+        // Simulate the case where SWC merges a blank-line placeholder inline as a
+        // trailing comment: `} // __REEFMT_BLANK_23__`
+        // postprocess_from_swc must split this into the code line + a blank line.
+        use super::postprocess_from_swc;
+        use super::Placeholder;
+        let ph = Placeholder {
+            tag: "__REEFMT_BLANK_23__".to_string(),
+            original: String::new(),
+            original_indent: String::new(),
+        };
+        let formatted = "export function foo() {\n} // __REEFMT_BLANK_23__\nexport function bar() {}\n";
+        let result = postprocess_from_swc(formatted, &[ph]);
+        assert_eq!(
+            result,
+            "export function foo() {\n}\n\nexport function bar() {}\n",
+            "inline blank placeholder should become a blank line after the code"
+        );
+    }
+
+    #[test]
+    fn inline_blank_placeholder_with_trailing_comment() {
+        // Simulate: `import { db } from "$config/db"; // __REEFMT_BLANK_0__ // Add custom queries here.`
+        use super::postprocess_from_swc;
+        use super::Placeholder;
+        let ph = Placeholder {
+            tag: "__REEFMT_BLANK_0__".to_string(),
+            original: String::new(),
+            original_indent: String::new(),
+        };
+        let formatted =
+            "import { db } from \"$config/db\"; // __REEFMT_BLANK_0__ // Add custom queries here.\n";
+        let result = postprocess_from_swc(formatted, &[ph]);
+        assert_eq!(
+            result,
+            "import { db } from \"$config/db\";\n\n// Add custom queries here.\n",
+            "inline blank placeholder should split the line and restore the trailing comment"
+        );
     }
 
     #[test]
