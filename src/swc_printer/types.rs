@@ -159,6 +159,34 @@ impl<'a> Printer<'a> {
                 }
             }
             TsType::TsThisType(_) => self.w("this"),
+            TsType::TsTypePredicate(p) => {
+                if p.asserts { self.w("asserts "); }
+                match &p.param_name {
+                    TsThisTypeOrIdent::TsThisType(_) => self.w("this"),
+                    TsThisTypeOrIdent::Ident(id) => self.w(&*id.sym),
+                }
+                if let Some(ann) = &p.type_ann {
+                    self.w(" is ");
+                    self.print_ts_type(&ann.type_ann);
+                }
+            }
+            TsType::TsImportType(t) => {
+                self.w("import(\"");
+                self.w(t.arg.value.as_str().unwrap());
+                self.w("\")");
+                if let Some(qualifier) = &t.qualifier {
+                    self.w(".");
+                    self.print_ts_entity_name(qualifier);
+                }
+                if let Some(type_args) = &t.type_args {
+                    self.w("<");
+                    for (i, a) in type_args.params.iter().enumerate() {
+                        if i > 0 { self.w(", "); }
+                        self.print_ts_type(a);
+                    }
+                    self.w(">");
+                }
+            }
             TsType::TsOptionalType(o) => { self.print_ts_type(&o.type_ann); self.w("?"); }
             TsType::TsRestType(r) => { self.w("..."); self.print_ts_type(&r.type_ann); }
             TsType::TsTypeQuery(q) => {

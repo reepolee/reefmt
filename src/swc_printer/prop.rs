@@ -12,13 +12,10 @@ impl<'a> Printer<'a> {
             }
             Prop::Method(m) => {
                 if m.function.is_async { self.w("async "); }
+                if m.function.is_generator { self.w("*"); }
                 self.print_prop_name(&m.key);
-                self.w("(");
-                for (i, p) in m.function.params.iter().enumerate() {
-                    if i > 0 { self.w(", "); }
-                    self.print_pat(&p.pat);
-                }
-                self.w(") ");
+                self.print_fn_sig(&m.function);
+                self.w(" ");
                 if let Some(body) = &m.function.body { self.print_block(body); }
             }
             Prop::Getter(g) => {

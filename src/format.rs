@@ -14,6 +14,9 @@ pub(crate) enum Mode { Write, Check, Diff }
 struct Placeholder {
     tag: String,
     original: String,
+    /// Leading whitespace on the line where `/*` appears (tabs/spaces before `/*`).
+    /// Used by `reindent_block_comment` to strip the original structural indentation.
+    original_indent: String,
 }
 
 /// Pre-process source code before SWC formatting to preserve content that SWC
@@ -165,6 +168,10 @@ fn extract_block_comments(code: &str, placeholders: &mut Vec<Placeholder>, id: &
             let comment_text = &code[start..i];
 
             if is_block_comment_own_line(code, start, i) {
+                // Capture the whitespace before `/*` on the opening line.
+                let line_start = code[..start].rfind('\n').map(|p| p + 1).unwrap_or(0);
+                let original_indent = code[line_start..start].to_string();
+
                 let tag = format!("__REEFMT_BLOCK_{}__", *id);
                 *id += 1;
                 let line_count = comment_text.lines().count();
@@ -174,6 +181,7 @@ fn extract_block_comments(code: &str, placeholders: &mut Vec<Placeholder>, id: &
                 placeholders.push(Placeholder {
                     tag,
                     original: comment_text.to_string(),
+                    original_indent,
                 });
                 // Placeholder lines already end with \n, so skip
                 // the trailing newline after */ to avoid double newlines.
@@ -235,6 +243,7 @@ fn extract_blank_lines(code: &str, placeholders: &mut Vec<Placeholder>, id: &mut
             placeholders.push(Placeholder {
                 tag,
                 original: String::new(), // blank lines restore to empty
+                original_indent: String::new(),
             });
         } else {
             out.push_str(line);
@@ -302,10 +311,10 @@ fn postprocess_from_swc(formatted: &str, placeholders: &[Placeholder]) -> String
 
                     if all_match && !ph.original.is_empty() {
                         // Capture the indentation from the first placeholder line
-                        let indent = &lines[i][..lines[i].len() - lines[i].trim().len()];
+                        let new_indent = &lines[i][..lines[i].len() - lines[i].trim().len()];
 
-                                    // Re-indent the original block comment to match
-                        let reindented = reindent_block_comment(&ph.original, indent);
+                        // Re-indent the original block comment to match
+                        let reindented = reindent_block_comment(&ph.original, &ph.original_indent, new_indent);
                         final_result.push_str(&reindented);
                         final_result.push('\n');
                         i += line_count;
@@ -357,42 +366,37 @@ fn extract_tag(trimmed: &str) -> Option<String> {
 /// where content lines already have some indentation (e.g. `\t\t`).
 /// This function detects the common indentation of content lines,
 /// strips it, and prepends `new_indent`.
-fn reindent_block_comment(comment: &str, new_indent: &str) -> String {
+/// Re-indent a block comment.
+/// `original_indent` is the whitespace that preceded `/*` in the original source
+/// (i.e. what sat between the start of the line and the `/` of `/*`).
+/// `new_indent` is the whitespace preceding the `// __REEFMT_BLOCK__` placeholder
+/// in the printer's output (the desired indentation level after formatting).
+///
+/// `ph.original` always starts at `/*` (no leading whitespace on line 0).
+/// Content/closing lines (idx ≥ 1) start with `original_indent` in the source;
+/// strip that prefix and prepend `new_indent` to each.
+fn reindent_block_comment(comment: &str, original_indent: &str, new_indent: &str) -> String {
     let lines: Vec<&str> = comment.lines().collect();
     if lines.is_empty() {
         return comment.to_string();
     }
 
-    // Detect common indentation from content lines (skip the opening `/**`)
-    let content_base = if lines.len() > 1 {
-        // Find minimum leading whitespace across all content lines
-        lines[1..].iter()
-            .map(|l| l.len() - l.trim_start().len())
-            .filter(|&n| n > 0)
-            .min()
-            .unwrap_or(0)
-    } else {
-        0
-    };
+    let base = original_indent.len();
 
     let mut out = String::with_capacity(comment.len());
     for (idx, line) in lines.iter().enumerate() {
         if idx == 0 {
-            // First line (`/**`): prepend new_indent, keep the rest as-is
+            // First line begins at `/*` — no leading whitespace in ph.original.
             out.push_str(new_indent);
             out.push_str(line);
         } else {
-            // Content or closing line: strip the common base indentation
-            // and prepend new_indent
-            let trimmed = line.trim_start();
-            if trimmed.is_empty() {
-                // Whitespace-only line — just emit newline later
-            } else if content_base > 0 && line.len() >= content_base {
-                out.push_str(new_indent);
-                out.push_str(&line[content_base..]);
+            // Content/closing lines carry original_indent as prefix; strip it.
+            let stripped = if line.len() >= base { &line[base..] } else { line.trim_start() };
+            if stripped.trim().is_empty() {
+                // Whitespace-only line — emit blank (no trailing spaces)
             } else {
                 out.push_str(new_indent);
-                out.push_str(trimmed);
+                out.push_str(stripped);
             }
         }
         if idx < lines.len() - 1 {
@@ -477,8 +481,22 @@ fn collapse_inline_type_literals_pass(code: &str, max_width: usize, max_members:
         let trimmed = line.trim();
         let is_comment = trimmed.starts_with("//") || trimmed.starts_with("/*");
 
-        // Look for a line ending with `{` preceded by `:` (e.g. `	keys: {`)
-        if trimmed.ends_with('{') && trimmed.contains(':') && !is_comment {
+        // Look for a line ending with `{` where the character directly before `{`
+        // (ignoring trailing whitespace) is one that indicates a type position:
+        //   `:` — property or mapped type: `key: {`
+        //   `<` — generic argument: `Promise<{`
+        //   `,` — next generic argument: `Map<K, {`
+        //   `=` — type alias: `type Foo = {`
+        //   `|` / `&` — union/intersection type member
+        // This excludes function/class/control-flow bodies where a type KEYWORD
+        // (identifier) sits between the colon and the opening brace —
+        // e.g. `function foo(): string {` → before_brace ends with `g`, excluded.
+        let before_brace = trimmed.strip_suffix('{').unwrap_or(trimmed).trim_end();
+        let is_type_opener = matches!(
+            before_brace.chars().next_back(),
+            Some(':' | '<' | ',' | '=' | '|' | '&')
+        );
+        if trimmed.ends_with('{') && is_type_opener && !is_comment {
             // Track brace depth to handle nested type literals correctly
             let mut depth: u32 = 1;
             let mut closing_line = None;
@@ -587,6 +605,18 @@ fn is_simple_ident(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$' || c == '.')
 }
 
+/// Returns true if `s` contains an odd number of unescaped backticks, meaning
+/// it opens a template literal that continues on the next line.
+fn has_unclosed_template_literal(s: &str) -> bool {
+    let mut open = false;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' { chars.next(); continue; }
+        if c == '`' { open = !open; }
+    }
+    open
+}
+
 /// Check if a trimmed line is a block opener like `if (cond) {` or `for (;;) {`
 fn is_block_opener(trimmed: &str) -> bool {
     // Must end with `{` and the character before must be `)`
@@ -605,10 +635,22 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, max_members: u
     let lines: Vec<&str> = code.lines().collect();
     let mut i = 0;
     let mut modified = false;
+    let mut in_template_literal = false;
 
     while i < lines.len() {
         let line = lines[i];
         let trimmed = line.trim();
+
+        // Inside a multi-line template literal: copy verbatim, track state.
+        if in_template_literal {
+            out.push_str(line);
+            out.push('\n');
+            if has_unclosed_template_literal(line) {
+                in_template_literal = false;
+            }
+            i += 1;
+            continue;
+        }
 
         // ---- Single-statement block: `if (cond) {` stmt `}` ----
         // Skip catch/finally continuation clauses — collapsing `} catch (err) {`
@@ -622,6 +664,7 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, max_members: u
             if !stmt_trimmed.is_empty()
                 && close_trimmed == "}"
                 && !stmt_trimmed.starts_with("//")
+                && !has_unclosed_template_literal(stmt_trimmed)
             {
                 let prefix = &line[..line.len() - trimmed.len()];
                 let before_brace = trimmed.trim_end();
@@ -810,6 +853,9 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, max_members: u
 
         out.push_str(line);
         out.push('\n');
+        if has_unclosed_template_literal(line) {
+            in_template_literal = true;
+        }
         i += 1;
     }
 
@@ -1578,6 +1624,7 @@ fn wrap_long_method_chains(code: &str, max_width: usize) -> String {
 }
 
 /// Format standalone code content (TS/JS/CSS) using native SWC, no subprocess needed.
+/// Set `REEFMT_DEBUG=1` to log each pipeline stage to stderr.
 pub(crate) fn format_code_content(
     content: &str,
     ext: &str,
@@ -1587,28 +1634,45 @@ pub(crate) fn format_code_content(
     remove_unused: bool,
 ) -> String {
     let normalized = content.replace("\r\n", "\n");
+    let debug = std::env::var("REEFMT_DEBUG").is_ok();
+
+    macro_rules! log_stage {
+        ($label:expr, $value:expr) => {
+            if debug {
+                eprintln!("\n=== [reefmt debug] {} ===\n{}", $label, $value);
+            }
+        };
+    }
 
     let formatted = match ext {
         "ts" | "js" => {
             let flattened = flatten_concat(&normalized);
             let (preprocessed, placeholders) = preprocess_for_swc(&flattened);
+            log_stage!("after preprocess_for_swc", preprocessed);
             let custom_formatted = crate::swc_printer::format_js_with_printer(
                 &preprocessed, "\t", wrap_width, collapse_blocks, max_members, remove_unused,
             );
+            log_stage!("after format_js_with_printer", custom_formatted);
             let restored = if placeholders.is_empty() {
                 custom_formatted
             } else {
                 postprocess_from_swc(&custom_formatted, &placeholders)
             };
+            log_stage!("after postprocess_from_swc", restored);
             // Text-based post-passes: the printer emits function signatures and
             // method chains on a single line; re-apply the line-wrapping passes
             // (and type-literal / single-statement collapsing) that the old
             // codegen path used, so long lines still wrap.
             let collapsed = collapse_inline_type_literals(&restored, wrap_width, max_members);
+            log_stage!("after collapse_inline_type_literals", collapsed);
             let params_split = wrap_long_function_params(&collapsed, wrap_width);
+            log_stage!("after wrap_long_function_params", params_split);
             let chains_split = wrap_long_method_chains(&params_split, wrap_width);
+            log_stage!("after wrap_long_method_chains", chains_split);
             if collapse_blocks {
-                collapse_single_stmt_blocks(&chains_split, wrap_width, max_members)
+                let final_result = collapse_single_stmt_blocks(&chains_split, wrap_width, max_members);
+                log_stage!("after collapse_single_stmt_blocks", final_result);
+                final_result
             } else {
                 chains_split
             }
@@ -1646,6 +1710,11 @@ pub(crate) fn format_code_file(path: &Path, mode: Mode, wrap_width: usize, colla
                 msg
             );
             eprintln!("File NOT written. Please report this as a bug.");
+            if std::env::var("REEFMT_DEBUG").is_ok() {
+                eprintln!("\n=== [reefmt debug] formatted output ===\n{}", write_content);
+                eprintln!("\n=== [reefmt debug] diff ===");
+                print_diff(path, &normalized, &write_content);
+            }
             return false;
         }
     }

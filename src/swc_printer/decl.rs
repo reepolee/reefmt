@@ -17,6 +17,7 @@ impl<'a> Printer<'a> {
                 }
             }
             Decl::Var(v) => {
+                if v.declare { self.w("declare "); }
                 match v.kind {
                     VarDeclKind::Var => self.w("var "),
                     VarDeclKind::Let => self.w("let "),
@@ -35,6 +36,7 @@ impl<'a> Printer<'a> {
                 self.print_class(&c.class);
             }
             Decl::TsInterface(i) => {
+                if i.declare { self.w("declare "); }
                 self.w("interface ");
                 self.w(&*i.id.sym);
                 if let Some(ext) = i.extends.first() {
@@ -53,6 +55,7 @@ impl<'a> Printer<'a> {
                 self.w("}");
             }
             Decl::TsTypeAlias(a) => {
+                if a.declare { self.w("declare "); }
                 self.w("type ");
                 self.w(&*a.id.sym);
                 self.w(" = ");
@@ -83,9 +86,14 @@ impl<'a> Printer<'a> {
                 self.w("}");
             }
             Decl::TsModule(m) => {
-                match &m.id {
-                    TsModuleName::Ident(id) => { self.w("module "); self.w(&*id.sym); }
-                    TsModuleName::Str(s) => { self.w("module \""); self.w(s.value.as_str().unwrap()); self.w("\""); }
+                if m.declare { self.w("declare "); }
+                if m.global {
+                    self.w("global");
+                } else {
+                    match &m.id {
+                        TsModuleName::Ident(id) => { self.w("namespace "); self.w(&*id.sym); }
+                        TsModuleName::Str(s) => { self.w("module \""); self.w(s.value.as_str().unwrap()); self.w("\""); }
+                    }
                 }
                 self.w(" {");
                 self.nl();
