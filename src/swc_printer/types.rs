@@ -208,7 +208,6 @@ impl<'a> Printer<'a> {
                     self.w(">");
                 }
             }
-            _ => self.w("<type>"),
         }
     }
 
