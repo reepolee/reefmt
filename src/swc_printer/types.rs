@@ -246,6 +246,7 @@ impl<'a> Printer<'a> {
         match param {
             TsFnParam::Ident(i) => {
                 self.w(&*i.id.sym);
+                if i.optional { self.w("?"); }
                 if let Some(ty) = &i.type_ann {
                     self.w(": ");
                     self.print_ts_type(&ty.type_ann);
@@ -258,10 +259,19 @@ impl<'a> Printer<'a> {
                     if let Some(e) = e { self.print_pat(e); }
                 }
                 self.w("]");
+                if a.optional { self.w("?"); }
+                if let Some(ty) = &a.type_ann {
+                    self.w(": ");
+                    self.print_ts_type(&ty.type_ann);
+                }
             }
             TsFnParam::Rest(r) => {
                 self.w("...");
                 self.print_pat(&*r.arg);
+                if let Some(ty) = &r.type_ann {
+                    self.w(": ");
+                    self.print_ts_type(&ty.type_ann);
+                }
             }
             TsFnParam::Object(o) => {
                 self.w("{ ");
@@ -270,6 +280,11 @@ impl<'a> Printer<'a> {
                     self.print_object_pat_prop(p);
                 }
                 self.w(" }");
+                if o.optional { self.w("?"); }
+                if let Some(ty) = &o.type_ann {
+                    self.w(": ");
+                    self.print_ts_type(&ty.type_ann);
+                }
             }
         }
     }

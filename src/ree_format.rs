@@ -106,14 +106,14 @@ fn format_script_content(content: &str, wrap_width: usize, collapse_blocks: bool
     let leading_nl = count_leading_newlines(content);
     let trailing_nl = count_trailing_newlines(content);
     let trimmed = content.trim();
-    
+
     // Detect base_tabs from raw (untrimmed) content lines, not from the
     // already-trimmed string. When block collapsing reduces multi-line
     // script content to a single line, the trimmed version loses all
     // indentation info, causing a cascading idempotency failure on the
     // next pass. The raw content still preserves the leading tabs.
     let base_tabs = detect_min_leading_tabs(content);
-    
+
     // Strip base_tabs from every line to get clean JS for SWC
     let bare_js: String = trimmed.lines()
         .map(|line| {
@@ -130,20 +130,20 @@ fn format_script_content(content: &str, wrap_width: usize, collapse_blocks: bool
         })
         .collect::<Vec<_>>()
         .join("\n");
-    
+
     // Protect Ree expressions
     let mut placeholders: Vec<String> = Vec::new();
     let protected = protect_ree_expressions(&bare_js, &mut placeholders);
-    
+
     // Format with SWC
     let formatted = crate::swc_format::format_js_with_indent(&protected, "\t", remove_unused);
-    
+
     // Fix arrow function spacing: `()=>{` → `() => {`
     let formatted = crate::format::fix_arrow_spacing(&formatted);
-    
+
     // Restore Ree expressions
     let restored = restore_ree_expressions(&formatted, &placeholders);
-    
+
     // Re-indent each line to match AST nesting level
     if restored.trim().is_empty() {
         return String::new();
@@ -162,7 +162,7 @@ fn format_script_content(content: &str, wrap_width: usize, collapse_blocks: bool
         out.push('\n');
     }
     if out.ends_with('\n') { out.pop(); }
-    
+
     // Optionally collapse single-statement blocks onto one line
     let mut out = if collapse_blocks {
         crate::format::collapse_single_stmt_blocks(&out, wrap_width, max_members)

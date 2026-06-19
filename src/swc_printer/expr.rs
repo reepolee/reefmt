@@ -15,7 +15,10 @@ impl<'a> Printer<'a> {
                     self.w("[");
                     for (i, e) in a.elems.iter().enumerate() {
                         if i > 0 { self.w(", "); }
-                        if let Some(e) = e { self.print_expr(&e.expr); }
+                        if let Some(e) = e {
+                            if e.spread.is_some() { self.w("..."); }
+                            self.print_expr(&e.expr);
+                        }
                     }
                     self.w("]");
                     if self.current_line_len() <= self.wrap_width {
@@ -29,7 +32,10 @@ impl<'a> Printer<'a> {
                 self.indent();
                 for (i, e) in a.elems.iter().enumerate() {
                     self.wi();
-                    if let Some(e) = e { self.print_expr(&e.expr); }
+                    if let Some(e) = e {
+                        if e.spread.is_some() { self.w("..."); }
+                        self.print_expr(&e.expr);
+                    }
                     if i < a.elems.len() - 1 {
                         self.w(",");
                     }
@@ -40,6 +46,10 @@ impl<'a> Printer<'a> {
                 self.w("]");
             }
             Expr::Object(o) => 'obj: {
+                if o.props.is_empty() {
+                    self.w("{}");
+                    break 'obj;
+                }
                 // Object literals: try inline, expand if too many members or too wide
                 if self.collapse_blocks && o.props.len() <= self.max_members {
                     let checkpoint = self.buf.len();
@@ -76,6 +86,7 @@ impl<'a> Printer<'a> {
                 self.w("(");
                 for (i, a) in c.args.iter().enumerate() {
                     if i > 0 { self.w(", "); }
+                    if a.spread.is_some() { self.w("..."); }
                     self.print_expr(&a.expr);
                 }
                 self.w(")");
@@ -87,6 +98,7 @@ impl<'a> Printer<'a> {
                 if let Some(args) = &n.args {
                     for (i, a) in args.iter().enumerate() {
                         if i > 0 { self.w(", "); }
+                        if a.spread.is_some() { self.w("..."); }
                         self.print_expr(&a.expr);
                     }
                 }
@@ -245,9 +257,10 @@ impl<'a> Printer<'a> {
             }
             Expr::OptChain(o) => self.print_opt_chain_base(o),
             Expr::Class(c) => {
+                if c.class.is_abstract { self.w("abstract "); }
                 self.w("class");
                 if let Some(id) = &c.ident { self.w(" "); self.w(&*id.sym); }
-                self.w(" {}");
+                self.print_class(&c.class);
             }
             Expr::PrivateName(p) => { self.w("#"); self.w(&*p.name); }
             Expr::TaggedTpl(t) => {
@@ -332,18 +345,27 @@ impl<'a> Printer<'a> {
         match opt.base.as_ref() {
             OptChainBase::Member(m) => {
                 self.print_expr(&m.obj);
-                self.w("?.");
                 match &m.prop {
-                    MemberProp::Ident(id) => self.w(&*id.sym),
-                    MemberProp::PrivateName(p) => { self.w("#"); self.w(&*p.name); }
-                    MemberProp::Computed(c) => { self.w("["); self.print_expr(&c.expr); self.w("]"); }
+                    MemberProp::Ident(id) => {
+                        if opt.optional { self.w("?."); } else { self.w("."); }
+                        self.w(&*id.sym);
+                    }
+                    MemberProp::PrivateName(p) => {
+                        if opt.optional { self.w("?."); } else { self.w("."); }
+                        self.w("#"); self.w(&*p.name);
+                    }
+                    MemberProp::Computed(c) => {
+                        if opt.optional { self.w("?.["); } else { self.w("["); }
+                        self.print_expr(&c.expr); self.w("]");
+                    }
                 }
             }
             OptChainBase::Call(c) => {
                 self.print_expr(&c.callee);
-                self.w("?.(");
+                if opt.optional { self.w("?.("); } else { self.w("("); }
                 for (i, a) in c.args.iter().enumerate() {
                     if i > 0 { self.w(", "); }
+                    if a.spread.is_some() { self.w("..."); }
                     self.print_expr(&a.expr);
                 }
                 self.w(")");

@@ -1,14 +1,26 @@
 use swc_core::ecma::ast::*;
 use swc_core::common::Spanned;
+use swc_core::common::comments::Comments;
 use super::Printer;
 
 impl<'a> Printer<'a> {
+    /// Print a statement in inline/sub-statement position (e.g. `if`/`while`/`for`
+    /// body). Emits leading comments but no leading indentation and no trailing
+    /// newline — the caller controls separators.
     pub(super) fn print_stmt(&mut self, stmt: &Stmt) {
         self.emit_leading_comments(stmt.span().lo());
+        self.print_stmt_body(stmt);
+    }
+
+    /// Print a statement's body only: no leading comments, no indentation, no
+    /// trailing newline. Block-position callers (`print_block`, module items,
+    /// switch cases) handle leading comments + `wi()` + trailing newline via
+    /// `print_stmt_in_block`.
+    pub(super) fn print_stmt_body(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Block(b) => { self.print_block(b); }
-            Stmt::Empty(_) => { self.w(";"); self.nl(); }
-            Stmt::Debugger(_) => { self.w("debugger;"); self.nl(); }
+            Stmt::Empty(_) => { self.w(";"); }
+            Stmt::Debugger(_) => { self.w("debugger;"); }
             Stmt::With(w) => {
                 self.w("with (");
                 self.print_expr(&w.obj);
@@ -19,7 +31,6 @@ impl<'a> Printer<'a> {
                 self.w("return");
                 if let Some(arg) = &r.arg { self.w(" "); self.print_expr(arg); }
                 self.w(";");
-                self.nl();
             }
             Stmt::If(i) => {
                 self.w("if (");
@@ -43,7 +54,6 @@ impl<'a> Printer<'a> {
                 self.w(" while (");
                 self.print_expr(&d.test);
                 self.w(");");
-                self.nl();
             }
             Stmt::For(f) => {
                 self.w("for (");
@@ -82,9 +92,13 @@ impl<'a> Printer<'a> {
                 self.w("try ");
                 self.print_block(&t.block);
                 if let Some(catch) = &t.handler {
-                    self.w(" catch (");
-                    if let Some(param) = &catch.param { self.print_pat(param); }
-                    self.w(") ");
+                    self.w(" catch");
+                    if let Some(param) = &catch.param {
+                        self.w(" (");
+                        self.print_pat(param);
+                        self.w(")");
+                    }
+                    self.w(" ");
                     self.print_block(&catch.body);
                 }
                 if let Some(finalizer) = &t.finalizer {
@@ -109,34 +123,48 @@ impl<'a> Printer<'a> {
                     }
                     self.nl();
                     self.indent();
-                    for s in &case.cons { self.print_stmt(s); }
+                    for s in &case.cons {
+                        self.print_stmt_in_block(s);
+                    }
                     self.dedent();
                 }
                 self.dedent();
                 self.wi();
                 self.w("}");
-                self.nl();
             }
-            Stmt::Throw(t) => { self.w("throw "); self.print_expr(&t.arg); self.w(";"); self.nl(); }
+            Stmt::Throw(t) => { self.w("throw "); self.print_expr(&t.arg); self.w(";"); }
             Stmt::Decl(d) => self.print_decl(d),
-            Stmt::Expr(e) => { self.print_expr(&e.expr); self.w(";"); self.nl(); }
+            Stmt::Expr(e) => { self.print_expr(&e.expr); self.w(";"); }
             Stmt::Break(b) => {
                 self.w("break");
                 if let Some(label) = &b.label { self.w(" "); self.w(&*label.sym); }
-                self.w(";"); self.nl();
+                self.w(";");
             }
             Stmt::Continue(c) => {
                 self.w("continue");
                 if let Some(label) = &c.label { self.w(" "); self.w(&*label.sym); }
-                self.w(";"); self.nl();
+                self.w(";");
             }
             Stmt::Labeled(l) => {
                 self.w(&*l.label.sym);
                 self.w(": ");
                 self.print_stmt(&l.body);
             }
-            _ => {}
         }
+    }
+
+    /// Print a statement in block position: leading comments (indented), `wi()`,
+    /// body, trailing comments, then a trailing newline. Used by `print_block`
+    /// and switch case bodies.
+    pub(super) fn print_stmt_in_block(&mut self, stmt: &Stmt) {
+        self.emit_leading_comments(stmt.span().lo());
+        self.wi();
+        self.print_stmt_body(stmt);
+        if self.buf.ends_with('\n') {
+            self.buf.pop();
+        }
+        self.emit_trailing_comments(stmt.span().hi());
+        self.nl();
     }
 
     pub(super) fn print_for_head(&mut self, left: &ForHead) {
@@ -151,20 +179,22 @@ impl<'a> Printer<'a> {
         // Try single-statement collapse: `if (cond) { stmt; }` on one line
         if self.collapse_blocks && block.stmts.len() == 1 {
             let stmt = &block.stmts[0];
-            // Don't collapse blocks containing blocks (would look weird)
-            let should_collapse = !matches!(stmt, Stmt::Block(_));
+            let has_leading = self
+                .comments
+                .get_leading(stmt.span().lo())
+                .map_or(false, |c| !c.is_empty());
+            // Don't collapse blocks containing blocks (would look weird) or
+            // statements that carry leading comments.
+            let should_collapse = !matches!(stmt, Stmt::Block(_)) && !has_leading;
             if should_collapse {
                 let checkpoint = self.buf.len();
                 self.w("{ ");
-                self.print_stmt(stmt);
-                // Remove trailing newline added by print_stmt
-                if self.buf.ends_with('\n') {
-                    self.buf.pop();
-                }
+                self.print_stmt_body(stmt);
                 self.w(" }");
-                self.nl();
-                // Check if inline fits
-                if self.current_line_len() <= self.wrap_width {
+                // Accept the collapse only when the trial output is genuinely
+                // single-line (no embedded newline) and fits the wrap width.
+                let added = &self.buf[checkpoint..];
+                if !added.contains('\n') && self.current_line_len() <= self.wrap_width {
                     return;
                 }
                 // Rollback to expanded form
@@ -175,24 +205,16 @@ impl<'a> Printer<'a> {
         // Expanded form
         if block.stmts.is_empty() {
             self.w("{}");
-            self.nl();
             return;
         }
         self.w("{");
         self.nl();
         self.indent();
         for s in &block.stmts {
-            self.print_stmt(s);
-            // Emit trailing comments inline for statements inside blocks
-            if self.buf.ends_with('\n') {
-                self.buf.pop();
-            }
-            self.emit_trailing_comments(s.span().hi);
-            self.nl();
+            self.print_stmt_in_block(s);
         }
         self.dedent();
         self.wi();
         self.w("}");
-        self.nl();
     }
 }

@@ -4,7 +4,7 @@ use super::Printer;
 impl<'a> Printer<'a> {
     pub(super) fn print_lit(&mut self, lit: &Lit) {
         match lit {
-            Lit::Str(s) => { self.w("\""); self.w(s.value.as_str().unwrap()); self.w("\""); }
+            Lit::Str(s) => { self.print_str_lit(s.value.as_str().unwrap()); }
             Lit::Num(n) => {
                 if n.value.fract() == 0.0 && n.value < 1e15 {
                     self.w(&format!("{}", n.value as i64));

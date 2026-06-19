@@ -61,6 +61,16 @@ impl<'a> Printer<'a> {
         }
     }
 
+    /// Emit a double-quoted string literal, re-escaping the decoded value so
+    /// that special characters (`"`, `\`, newlines, tabs, control chars) are
+    /// encoded back into valid JS. Without this, strings like `"a\"b\nc"` would
+    /// produce invalid output.
+    pub(super) fn print_str_lit(&mut self, decoded: &str) {
+        self.w("\"");
+        self.w(&escape_str_content(decoded));
+        self.w("\"");
+    }
+
     /// Emit leading comments for a node at the given byte position.
     /// These are `// __REEFMT_*` placeholder lines that the preprocess step
     /// created to preserve block comments and blank lines through SWC formatting.
@@ -100,14 +110,16 @@ impl<'a> Printer<'a> {
     // ─── module items ───────────────────────────────────────
 
     fn print_module_item(&mut self, item: &ModuleItem) {
-        let pos = item.span().lo;
-        self.emit_leading_comments(pos);
+        // Leading comments + indentation are emitted here (the single canonical
+        // place for top-level items). `print_stmt_body`/`print_module_decl` do
+        // not re-emit leading comments, avoiding duplication.
+        self.emit_leading_comments(item.span().lo);
+        self.wi();
         match item {
             ModuleItem::ModuleDecl(d) => self.print_module_decl(d),
-            ModuleItem::Stmt(s) => self.print_stmt(s),
+            ModuleItem::Stmt(s) => self.print_stmt_body(s),
         }
         // Emit trailing comments inline (e.g. `const x = 1; /* inline */`)
-        // Strip the trailing \n added by the print_* function, emit comment, then re-add \n
         if self.buf.ends_with('\n') {
             self.buf.pop();
         }
@@ -165,7 +177,6 @@ impl<'a> Printer<'a> {
                 self.w(" from \"");
                 self.w(d.src.value.as_str().unwrap());
                 self.w("\";");
-                self.nl();
             }
             ModuleDecl::ExportDecl(d) => {
                 self.w("export ");
@@ -200,13 +211,11 @@ impl<'a> Printer<'a> {
                     self.w("\"");
                 }
                 self.w(";");
-                self.nl();
             }
             ModuleDecl::ExportDefaultExpr(d) => {
                 self.w("export default ");
                 self.print_expr(&d.expr);
                 self.w(";");
-                self.nl();
             }
             ModuleDecl::ExportDefaultDecl(d) => {
                 self.w("export default ");
@@ -225,20 +234,40 @@ impl<'a> Printer<'a> {
                             self.print_block(body);
                         } else {
                             self.w(";");
-                            self.nl();
                         }
                     }
-                    DefaultDecl::Class(_c) => { self.w("class {}"); self.nl(); }
-                    DefaultDecl::TsInterfaceDecl(_i) => { self.w("interface {}"); self.nl(); }
+                    DefaultDecl::Class(c) => {
+                        if c.class.is_abstract { self.w("abstract "); }
+                        self.w("class");
+                        if let Some(id) = &c.ident { self.w(" "); self.w(&*id.sym); }
+                        self.print_class(&c.class);
+                    }
+                    DefaultDecl::TsInterfaceDecl(i) => {
+                        self.w("interface ");
+                        self.w(&*i.id.sym);
+                        if let Some(ext) = i.extends.first() {
+                            self.w(" extends ");
+                            self.print_expr(&ext.expr);
+                        }
+                        self.w(" {");
+                        self.nl();
+                        self.indent();
+                        for m in &i.body.body {
+                            self.wi();
+                            self.print_ts_member(m);
+                        }
+                        self.dedent();
+                        self.wi();
+                        self.w("}");
+                    }
                 }
             }
             ModuleDecl::ExportAll(e) => {
                 self.w("export * from \"");
                 self.w(e.src.value.as_str().unwrap());
                 self.w("\";");
-                self.nl();
             }
-            _ => { self.w("// unhandled module decl\n"); }
+            _ => { self.w("// unhandled module decl"); self.nl(); }
         }
     }
 }
@@ -285,4 +314,25 @@ fn parse_es(fm: &swc_core::common::SourceFile, comments: &SingleThreadedComments
     let lexer = Lexer::new(syntax, EsVersion::latest(), input, Some(comments));
     let mut parser = Parser::new_from(lexer);
     parser.parse_module().ok()
+}
+
+/// Escape a decoded string value for emission inside double quotes.
+fn escape_str_content(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0C}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
