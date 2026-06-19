@@ -255,8 +255,18 @@ fn main() {
     let stdin_mode = args.iter().position(|a| a == "--stdin");
     let stdin_ext: Option<String> = stdin_mode.and_then(|pos| {
         args.remove(pos);
-        if args.first().is_some_and(|a| a.starts_with('.')) {
-            Some(args.remove(0))
+        if let Some(first) = args.first() {
+            if first.starts_with('.') {
+                // Explicit bare extension: `.ts`, `.js`, `.ree`
+                Some(args.remove(0))
+            } else if std::path::Path::new(first).extension().is_some() {
+                // Full filename hint: `edit_handlers.ts` — extract the extension
+                let ext = format!(".{}", std::path::Path::new(first).extension().unwrap().to_str().unwrap_or(""));
+                args.remove(0);
+                Some(ext)
+            } else {
+                None
+            }
         } else {
             None
         }
