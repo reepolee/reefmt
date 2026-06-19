@@ -40,11 +40,13 @@ fi
 
 draft_flag=""
 minor_bump=false
+force=false
 
 for arg in "$@"; do
 	case "$arg" in
 		--draft) draft_flag="--draft" ;;
 		--minor) minor_bump=true ;;
+		--force) force=true ;;
 	esac
 done
 
@@ -53,6 +55,9 @@ if [ -n "$draft_flag" ]; then
 fi
 if [ "$minor_bump" = true ]; then
 	echo "  (Minor bump)"
+fi
+if [ "$force" = true ]; then
+	echo "  (Force mode)"
 fi
 
 # ──────────────────────────────────────────────
@@ -143,10 +148,14 @@ if [ -n "$latest_tag" ]; then
 			echo "  (Note: latest tag is $tag_version, Cargo.toml has $version — using tag version)"
 			version="$tag_version"
 		else
-			# Cargo.toml is ahead of the tag → manually bumped without a release
-			echo "ERROR: Cargo.toml version ($version) is ahead of latest tag ($tag_version)." >&2
-			echo "  Did you forget to create a tag?" >&2
-			exit 1
+			# Cargo.toml is ahead of the tag → partially completed prior run or manual bump
+			if [ "$force" = true ]; then
+				echo "  (Force: using Cargo.toml version $version, skipping bump)"
+			else
+				echo "ERROR: Cargo.toml version ($version) is ahead of latest tag ($tag_version)." >&2
+				echo "  Did you forget to create a tag? Use --force to release with the current version." >&2
+				exit 1
+			fi
 		fi
 	fi
 
@@ -158,7 +167,17 @@ fi
 
 tag="v$version"
 
-if [ "$new_commits" -gt 0 ]; then
+# When --force is used and Cargo.toml is already ahead of the tag, skip the bump
+# (the version was already bumped by a prior partial run)
+force_skip_bump=false
+if [ "$force" = true ] && [ -n "$latest_tag" ]; then
+	tag_version="${latest_tag#v}"
+	if version_gt "$version" "$tag_version"; then
+		force_skip_bump=true
+	fi
+fi
+
+if [ "$new_commits" -gt 0 ] && [ "$force_skip_bump" = false ]; then
 	# Code has changed since last release → bump version
 	if [ "${minor_bump:-false}" = true ]; then
 		new_version=$(bump_minor "$version")
@@ -179,6 +198,29 @@ if [ "$new_commits" -gt 0 ]; then
 	do_bump=true
 
 	# Update CHANGELOG.md with a new version heading
+	if [ -f CHANGELOG.md ]; then
+		today=$(date +%Y-%m-%d)
+		if ! grep -q "^## \\[$version\\]" CHANGELOG.md 2>/dev/null; then
+			first_version_line=$(grep -n "^## \\[" CHANGELOG.md | head -1 | cut -d: -f1)
+			if [ -n "$first_version_line" ]; then
+				{
+					head -n $((first_version_line - 1)) CHANGELOG.md
+					echo ""
+					echo "## [$version] - $today"
+					echo ""
+					tail -n +"$first_version_line" CHANGELOG.md
+				} > CHANGELOG.md.tmp && mv CHANGELOG.md.tmp CHANGELOG.md
+				echo "  Updated CHANGELOG.md with version $version"
+			fi
+		fi
+	fi
+elif [ "$force_skip_bump" = true ]; then
+	# --force: version already bumped in Cargo.toml, just commit and release
+	echo "═══ reefmt release $version for $os ($arch) ═══"
+	echo "  (Force: resuming release for $version, $new_commits commits since $latest_tag)"
+	do_bump=true
+
+	# Still update CHANGELOG.md if needed
 	if [ -f CHANGELOG.md ]; then
 		today=$(date +%Y-%m-%d)
 		if ! grep -q "^## \\[$version\\]" CHANGELOG.md 2>/dev/null; then
