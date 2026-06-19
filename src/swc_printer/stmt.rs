@@ -186,9 +186,14 @@ impl<'a> Printer<'a> {
                 .comments
                 .get_leading(stmt.span().lo())
                 .map_or(false, |c| !c.is_empty());
-            // Don't collapse blocks containing blocks (would look weird) or
-            // statements that carry leading comments.
-            let should_collapse = !matches!(stmt, Stmt::Block(_)) && !has_leading;
+            let has_closing = self
+                .comments
+                .get_leading(block.span.hi() - BytePos(1))
+                .map_or(false, |c| !c.is_empty());
+            // Don't collapse blocks containing blocks (would look weird),
+            // statements that carry leading comments, or blocks with trailing
+            // comments before the closing brace.
+            let should_collapse = !matches!(stmt, Stmt::Block(_)) && !has_leading && !has_closing;
             if should_collapse {
                 let checkpoint = self.buf.len();
                 self.w("{ ");
@@ -236,6 +241,7 @@ impl<'a> Printer<'a> {
         for s in &block.stmts {
             self.print_stmt_in_block(s);
         }
+        self.emit_leading_comments(block.span.hi() - BytePos(1));
         self.dedent();
         self.wi();
         self.w("}");

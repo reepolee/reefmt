@@ -1961,6 +1961,83 @@ mod tests {
         assert_eq!(pass1, pass2, "block comment inside object literal should be idempotent");
     }
 
+    #[test]
+    fn line_comment_before_array_element_preserved() {
+        let src = "const x = [\n\t// first\n\t1,\n\t// second\n\t2,\n];\n";
+        let result = format_code_content(src, "ts", 180, true, 3, false);
+        assert!(result.contains("// first"), "// comment before array element must be preserved");
+        assert!(result.contains("// second"), "// comment before array element must be preserved");
+    }
+
+    #[test]
+    fn line_comment_before_array_element_idempotent() {
+        let src = "const x = [\n\t// Pages\n\t{ url: \"/\" },\n\t// System\n\t{ url: \"/system\" },\n];\n";
+        let pass1 = format_code_content(src, "ts", 180, true, 3, false);
+        let pass2 = format_code_content(&pass1, "ts", 180, true, 3, false);
+        assert!(pass1.contains("// Pages"), "// Pages comment must be in output");
+        assert!(pass1.contains("// System"), "// System comment must be in output");
+        assert_eq!(pass1, pass2, "array with line comments should format idempotently");
+    }
+
+    #[test]
+    fn line_comment_at_end_of_object_forces_expansion() {
+        // Comments after the last prop (before closing }) must be preserved
+        // and must force the object to expand rather than collapse inline.
+        let src = "export const routes = {\n\t...a,\n\t...b,\n\t// GENERATED:start\n\t// GENERATED:end\n};\n";
+        let result = format_code_content(src, "ts", 180, true, 3, false);
+        assert!(result.contains("// GENERATED:start"), "trailing comment in object must be preserved");
+        assert!(result.contains("// GENERATED:end"), "trailing comment in object must be preserved");
+        assert!(!result.contains("...a, ...b"), "object with trailing comments must not be collapsed inline");
+    }
+
+    #[test]
+    fn line_comment_at_end_of_object_idempotent() {
+        let src = "export const routes = {\n\t...a,\n\t...b,\n\t// GENERATED:start\n\t// GENERATED:end\n};\n";
+        let pass1 = format_code_content(src, "ts", 180, true, 3, false);
+        let pass2 = format_code_content(&pass1, "ts", 180, true, 3, false);
+        assert_eq!(pass1, pass2, "object with trailing line comments should format idempotently");
+    }
+
+    #[test]
+    fn line_comment_before_class_member_preserved() {
+        let src = "class Foo {\n\t// a comment\n\tbar() {}\n}\n";
+        let result = format_code_content(src, "ts", 180, true, 3, false);
+        assert!(result.contains("// a comment"), "// comment before class member must be preserved");
+    }
+
+    #[test]
+    fn line_comment_before_class_member_idempotent() {
+        let src = "class Foo {\n\t// getter\n\tget value() { return this._v; }\n\t// setter\n\tset value(v: number) { this._v = v; }\n}\n";
+        let pass1 = format_code_content(src, "ts", 180, true, 3, false);
+        let pass2 = format_code_content(&pass1, "ts", 180, true, 3, false);
+        assert!(pass1.contains("// getter"), "// getter comment must survive formatting");
+        assert!(pass1.contains("// setter"), "// setter comment must survive formatting");
+        assert_eq!(pass1, pass2, "class with line comments before members should format idempotently");
+    }
+
+    #[test]
+    fn line_comment_at_end_of_block_preserved() {
+        let src = "function foo() {\n\tconst x = 1;\n\t// trailing comment\n}\n";
+        let result = format_code_content(src, "ts", 180, true, 3, false);
+        assert!(result.contains("// trailing comment"), "// comment before closing brace must be preserved");
+    }
+
+    #[test]
+    fn line_comment_at_end_of_block_idempotent() {
+        let src = "function foo() {\n\tconst x = 1;\n\t// trailing comment\n}\n";
+        let pass1 = format_code_content(src, "ts", 180, true, 3, false);
+        let pass2 = format_code_content(&pass1, "ts", 180, true, 3, false);
+        assert_eq!(pass1, pass2, "block with trailing line comment should format idempotently");
+    }
+
+    #[test]
+    fn line_comment_before_interface_member_preserved() {
+        let src = "interface Foo {\n\t// id field\n\tid: number;\n\t// name field\n\tname: string;\n}\n";
+        let result = format_code_content(src, "ts", 180, true, 3, false);
+        assert!(result.contains("// id field"), "// comment before interface member must be preserved");
+        assert!(result.contains("// name field"), "// comment before interface member must be preserved");
+    }
+
     // ─── collapse_single_stmt_blocks tests ────────────────────────
 
     #[test]
