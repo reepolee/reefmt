@@ -49,10 +49,7 @@ impl<'a> Printer<'a> {
         match name {
             PropName::Ident(id) => self.w(&*id.sym),
             PropName::Str(s) => { self.w("\""); self.w(s.value.as_str().unwrap()); self.w("\""); }
-            PropName::Num(n) => {
-                if n.value.fract() == 0.0 { self.w(&format!("{}", n.value as i64)); }
-                else { self.w(&format!("{}", n.value)); }
-            }
+            PropName::Num(n) => self.print_number(n.raw.as_deref(), n.value),
             PropName::BigInt(b) => { self.w(&format!("{}", b.value)); self.w("n"); }
             PropName::Computed(c) => { self.w("["); self.print_expr(&c.expr); self.w("]"); }
         }

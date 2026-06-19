@@ -168,6 +168,14 @@ impl<'a> Printer<'a> {
                     for (i, n) in named.iter().enumerate() {
                         if i > 0 { self.w(", "); }
                         if let ImportSpecifier::Named(named_spec) = n {
+                            if let Some(imported) = &named_spec.imported {
+                                // `translations as loaded_translations`
+                                match imported {
+                                    ModuleExportName::Ident(id) => self.w(&*id.sym),
+                                    ModuleExportName::Str(s) => self.print_str_lit(s.value.as_str().unwrap()),
+                                }
+                                self.w(" as ");
+                            }
                             self.w(&*named_spec.local.sym);
                         }
                     }

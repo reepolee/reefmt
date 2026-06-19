@@ -121,16 +121,12 @@ impl<'a> Printer<'a> {
             }
             Expr::Arrow(a) => {
                 if a.is_async { self.w("async "); }
-                if a.params.len() == 1 && matches!(&a.params[0], Pat::Ident(_)) {
-                    self.print_pat(&a.params[0]);
-                } else {
-                    self.w("(");
-                    for (i, p) in a.params.iter().enumerate() {
-                        if i > 0 { self.w(", "); }
-                        self.print_pat(p);
-                    }
-                    self.w(")");
+                self.w("(");
+                for (i, p) in a.params.iter().enumerate() {
+                    if i > 0 { self.w(", "); }
+                    self.print_pat(p);
                 }
+                self.w(")");
                 if let Some(ret) = &a.return_type {
                     self.w(": ");
                     self.print_ts_type(&ret.type_ann);

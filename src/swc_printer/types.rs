@@ -146,10 +146,7 @@ impl<'a> Printer<'a> {
             TsType::TsLitType(l) => {
                 match &l.lit {
                     TsLit::Str(s) => { self.w("\""); self.w(s.value.as_str().unwrap()); self.w("\""); }
-                    TsLit::Number(n) => {
-                        if n.value.fract() == 0.0 { self.w(&format!("{}", n.value as i64)); }
-                        else { self.w(&format!("{}", n.value)); }
-                    }
+                    TsLit::Number(n) => self.print_number(n.raw.as_deref(), n.value),
                     TsLit::Bool(b) => self.w(if b.value { "true" } else { "false" }),
                     TsLit::BigInt(b) => { self.w(&format!("{}", b.value)); self.w("n"); }
                     TsLit::Tpl(t) => {
