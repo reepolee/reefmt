@@ -4,6 +4,7 @@ mod ree_parser;
 mod swc_format;
 mod swc_printer;
 mod remove_unused_imports;
+mod ast_check;
 
 use serde::Deserialize;
 use std::{

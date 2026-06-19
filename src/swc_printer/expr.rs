@@ -21,7 +21,8 @@ impl<'a> Printer<'a> {
                         }
                     }
                     self.w("]");
-                    if self.current_line_len() <= self.wrap_width {
+                    let added = &self.buf[checkpoint..];
+                    if !added.contains('\n') && self.current_line_len() <= self.wrap_width {
                         break 'arr;
                     }
                     self.buf.truncate(checkpoint);
@@ -30,15 +31,13 @@ impl<'a> Printer<'a> {
                 self.w("[");
                 self.nl();
                 self.indent();
-                for (i, e) in a.elems.iter().enumerate() {
+                for e in a.elems.iter() {
                     self.wi();
                     if let Some(e) = e {
                         if e.spread.is_some() { self.w("..."); }
                         self.print_expr(&e.expr);
                     }
-                    if i < a.elems.len() - 1 {
-                        self.w(",");
-                    }
+                    self.w(",");
                     self.nl();
                 }
                 self.dedent();
@@ -59,8 +58,8 @@ impl<'a> Printer<'a> {
                         self.print_prop_or_spread(p);
                     }
                     self.w(" }");
-                    // Check if inline fits; rollback to expanded if not
-                    if self.current_line_len() <= self.wrap_width {
+                    let added = &self.buf[checkpoint..];
+                    if !added.contains('\n') && self.current_line_len() <= self.wrap_width {
                         break 'obj;
                     }
                     self.buf.truncate(checkpoint);
@@ -69,12 +68,10 @@ impl<'a> Printer<'a> {
                 self.w("{");
                 self.nl();
                 self.indent();
-                for (i, p) in o.props.iter().enumerate() {
+                for p in o.props.iter() {
                     self.wi();
                     self.print_prop_or_spread(p);
-                    if i < o.props.len() - 1 {
-                        self.w(",");
-                    }
+                    self.w(",");
                     self.nl();
                 }
                 self.dedent();
@@ -82,6 +79,7 @@ impl<'a> Printer<'a> {
                 self.w("}");
             }
             Expr::Call(c) => {
+                let call_start = self.buf.len();
                 self.print_callee(&c.callee);
                 self.w("(");
                 for (i, a) in c.args.iter().enumerate() {
@@ -90,8 +88,26 @@ impl<'a> Printer<'a> {
                     self.print_expr(&a.expr);
                 }
                 self.w(")");
+                if !c.args.is_empty() && self.current_line_len() > self.wrap_width {
+                    self.buf.truncate(call_start);
+                    self.print_callee(&c.callee);
+                    self.w("(");
+                    self.nl();
+                    self.indent();
+                    for a in c.args.iter() {
+                        self.wi();
+                        if a.spread.is_some() { self.w("..."); }
+                        self.print_expr(&a.expr);
+                        self.w(",");
+                        self.nl();
+                    }
+                    self.dedent();
+                    self.wi();
+                    self.w(")");
+                }
             }
             Expr::New(n) => {
+                let new_start = self.buf.len();
                 self.w("new ");
                 self.print_expr(&n.callee);
                 self.w("(");
@@ -103,6 +119,26 @@ impl<'a> Printer<'a> {
                     }
                 }
                 self.w(")");
+                if n.args.as_ref().map_or(false, |a| !a.is_empty()) && self.current_line_len() > self.wrap_width {
+                    self.buf.truncate(new_start);
+                    self.w("new ");
+                    self.print_expr(&n.callee);
+                    self.w("(");
+                    self.nl();
+                    self.indent();
+                    if let Some(args) = &n.args {
+                        for a in args.iter() {
+                            self.wi();
+                            if a.spread.is_some() { self.w("..."); }
+                            self.print_expr(&a.expr);
+                            self.w(",");
+                            self.nl();
+                        }
+                    }
+                    self.dedent();
+                    self.wi();
+                    self.w(")");
+                }
             }
             Expr::Member(m) => {
                 self.print_expr(&m.obj);

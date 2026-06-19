@@ -98,10 +98,16 @@ impl<'a> Printer<'a> {
     pub(super) fn emit_trailing_comments(&mut self, pos: BytePos) {
         if let Some(comments) = self.comments.get_trailing(pos) {
             for c in &comments {
-                if c.kind == swc_core::common::comments::CommentKind::Block {
-                    self.w(" /*");
-                    self.w(&c.text);
-                    self.w("*/");
+                match c.kind {
+                    swc_core::common::comments::CommentKind::Block => {
+                        self.w(" /*");
+                        self.w(&c.text);
+                        self.w("*/");
+                    }
+                    swc_core::common::comments::CommentKind::Line => {
+                        self.w(" //");
+                        self.w(&c.text);
+                    }
                 }
             }
         }
@@ -162,14 +168,15 @@ impl<'a> Printer<'a> {
                     }
                 }
 
-                // Named imports
+                // Named imports — try inline first, expand if > max_members or too wide
                 if !named.is_empty() {
+                    let checkpoint = self.buf.len();
                     self.w("{ ");
                     for (i, n) in named.iter().enumerate() {
                         if i > 0 { self.w(", "); }
                         if let ImportSpecifier::Named(named_spec) = n {
+                            if named_spec.is_type_only { self.w("type "); }
                             if let Some(imported) = &named_spec.imported {
-                                // `translations as loaded_translations`
                                 match imported {
                                     ModuleExportName::Ident(id) => self.w(&*id.sym),
                                     ModuleExportName::Str(s) => self.print_str_lit(s.value.as_str().unwrap()),
@@ -180,6 +187,31 @@ impl<'a> Printer<'a> {
                         }
                     }
                     self.w(" }");
+                    if named.len() > self.max_members || self.current_line_len() > self.wrap_width {
+                        self.buf.truncate(checkpoint);
+                        self.w("{");
+                        self.nl();
+                        self.indent();
+                        for n in named.iter() {
+                            self.wi();
+                            if let ImportSpecifier::Named(named_spec) = n {
+                                if named_spec.is_type_only { self.w("type "); }
+                                if let Some(imported) = &named_spec.imported {
+                                    match imported {
+                                        ModuleExportName::Ident(id) => self.w(&*id.sym),
+                                        ModuleExportName::Str(s) => self.print_str_lit(s.value.as_str().unwrap()),
+                                    }
+                                    self.w(" as ");
+                                }
+                                self.w(&*named_spec.local.sym);
+                            }
+                            self.w(",");
+                            self.nl();
+                        }
+                        self.dedent();
+                        self.wi();
+                        self.w("}");
+                    }
                 }
 
                 self.w(" from \"");
