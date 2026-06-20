@@ -24,18 +24,20 @@ pub(crate) struct Printer<'a> {
     indent_level: usize,
     indent_str: String,
     comments: &'a SingleThreadedComments,
+    cm: Lrc<SourceMap>,
     wrap_width: usize,
     collapse_blocks: bool,
     max_members: usize,
 }
 
 impl<'a> Printer<'a> {
-    pub fn new(indent_str: &str, wrap_width: usize, collapse_blocks: bool, max_members: usize, comments: &'a SingleThreadedComments) -> Self {
+    pub fn new(indent_str: &str, wrap_width: usize, collapse_blocks: bool, max_members: usize, comments: &'a SingleThreadedComments, cm: Lrc<SourceMap>) -> Self {
         Self {
             buf: String::with_capacity(4096),
             indent_level: 0,
             indent_str: indent_str.to_string(),
             comments,
+            cm,
             wrap_width,
             collapse_blocks,
             max_members,
@@ -108,6 +110,7 @@ impl<'a> Printer<'a> {
 
     pub(super) fn emit_trailing_comments(&mut self, pos: BytePos) {
         if let Some(comments) = self.comments.get_trailing(pos) {
+            let stmt_line = self.cm.lookup_char_pos(pos).line;
             for c in &comments {
                 match c.kind {
                     swc_core::common::comments::CommentKind::Block => {
@@ -116,8 +119,18 @@ impl<'a> Printer<'a> {
                         self.w("*/");
                     }
                     swc_core::common::comments::CommentKind::Line => {
-                        self.w(" //");
-                        self.w(&c.text);
+                        let comment_line = self.cm.lookup_char_pos(c.span.lo).line;
+                        if comment_line > stmt_line {
+                            // Comment was on its own line in the source — emit it on a new line.
+                            self.nl();
+                            self.wi();
+                            self.w("//");
+                            self.w(&c.text);
+                        } else {
+                            // Comment was on the same line as the statement — keep it inline.
+                            self.w(" //");
+                            self.w(&c.text);
+                        }
                     }
                 }
             }
@@ -361,7 +374,7 @@ pub(crate) fn format_js_with_printer(
         None => return code.to_string(),
     };
 
-    let printer = Printer::new(indent, wrap_width, collapse_blocks, max_members, &comments);
+    let printer = Printer::new(indent, wrap_width, collapse_blocks, max_members, &comments, cm);
     printer.print_module(&module)
 }
 
