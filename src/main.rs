@@ -212,6 +212,7 @@ fn get_git_changed_files(config: &ReeConfig) -> Vec<PathBuf> {
 
                 if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
                     if config.extensions.iter().any(|e| e == ext)
+                        && !should_skip_path(&path, config)
                         && !should_skip_extension(&path, config)
                         && !should_skip_file(&path, config)
                     {
