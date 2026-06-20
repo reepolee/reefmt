@@ -100,6 +100,12 @@ impl<'a> Printer<'a> {
         self.buf.lines().last().map(|l| l.len()).unwrap_or(0)
     }
 
+    pub(super) fn has_trailing_line_comment(&self, pos: BytePos) -> bool {
+        self.comments.get_trailing(pos)
+            .map(|cs| cs.iter().any(|c| c.kind == swc_core::common::comments::CommentKind::Line))
+            .unwrap_or(false)
+    }
+
     pub(super) fn emit_trailing_comments(&mut self, pos: BytePos) {
         if let Some(comments) = self.comments.get_trailing(pos) {
             for c in &comments {
