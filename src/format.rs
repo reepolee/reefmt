@@ -1926,6 +1926,22 @@ mod tests {
     }
 
     #[test]
+    fn jsdoc_comment_inside_type_preserved() {
+        let src = "export type Opts = {\n\t/**\n\t * A doc comment.\n\t */\n\tcrop?: number;\n};\n";
+        let result = format_code_content(src, "ts", 180, true, 3, false);
+        assert!(result.contains("/**"), "JSDoc /** inside type literal should be preserved");
+        assert!(result.contains("* A doc comment."), "JSDoc body should be preserved");
+        assert!(result.contains("crop?"), "property after JSDoc should be preserved");
+    }
+
+    #[test]
+    fn inline_comment_on_type_member_preserved() {
+        let src = "export type Opts = {\n\tleft: number; // my comment\n\ttop: number;\n};\n";
+        let result = format_code_content(src, "ts", 180, true, 3, false);
+        assert!(result.contains("// my comment"), "inline trailing comment on type member should be preserved");
+    }
+
+    #[test]
     fn preserves_blank_lines_between_statements() {
         let src = "export interface A {\n\tx: number;\n}\n\nexport interface B {\n\ty: number;\n}\n";
         let result = format_code_content(src, "ts", 180, true, 3, false);

@@ -1,4 +1,5 @@
 use swc_core::ecma::ast::*;
+use swc_core::common::Spanned;
 use super::Printer;
 
 impl<'a> Printer<'a> {
@@ -117,11 +118,13 @@ impl<'a> Printer<'a> {
             }
             TsType::TsTypeLit(l) => 'ty: {
                 let members = &l.members;
-                if self.collapse_blocks && members.len() <= self.max_members {
+                let any_trailing_line = members.iter().any(|m| self.has_trailing_line_comment(m.span().hi));
+                if !any_trailing_line && self.collapse_blocks && members.len() <= self.max_members {
                     let checkpoint = self.buf.len();
                     self.w("{ ");
                     for (i, m) in members.iter().enumerate() {
                         if i > 0 { self.w(" "); }
+                        self.emit_leading_comments(m.span().lo);
                         self.print_ts_member_inline(m);
                     }
                     self.w(" }");
@@ -136,6 +139,7 @@ impl<'a> Printer<'a> {
                 self.nl();
                 self.indent();
                 for m in members {
+                    self.emit_leading_comments(m.span().lo);
                     self.wi();
                     self.print_ts_member(m);
                 }
@@ -212,6 +216,7 @@ impl<'a> Printer<'a> {
     }
 
     pub(super) fn print_ts_member(&mut self, m: &TsTypeElement) {
+        let hi = m.span().hi;
         match m {
             TsTypeElement::TsPropertySignature(p) => {
                 if p.readonly { self.w("readonly "); }
@@ -222,21 +227,23 @@ impl<'a> Printer<'a> {
                     self.print_ts_type(&ty.type_ann);
                 }
                 self.w(";");
+                self.emit_trailing_comments(hi);
                 self.nl();
             }
-            TsTypeElement::TsMethodSignature(m) => {
-                self.print_expr(&m.key);
+            TsTypeElement::TsMethodSignature(sig) => {
+                self.print_expr(&sig.key);
                 self.w("(");
-                for (i, p) in m.params.iter().enumerate() {
+                for (i, p) in sig.params.iter().enumerate() {
                     if i > 0 { self.w(", "); }
                     self.print_ts_fn_param(p);
                 }
                 self.w(")");
-                if let Some(ret) = &m.type_ann {
+                if let Some(ret) = &sig.type_ann {
                     self.w(": ");
                     self.print_ts_type(&ret.type_ann);
                 }
                 self.w(";");
+                self.emit_trailing_comments(hi);
                 self.nl();
             }
             TsTypeElement::TsCallSignatureDecl(c) => {
@@ -251,6 +258,7 @@ impl<'a> Printer<'a> {
                     self.print_ts_type(&ret.type_ann);
                 }
                 self.w(";");
+                self.emit_trailing_comments(hi);
                 self.nl();
             }
             TsTypeElement::TsConstructSignatureDecl(c) => {
@@ -265,6 +273,7 @@ impl<'a> Printer<'a> {
                     self.print_ts_type(&ret.type_ann);
                 }
                 self.w(";");
+                self.emit_trailing_comments(hi);
                 self.nl();
             }
             TsTypeElement::TsIndexSignature(s) => {
@@ -279,6 +288,7 @@ impl<'a> Printer<'a> {
                     self.print_ts_type(&ty.type_ann);
                 }
                 self.w(";");
+                self.emit_trailing_comments(hi);
                 self.nl();
             }
             _ => { self.w("// ts member\n"); }
