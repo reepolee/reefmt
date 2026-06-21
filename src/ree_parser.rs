@@ -989,14 +989,14 @@ fn print_block_element(tag: &str, attrs: &[String], children: &[Node], depth: us
         out.push('<');
         out.push_str(tag);
         out.push('\n');
-        for attr in attrs {
+        for (i, attr) in attrs.iter().enumerate() {
             out.push_str(&"\t".repeat(depth + 1));
             out.push_str(attr);
+            if i == attrs.len() - 1 {
+                out.push('>');
+            }
             out.push('\n');
         }
-        out.push_str(&"\t".repeat(depth));
-        out.push('>');
-        out.push('\n');
     }
 
     for child in children {
