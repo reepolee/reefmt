@@ -1,0 +1,8 @@
+{{
+const _dir = (props.attributes && props.attributes.direction) || props.direction || "right";
+const _class = (props.attributes && props.attributes.class) || props.class || "";
+const _style = (props.attributes && props.attributes.style) || props.style || "";
+const dir_map = { right: "", left: "rotate-180", up: "-rotate-90", down: "rotate-90" };
+const final_class = tw_merge("w-6 h-6", dir_map[_dir], _class);
+}}
+<div class="{= final_class }" style="{= _style }">{#include('$components/svgs/arrow-right.svg')}</div>

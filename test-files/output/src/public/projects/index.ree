@@ -1,0 +1,18 @@
+{{
+// /projects is retired — its decision-maker content now lives at /results.
+// Keep this route as a redirect so old inbound links don't 404.
+const target = localized_path('/results');
+props.page_title = "Redirecting to Results | Reepolee";
+}}<!DOCTYPE html>
+<html lang="{= props.lang }">
+	<head>
+		<meta charset="utf-8" />
+		<meta http-equiv="refresh" content="0; url={~ target }" />
+		<link rel="canonical" href="{~ target }" />
+		<meta name="robots" content="noindex" />
+		<title>Redirecting…</title>
+	</head>
+	<body>
+		<p>This page has moved to <a href="{~ target }">{~ target }</a>.</p>
+	</body>
+</html>

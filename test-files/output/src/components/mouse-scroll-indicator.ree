@@ -1,0 +1,3 @@
+<div class="border-divider bg-code-bg hidden h-14 w-10 items-center justify-center rounded-full border-2 lg:grid">
+	<re-arrow class="text-white arrow-animate size-6" direction="down"></re-arrow>
+</div>

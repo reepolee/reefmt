@@ -1,0 +1,45 @@
+{
+	"route_name": "",
+	"site_name": "Reepolee",
+	"nav": {
+		"home": "Home",
+		"results": "Results",
+		"services": "Services",
+		"enterprise": "Enterprise",
+		"tools": "Tools",
+		"docs": "Documentation",
+		"blog": "Blog",
+		"team": "Team",
+		"contact": "Contact",
+		"projects": "Projects"
+	},
+	"footer": {
+		"cookies": "Cookies",
+		"privacy": "Privacy",
+		"media": "Media kit",
+		"vat": "European Union VAT ID"
+	},
+	"meta": {
+		"title": "Reepolee - Software Consulting & Digital Transformation",
+		"og_title": "Reepolee - Software Consulting & Digital Transformation",
+		"og_description": "Expert consulting for digital transformation, app development, and team scaling. Four decades of experience in leadership and software engineering.",
+		"description": "Reepolee provides expert consulting for digital transformation, app development, team scaling and tech stack simplification. It is led by Aleš Vaupotič, a seasoned professional with nearly 4 decades of experience",
+		"keywords": "Decades of insights, streamline, complex, project, digital transformation, software consulting, app development, team scaling, svelte, tailwind, css, cloudflare, astro, supabase, laravel"
+	},
+	"ui": {
+		"language_names": {
+			"en": "English",
+			"sl": "Slovenščina"
+		},
+		"pagination": {
+			"label": "Pagination",
+			"previous": "Previous",
+			"next": "Next",
+			"showing": "Showing",
+			"to": "to",
+			"of": "of",
+			"results": "results",
+			"total_label": "total"
+		}
+	}
+}

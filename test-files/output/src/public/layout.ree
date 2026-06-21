@@ -1,0 +1,102 @@
+{{
+const meta = props.meta || {};
+const page_title = props.page_title || meta.title || props.site_name;
+const description = props.page_description || meta.description || "";
+const keywords = meta.keywords || "";
+const og_title = props.page_title || meta.og_title || meta.title || props.site_name;
+const og_description = meta.og_description || description;
+const og_image = (props.site_url || "") + "/assets/reepolee-og-1.jpg";
+const twitter_image = (props.site_url || "") + "/assets/reepolee-twitter-1.jpg";
+const canonical_url = props.canonical_url || ((props.site_url || "") + (props.request_url || "/"));
+}}<!DOCTYPE html>
+<html lang="{= props.lang }">
+
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+		<title>{= page_title }</title>
+		<meta name="description" content="{= description }" />
+		<meta name="keywords" content="{= keywords }" />
+		<link rel="canonical" href="{~ canonical_url }" />
+
+		<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+		<link rel="icon" href="/favicon.ico" sizes="any" />
+		<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+		<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+		<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+		<meta name="theme-color" content="#b40000" />
+
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,600;1,600&family=Montserrat:wght@400;600&display=swap" rel="stylesheet" />
+
+		<link rel="stylesheet" href="/css/style.min.css" />
+		<link rel="stylesheet" href="/highlight-github-dark.min.css" />
+
+		<!-- Open Graph / Facebook -->
+		<meta property="og:type" content="website" />
+		<meta property="og:url" content="{= canonical_url }" />
+		<meta property="og:title" content="{= og_title }" />
+		<meta property="og:description" content="{= og_description }" />
+		<meta property="og:image" content="{= og_image }" />
+
+		<!-- Twitter -->
+		<meta property="twitter:card" content="summary_large_image" />
+		<meta property="twitter:url" content="{= canonical_url }" />
+		<meta property="twitter:title" content="{= og_title }" />
+		<meta property="twitter:description" content="{= og_description }" />
+		<meta property="twitter:image" content="{= twitter_image }" />
+
+		{#each props.hreflang_links as link}<link rel="alternate" hreflang="{= link.lang }" href="{~ link.href }" />
+		{/each}
+
+		<script type="application/ld+json">
+		{
+			"@context": "https://schema.org",
+			"@type": "ProfessionalService",
+			"name": "Reepolee",
+			"description": "Expert consulting for digital transformation, app development, and team scaling.",
+			"url": "https://www.reepolee.com",
+			"logo": "https://www.reepolee.com/assets/svgs/reepolee-logo.svg",
+			"founder": { "@type": "Person", "name": "Aleš Vaupotič" },
+			"address": {
+				"@type": "PostalAddress",
+				"streetAddress": "Dunajska cesta 190",
+				"addressLocality": "Ljubljana",
+				"postalCode": "1000",
+				"addressCountry": "SI"
+			},
+			"telephone": "+38651807939",
+			"email": "hello@reepolee.com",
+			"openingHours": "Mo-Fr 09:00-17:00",
+			"vatID": "SI69983283",
+			"sameAs": ["https://www.linkedin.com/company/reepolee", "https://github.com/reepolee"]
+		}
+		</script>
+
+		<speculation-rules></speculation-rules>
+	</head>
+
+	<body class="font-sans">
+		<nav class="top-of-page fixed top-0 z-9999 w-full transition-all duration-500{~ props.light_hero ? ' text-ink' : ' text-white' }" data-site-nav{~ props.light_hero ? ' data-light-hero' : '' }>
+			<div class="container mx-auto">
+				<div class="flex items-center justify-between py-6">
+					<site-logo></site-logo>
+					<site-nav></site-nav>
+				</div>
+			</div>
+		</nav>
+
+		{~ props.body }
+
+		<footer class="border-t border-divider bg-warm">
+			<site-footer></site-footer>
+		</footer>
+
+		<script src="/js/signals-ui.js" defer></script>
+		<script src="/js/site.js" defer></script>
+		<script src="/js/cf-edge.js" defer></script>
+	</body>
+
+</html>

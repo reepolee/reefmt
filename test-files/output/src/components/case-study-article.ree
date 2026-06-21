@@ -1,0 +1,59 @@
+{{
+// Case-study detail layout (decision-maker structure, per strategy §5).
+// Self-contained custom element: the page puts the localized case-study object
+// on props.cs (e.g. `props.cs = c;`), and this reads it from the render context.
+const d = props.cs || {};
+const outcomes = d.outcomes || [];
+props.hero = { kicker: d.context, title: d.headline, image: "/images/responsive/hero-2.png", image_alt: "" };
+}}
+<main>
+	<page-hero></page-hero>
+
+	<div class="pb-g container mx-auto max-w-4xl">
+		<!-- Situation / stakes -->
+		<div class="mt-16">
+			<h2 class="heading prose text-balance text-3xl lg:text-4xl">{~ md(d.situation_label) }</h2>
+			<div class="prose mt-6 text-base text-balance lg:text-lg">{~ md(d.situation) }</div>
+		</div>
+
+		<!-- What we did -->
+		<div class="mt-16">
+			<h2 class="heading prose text-balance text-3xl lg:text-4xl">{~ md(d.approach_label) }</h2>
+			<div class="prose mt-6 text-base text-balance lg:text-lg">{~ md(d.approach) }</div>
+		</div>
+
+		<!-- Outcomes & metrics -->
+		<div class="mt-16">
+			<h2 class="heading prose text-balance text-3xl lg:text-4xl">{~ md(d.outcomes_label) }</h2>
+			<ul class="mt-6 flex flex-col gap-y-3 text-lg lg:text-xl">
+				{#each outcomes as item}
+					<li>{~ md(item) }</li>
+				{/each}
+			</ul>
+		</div>
+
+		<!-- In their words -->
+		{#if d.quote}
+			<div class="mt-16 rounded-lg bg-warm p-8 text-ink md:p-12">
+				<div class="h-10 w-20 text-brand">{#include('$components/svgs/quotes.svg')}</div>
+				<div class="prose mt-6 text-base font-semibold text-balance lg:text-lg">{~ md(d.quote) }</div>
+				<div class="mt-6 font-semibold">{= d.quote_author }</div>
+			</div>
+		{/if}
+
+		<!-- Light tech footer + cross-path CTA -->
+		<div class="mt-16 border-t border-divider pt-8">
+			<div class="text-sm text-muted">{= d.tech_label }: {= d.tech }</div>
+			<div class="mt-8 flex flex-col gap-6 sm:flex-row">
+				<a href="{~ localized_path('/tools') }" class="flex w-fit items-center gap-x-4 rounded border border-divider px-6 py-3 font-semibold transition-all hover:bg-black/5">
+					<span>{= d.tools_cta }</span>
+					<re-arrow direction="right" class="h-6 w-6"></re-arrow>
+				</a>
+				<a href="{~ localized_path('/contact') }" class="flex w-fit items-center gap-x-4 rounded border border-divider px-6 py-3 font-semibold transition-all hover:bg-black/5">
+					<span>{= d.contact_cta }</span>
+					<re-arrow direction="right" class="h-6 w-6"></re-arrow>
+				</a>
+			</div>
+		</div>
+	</div>
+</main>

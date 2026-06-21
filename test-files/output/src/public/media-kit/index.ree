@@ -1,0 +1,117 @@
+{{
+const c = {
+	en: {
+		title: "Media Kit | Reepolee",
+		kicker: "Press",
+		h1: "Media & Press **Kit**",
+		graphics: "**GRAPHICS**",
+		download_svg: "Download SVG",
+		logo: "Logo:",
+		dark: "Dark text for light backgrounds:",
+		light: "Light text for dark backgrounds:",
+		primary: "Primary color:",
+		text_h3: "**TEXT**",
+		tagline: "Tag line",
+		tagline_text: "Decades of insights to streamline complex projects",
+		desc: "Short description",
+		desc_text:
+			"Reepolee provides expert consulting for digital transformation, app development, team scaling and tech stack simplification. It is led by Aleš Vaupotič, a seasoned professional with nearly 4 decades of experience.",
+		origins_h3: "THE **ORIGINS** OF REEPOLEE",
+		origins:
+			"I was born in Slovenija, a small piece of heaven between the Alps and the Adriatic Sea. Ever since I started my IT journey back in 1986, I was responsible for the whole process from initial discovery and planning thru development to final delivery of software, hardware and long term after-sales activities. Many companies back then were doing the same and were registered as IT Engineering companies. We call them **računalniški inženiring** in Slovenian language. Though we don't sell hardware anymore, we still do offer a plethora of consulting, reselling and development services in different fields of IT and are in that sense **polymorphous**.<br><br> That's how Reepolee was born. I took an **R** from **računalniški**, **I** from **inženiring** and obviously **poli**. Now, in Slovenian that would be **RIPoli**. RIP didn't read or sound so good 😅, so I replaced the i's for ee's and there it was: **reepolee**. It sounded modern, yet kept the spirit, so it stick.",
+		shout_h3: "**SHOUT-OUT**",
+		shout: "A big **thanks** to my friends for making this site a reality — the **2025 redesign** by <a href='/team#nik-klemenc'>**Nik**</a> and the **2026 redesign** by <a href='/team#gal-jakic'>**Gal**</a>.",
+	},
+	sl: {
+		title: "Medijsko gradivo | Reepolee",
+		kicker: "Mediji",
+		h1: "Medijsko **gradivo**",
+		graphics: "**GRAFIKA**",
+		download_svg: "Prenesi SVG",
+		logo: "Logo:",
+		dark: "Temen tekst za svetle podlage:",
+		light: "Svetel tekst za temne podlage",
+		primary: "Osnovna barva:",
+		text_h3: "**Tekst**",
+		tagline: "Slogan",
+		tagline_text: "Desetletja izkušenj racionalizirajo kompleksne procese",
+		desc: "Kratek opis",
+		desc_text:
+			"Reepolee ponuja strokovno svetovanje za digitalno preobrazbo, razvoj aplikacij, rast ekipe in poenostavitev tehnološkega sklada. Vodi ga Aleš Vaupotič, prekaljen strokovnjak s skoraj štirimi desetletji izkušenj.",
+		origins_h3: "**KAKO** JE NASTAL REEPOLEE",
+		origins:
+			"Rodil sem se v Sloveniji, majhnem koščku raja med Alpami in Jadranskim morjem. Od leta 1986, ko sem začel svojo pot na področju informatike, sem bil odgovoren za celoten proces od začetnih analiz in načrtovanja prek razvoja do končne dobave programske in strojne opreme ter dolgoročnih poprodajnih dejavnosti. Takšni dejavnosti rečemo **računalniški inženiring**. Čeprav ne prodajamo več strojne opreme, še vedno ponujamo množico svetovalnih, trgovskih  in razvojnih storitev na različnih področjih IT in smo v tem smislu **polimorfni**. <br><br>Tako se je rodil Reepolee. Iz **računalniški** sem vzel **R**, iz **inženiring I** in seveda **poli**. V slovenščini bi bilo to **RIPoli**. RIP ni zvenelo privlačno, še najmanj v angleščini 😅, zato sem i-je zamenjal za ee-ji in nastal je Reepolee. Zvenelo je sodobno, a je ohranilo duh, zato se je prijelo.",
+		shout_h3: "**ZAHVALA**",
+		shout: "Velik **hvala** prijateljema pri postavljanju te strani — **redizajn 2025** je delo <a href='/team#nik-klemenc'>**Nika**</a>, **redizajn 2026** pa <a href='/team#gal-jakic'>**Gala**</a>.",
+	},
+}[lang];
+props.c = c;
+props.page_title = c.title;
+props.light_hero = true;
+props.hero = { kicker: c.kicker, title: c.h1 };
+}}
+{#layout("layout")}
+
+<main>
+	<page-hero></page-hero>
+
+	<div class="pb-g container mx-auto">
+		<div class="mx-auto flex max-w-5xl flex-col gap-12 lg:gap-24">
+			<div>
+				<md-text type="h3" class="bold-strong mt-12 mb-12 lg:mb-24">{~ props.c.graphics }</md-text>
+
+				<div class="grid w-fit grid-cols-1 items-center gap-x-12 gap-y-2 md:gap-y-24 lg:grid-cols-[auto_1fr]">
+					<md-text type="text">{~ props.c.logo }</md-text>
+					<div class="mb-12 flex flex-col text-center lg:mb-0">
+						<img src="/assets/svgs/reepolee-logo.svg" alt="Logo" class="mb-4 h-48" />
+						<a href="/assets/svgs/reepolee-logo.svg" download class="text-brand hover:underline flex flex-row items-center justify-center gap-2 transition-all">
+							<div class="text-brand size-6">{#include('$components/svgs/download.svg')}</div>
+							<span>{= c.download_svg }</span>
+						</a>
+					</div>
+
+					<md-text type="text">{~ props.c.dark }</md-text>
+					<div class="mb-12 flex flex-col text-center lg:mb-0">
+						<img src="/assets/svgs/reepolee-logo-dark-text.svg" alt="Logo" class="bg-warm mb-4 h-36 p-2" />
+						<a href="/assets/svgs/reepolee-logo-dark-text.svg" download class="text-brand hover:underline flex flex-row items-center justify-center gap-2 transition-all">
+							<div class="text-brand size-6">{#include('$components/svgs/download.svg')}</div>
+							<span>{= c.download_svg }</span>
+						</a>
+					</div>
+
+					<md-text type="text">{~ props.c.light }</md-text>
+					<div class="mb-12 flex flex-col text-center lg:mb-0">
+						<img src="/assets/svgs/reepolee-logo-light-text.svg" alt="Logo" class="mb-4 h-36 p-2" />
+						<a href="/assets/svgs/reepolee-logo-light-text.svg" download class="text-brand hover:underline flex flex-row items-center justify-center gap-2 transition-all">
+							<div class="text-brand size-6">{#include('$components/svgs/download.svg')}</div>
+							<span>{= c.download_svg }</span>
+						</a>
+					</div>
+
+					<md-text type="text">{~ props.c.primary }</md-text>
+					<md-text type="text" class="bg-brand p-3 text-center !text-white" text="#B40000"></md-text>
+				</div>
+			</div>
+
+			<div id="logo" class="grid w-fit scroll-mt-36 grid-cols-1">
+				<md-text type="h3" class="bold-strong mt-12 lg:mt-24">{~ props.c.text_h3 }</md-text>
+				<div class="grid w-fit grid-cols-1 items-center gap-x-12 md:mt-12 md:gap-y-2 lg:grid-cols-[auto_1fr]">
+					<md-text type="text" class="mt-4 md:mt-4">{~ props.c.tagline }</md-text>
+					<md-text type="text" class="font-semibold md:mt-4">{~ props.c.tagline_text }</md-text>
+					<md-text type="text" class="mt-4 md:mt-4">{~ props.c.desc }</md-text>
+					<md-text type="text" class="max-w-[75ch] font-semibold md:mt-4">{~ props.c.desc_text }</md-text>
+				</div>
+			</div>
+
+			<div id="origins" class="grid w-fit scroll-mt-36 grid-cols-1">
+				<md-text type="h3" class="bold-strong mt-12 lg:mt-24">{~ props.c.origins_h3 }</md-text>
+				<md-text type="text" class="bold-strong mt-4 max-w-[75ch] !text-pretty md:mt-12">{~ props.c.origins }</md-text>
+			</div>
+
+			<div id="shout-out" class="grid w-fit scroll-mt-36 grid-cols-1">
+				<md-text type="h3" class="bold-strong mt-12 lg:mt-24">{~ props.c.shout_h3 }</md-text>
+				<md-text type="text" class="bold-strong mt-4 max-w-[75ch] !text-pretty md:mt-12">{~ props.c.shout }</md-text>
+			</div>
+		</div>
+	</div>
+</main>

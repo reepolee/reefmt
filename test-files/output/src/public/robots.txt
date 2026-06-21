@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://reepolee.gal-jakic.workers.dev/sitemap.xml
