@@ -1027,6 +1027,7 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &Col
                         !cleaned.contains(';') && !cleaned.contains('[') && !cleaned.contains(']')
                             && !cleaned.starts_with("//")
                             && !cleaned.contains(" //")
+                            && cleaned != "{" && cleaned != "}"
                     });
 
                     if is_valid_arr {
