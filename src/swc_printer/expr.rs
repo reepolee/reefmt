@@ -212,27 +212,13 @@ impl<'a> Printer<'a> {
             }
             Expr::Arrow(a) => {
                 if a.is_async { self.w("async "); }
-                if self.collapse.enabled && a.params.len() > self.collapse.max_function_params {
-                    self.w("(");
-                    self.nl();
-                    self.indent();
-                    for p in &a.params {
-                        self.wi();
-                        self.print_pat(p);
-                        self.w(",");
-                        self.nl();
-                    }
-                    self.dedent();
-                    self.wi();
-                    self.w(")");
-                } else {
-                    self.w("(");
-                    for (i, p) in a.params.iter().enumerate() {
-                        if i > 0 { self.w(", "); }
-                        self.print_pat(p);
-                    }
-                    self.w(")");
+                // Always emit params on one line; wrap_long_function_params decides splitting.
+                self.w("(");
+                for (i, p) in a.params.iter().enumerate() {
+                    if i > 0 { self.w(", "); }
+                    self.print_pat(p);
                 }
+                self.w(")");
                 if let Some(ret) = &a.return_type {
                     self.w(": ");
                     self.print_ts_type(&ret.type_ann);
