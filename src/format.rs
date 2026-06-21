@@ -1691,41 +1691,57 @@ fn try_split_method_chain(line: &str, max_width: usize) -> Option<String> {
         i += 1;
     }
 
-    // Need at least 3 method calls at depth 0 to split.
-    // We split starting from the SECOND call, keeping the first
-    // call and its receiver on the first line.
-    // This way `Object.entries(columns).filter().map().join()` keeps
-    // `Object.entries(columns)` on the first line and splits
-    // `.filter().map().join()`.
-    if calls.len() < 3 {
-        return None;
-    }
+    // Group calls into contiguous chains: two consecutive calls belong to the
+    // same chain only if the text between them (call[i].end_pos..call[i+1].dot_pos)
+    // is whitespace-only. Binary operators like `||`, `&&`, `+`, identifiers, etc.
+    // between calls mean they are on separate chains and must NOT be merged.
+    // Find the first contiguous chain with ≥ 3 calls to split.
+    let (chain_start, chain_end) = {
+        let mut start = 0;
+        let mut found = None;
+        while start < calls.len() {
+            let mut end = start + 1;
+            while end < calls.len() {
+                let gap = &line[calls[end - 1].end_pos..calls[end].dot_pos];
+                if !gap.chars().all(|c| c.is_whitespace()) {
+                    break;
+                }
+                end += 1;
+            }
+            if end - start >= 3 {
+                found = Some((start, end));
+                break;
+            }
+            start = end;
+        }
+        match found {
+            Some(r) => r,
+            None => return None,
+        }
+    };
 
-    // Build output: first line has everything up to the SECOND `.`,
-    // then `.method(args)` from the second call onwards each on their
-    // own indented line.
-    let mut out = String::with_capacity(line.len() + calls.len() * 8);
+    // Build output: first line has everything up to the SECOND `.` of the chain,
+    // then `.method(args)` from the second chain call onwards each on their own
+    // indented line. Everything after the last chain call stays on the last line.
+    let mut out = String::with_capacity(line.len() + (chain_end - chain_start) * 8);
 
-    // Everything before the SECOND method call stays on the first line
-    let before_chain = &line[..calls[1].dot_pos];
-    out.push_str(before_chain);
+    // Everything before the second call of the chain stays on the first line
+    out.push_str(&line[..calls[chain_start + 1].dot_pos]);
     out.push('\n');
 
-    // All but the last split call on their own lines
-    let last_idx = calls.len() - 1;
-    for call in calls[1..last_idx].iter() {
+    // Middle calls of the chain on their own indented lines
+    let last_chain_idx = chain_end - 1;
+    for call in calls[chain_start + 1..last_chain_idx].iter() {
         out.push_str(indent);
         out.push('\t');
         out.push_str(&line[call.dot_pos..call.end_pos]);
         out.push('\n');
     }
 
-    // Last `.method(args)` plus everything after on one line
-    let last = &calls[last_idx];
-    let after_last = &line[last.dot_pos..];
+    // Last chain call plus everything after it (trailing operators, etc.) on one line
     out.push_str(indent);
     out.push('\t');
-    out.push_str(after_last);
+    out.push_str(&line[calls[last_chain_idx].dot_pos..]);
 
     Some(out)
 }
@@ -2877,6 +2893,17 @@ mod tests {
         // Verify idempotency
         let pass2 = format_code_content(&result, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert_eq!(result, pass2, "Full pipeline should be idempotent");
+    }
+
+    #[test]
+    fn wrap_method_chain_no_false_positive_or_operator() {
+        // Regression: `a.b().c() || x.d() || x.e()` must NOT be chain-split.
+        // The || separates independent chains, so no single contiguous chain has ≥ 3 calls.
+        let src = "\t\tconst is_sqlite = conn_str.toLowerCase().startsWith(\"sqlite://\") || conn_str.endsWith(\".sqlite\") || conn_str.endsWith(\".db\");\n";
+        assert!(src.len() > 100);
+        let result = wrap_long_method_chains(src, 100);
+        // Must be unchanged — splitting would corrupt semantics
+        assert_eq!(result, src, "Line with || between chains must not be split: got {:?}", result);
     }
 
     // ─── wrap_long_function_params tests ────────────────────────
