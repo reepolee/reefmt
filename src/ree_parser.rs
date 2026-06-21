@@ -15,12 +15,18 @@ pub(crate) enum Node {
         attrs: Vec<String>,
         children: Vec<Node>,
         self_closing: bool,
+        /// True if the source had opening and closing tags on the same line.
+        /// The printer preserves this: inline elements stay on one line,
+        /// block elements get their children indented.
+        inline: bool,
     },
     ReeBlock {
         keyword: String,
         expr: String,
         children: Vec<Node>,
         else_children: Option<Vec<Node>>,
+        /// True if the source had {#keyword} and {/keyword} on the same line.
+        inline: bool,
     },
     ReeExpr(String),
     ReeCall(String),
@@ -355,7 +361,7 @@ fn parse_html_tag<'a>(input: &'a str, ree_keyword: &Option<String>) -> (Option<N
 
     if let Some(after) = remaining.strip_prefix("/>") {
         return (
-            Some(Node::Element { tag, attrs, children: vec![], self_closing: true }),
+            Some(Node::Element { tag, attrs, children: vec![], self_closing: true, inline: true }),
             after,
         );
     }
@@ -365,7 +371,7 @@ fn parse_html_tag<'a>(input: &'a str, ree_keyword: &Option<String>) -> (Option<N
         // Void elements (input, br, hr, etc.) don't have children — treat as self-closing
         if is_void_element(&tag) {
             return (
-                Some(Node::Element { tag, attrs, children: vec![], self_closing: true }),
+                Some(Node::Element { tag, attrs, children: vec![], self_closing: true, inline: true }),
                 after_gt,
             );
         }
@@ -376,16 +382,22 @@ fn parse_html_tag<'a>(input: &'a str, ree_keyword: &Option<String>) -> (Option<N
             if rem.starts_with(&close) {
                 if let Some(gt) = rem.find('>') {
                     return (
-                        Some(Node::Element { tag, attrs, children, self_closing: false }),
+                        Some(Node::Element { tag, attrs, children, self_closing: false, inline: false }),
                         &rem[gt + 1..],
                     );
                 }
             }
             return (
-                Some(Node::Element { tag, attrs, children, self_closing: false }),
+                Some(Node::Element { tag, attrs, children, self_closing: false, inline: false }),
                 rem,
             );
         }
+
+        // Detect inline: closing tag appears before the first newline.
+        let close_tag_lower = format!("</{}", tag.to_lowercase());
+        let newline_pos = after_gt.find('\n').unwrap_or(after_gt.len());
+        let close_pos = after_gt.to_ascii_lowercase().find(&close_tag_lower).unwrap_or(after_gt.len());
+        let inline = close_pos < newline_pos;
 
         // Thread the Ree keyword into the element's CloseTag stop so that
         // {:else} and {/keyword} markers stop the inner parse_nodes.
@@ -394,18 +406,18 @@ fn parse_html_tag<'a>(input: &'a str, ree_keyword: &Option<String>) -> (Option<N
         if rem.starts_with("</") {
             if let Some(gt) = rem.find('>') {
                 return (
-                    Some(Node::Element { tag, attrs, children, self_closing: false }),
+                    Some(Node::Element { tag, attrs, children, self_closing: false, inline }),
                     &rem[gt + 1..],
                 );
             }
         }
         return (
-            Some(Node::Element { tag, attrs, children, self_closing: false }),
+            Some(Node::Element { tag, attrs, children, self_closing: false, inline }),
             rem,
         );
     }
 
-    (Some(Node::Element { tag, attrs, children: vec![], self_closing: false }), remaining)
+    (Some(Node::Element { tag, attrs, children: vec![], self_closing: false, inline: false }), remaining)
 }
 
 fn parse_attrs(input: &str) -> (Vec<String>, &str) {
@@ -510,12 +522,19 @@ fn parse_ree_block_open(input: &str) -> (Option<Node>, &str) {
         None => (directive_stripped.to_string(), String::new()),
     };
     let remaining = &input[end..];
+
+    // Detect inline: {/keyword} appears before the first newline after the opening tag.
+    let close_tag = format!("{{/{}}}", keyword);
+    let newline_pos = remaining.find('\n').unwrap_or(remaining.len());
+    let close_pos = remaining.find(&close_tag).unwrap_or(remaining.len());
+    let inline = close_pos < newline_pos;
+
     let stop = Stop::ReeClose(keyword.clone());
     let (children, remaining) = parse_nodes(remaining, stop);
     let (else_children, remaining) = parse_else_branch(remaining, &keyword);
     let remaining = skip_ree_close(remaining, &keyword);
 
-    (Some(Node::ReeBlock { keyword, expr, children, else_children }), remaining)
+    (Some(Node::ReeBlock { keyword, expr, children, else_children, inline }), remaining)
 }
 
 fn parse_else_branch<'a>(input: &'a str, keyword: &str) -> (Option<Vec<Node>>, &'a str) {
@@ -692,7 +711,7 @@ fn hoist_script_ree_blocks(nodes: Vec<Node>) -> Vec<Node> {
     let mut result = Vec::new();
     for node in nodes {
         match &node {
-            Node::Element { tag, attrs, children, self_closing }
+            Node::Element { tag, attrs, children, self_closing, inline }
                 if (tag.eq_ignore_ascii_case("script") || tag.eq_ignore_ascii_case("style"))
                     && !self_closing =>
             {
@@ -702,18 +721,20 @@ fn hoist_script_ree_blocks(nodes: Vec<Node>) -> Vec<Node> {
                     .collect();
 
                 if non_empty.len() == 1 {
-                    if let Node::ReeBlock { keyword, expr, children: bc, else_children: ec } = non_empty[0] {
+                    if let Node::ReeBlock { keyword, expr, children: bc, else_children: ec, .. } = non_empty[0] {
                         let inner = Node::Element {
                             tag: tag.clone(),
                             attrs: attrs.clone(),
                             children: bc.clone(),
                             self_closing: false,
+                            inline: false,
                         };
                         result.push(Node::ReeBlock {
                             keyword: keyword.clone(),
                             expr: expr.clone(),
                             children: vec![inner],
                             else_children: ec.clone(),
+                            inline: false,
                         });
                         continue;
                     }
@@ -723,22 +744,25 @@ fn hoist_script_ree_blocks(nodes: Vec<Node>) -> Vec<Node> {
                     attrs: attrs.clone(),
                     children: hoist_script_ree_blocks(children.clone()),
                     self_closing: false,
+                    inline: *inline,
                 });
             }
-            Node::Element { tag, attrs, children, self_closing } => {
+            Node::Element { tag, attrs, children, self_closing, inline } => {
                 result.push(Node::Element {
                     tag: tag.clone(),
                     attrs: attrs.clone(),
                     children: hoist_script_ree_blocks(children.clone()),
                     self_closing: *self_closing,
+                    inline: *inline,
                 });
             }
-            Node::ReeBlock { keyword, expr, children, else_children } => {
+            Node::ReeBlock { keyword, expr, children, else_children, inline } => {
                 result.push(Node::ReeBlock {
                     keyword: keyword.clone(),
                     expr: expr.clone(),
                     children: hoist_script_ree_blocks(children.clone()),
                     else_children: else_children.as_ref().map(|e| hoist_script_ree_blocks(e.clone())),
+                    inline: *inline,
                 });
             }
             other => result.push(other.clone()),
@@ -795,35 +819,48 @@ fn print_node(node: &Node, depth: usize, out: &mut String, wrap_width: usize) {
                 out.push('\n');
             }
         }
-        Node::Element { tag, attrs, children, self_closing } => {
+        Node::Element { tag, attrs, children, self_closing, inline } => {
             if *self_closing {
                 print_self_closing(tag, attrs, depth, out);
             } else if children.is_empty() || all_children_are_whitespace(children) {
                 print_empty_element(tag, attrs, depth, out, wrap_width);
-            } else if is_text_only(children) && !is_script_or_style(tag) {
-                print_inline_element(tag, attrs, children, depth, out, wrap_width);
+            } else if *inline && !is_script_or_style(tag) {
+                print_inline_element(tag, attrs, children, depth, out);
             } else {
                 print_block_element(tag, attrs, children, depth, out, wrap_width);
             }
         }
-        Node::ReeBlock { keyword, expr, children, else_children } => {
+        Node::ReeBlock { keyword, expr, children, else_children, inline } => {
             let open = if expr.is_empty() {
                 format!("{{#{}}}", keyword)
             } else {
                 format!("{{#{} {}}}", keyword, expr)
             };
-            out.push_str(&"\t".repeat(depth));
-            out.push_str(&open);
-            out.push('\n');
-            print_ree_block_children(children, depth + 1, out, wrap_width);
-            if let Some(else_nodes) = else_children {
+            if *inline {
+                let content: String = children.iter().map(render_node_inline).collect();
+                let mut s = format!("{}{}", open, content.trim());
+                if let Some(else_nodes) = else_children {
+                    let else_content: String = else_nodes.iter().map(render_node_inline).collect();
+                    s.push_str(&format!("{{:else}}{}", else_content.trim()));
+                }
+                s.push_str(&format!("{{/{}}}", keyword));
                 out.push_str(&"\t".repeat(depth));
-                out.push_str("{:else}\n");
-                print_ree_block_children(else_nodes, depth + 1, out, wrap_width);
+                out.push_str(&s);
+                out.push('\n');
+            } else {
+                out.push_str(&"\t".repeat(depth));
+                out.push_str(&open);
+                out.push('\n');
+                print_ree_block_children(children, depth + 1, out, wrap_width);
+                if let Some(else_nodes) = else_children {
+                    out.push_str(&"\t".repeat(depth));
+                    out.push_str("{:else}\n");
+                    print_ree_block_children(else_nodes, depth + 1, out, wrap_width);
+                }
+                out.push_str(&"\t".repeat(depth));
+                out.push_str(&format!("{{/{}}}", keyword));
+                out.push('\n');
             }
-            out.push_str(&"\t".repeat(depth));
-            out.push_str(&format!("{{/{}}}", keyword));
-            out.push('\n');
         }
         Node::ReeExpr(expr) => {
             out.push_str(&"\t".repeat(depth));
@@ -874,53 +911,65 @@ fn print_node(node: &Node, depth: usize, out: &mut String, wrap_width: usize) {
     }
 }
 
-fn print_inline_element(tag: &str, attrs: &[String], children: &[Node], depth: usize, out: &mut String, wrap_width: usize) {
-    let raw_content = render_children_text(children);
-    let content = raw_content.trim();
+/// Render a node as a flat string for use inside inline elements/blocks.
+/// Interior whitespace is preserved; callers trim the final result.
+fn render_node_inline(node: &Node) -> String {
+    match node {
+        Node::Text(t) => t.to_string(),
+        Node::ReeExpr(e) => format!("{{= {}}}", e),
+        Node::ReeCall(e) => format!("{{~ {}}}", e),
+        Node::Comment(c) => c.clone(),
+        Node::ReeDirective(t) => t.clone(),
+        Node::Element { tag, attrs, children, self_closing, .. } => {
+            let attr_str = format_attrs_inline(attrs);
+            if *self_closing {
+                if attr_str.is_empty() {
+                    format!("<{} />", tag)
+                } else {
+                    format!("<{} {} />", tag, attr_str)
+                }
+            } else {
+                let tag_open = if attr_str.is_empty() {
+                    format!("<{}>", tag)
+                } else {
+                    format!("<{} {}>", tag, attr_str)
+                };
+                let content: String = children.iter().map(render_node_inline).collect();
+                format!("{}{}</{}>", tag_open, content.trim(), tag)
+            }
+        }
+        Node::ReeBlock { keyword, expr, children, else_children, .. } => {
+            let open = if expr.is_empty() {
+                format!("{{#{}}}", keyword)
+            } else {
+                format!("{{#{} {}}}", keyword, expr)
+            };
+            let content: String = children.iter().map(render_node_inline).collect();
+            let mut result = format!("{}{}", open, content.trim());
+            if let Some(else_nodes) = else_children {
+                let else_content: String = else_nodes.iter().map(render_node_inline).collect();
+                result.push_str(&format!("{{:else}}{}", else_content.trim()));
+            }
+            result.push_str(&format!("{{/{}}}", keyword));
+            result
+        }
+        Node::RawJs(_) => String::new(),
+    }
+}
+
+fn print_inline_element(tag: &str, attrs: &[String], children: &[Node], depth: usize, out: &mut String) {
     let attr_str = format_attrs_inline(attrs);
     let tag_open = if attr_str.is_empty() {
         format!("<{}>", tag)
     } else {
         format!("<{} {}>", tag, attr_str)
     };
-    let closing = format!("</{}>", tag);
-    let total = format!("{}{}{}", tag_open, content, closing);
-
-    if total.len() <= wrap_width {
-        out.push_str(&"\t".repeat(depth));
-        out.push_str(&total);
-        out.push('\n');
-    } else if attrs.len() >= 4 && tag_open.len() > wrap_width.saturating_sub(10) {
-        // Many/long attributes — split each onto its own line
-        out.push_str(&"\t".repeat(depth));
-        out.push('<');
-        out.push_str(tag);
-        out.push('\n');
-        for (i, attr) in attrs.iter().enumerate() {
-            out.push_str(&"\t".repeat(depth + 1));
-            out.push_str(attr);
-            if i == attrs.len() - 1 {
-                out.push('>');
-            }
-            out.push('\n');
-        }
-        out.push_str(&"\t".repeat(depth + 1));
-        out.push_str(content);
-        out.push('\n');
-        out.push_str(&"\t".repeat(depth));
-        out.push_str(&closing);
-        out.push('\n');
-    } else {
-        out.push_str(&"\t".repeat(depth));
-        out.push_str(&tag_open);
-        out.push('\n');
-        out.push_str(&"\t".repeat(depth + 1));
-        out.push_str(content);
-        out.push('\n');
-        out.push_str(&"\t".repeat(depth));
-        out.push_str(&closing);
-        out.push('\n');
-    }
+    let content: String = children.iter().map(render_node_inline).collect();
+    out.push_str(&"\t".repeat(depth));
+    out.push_str(&tag_open);
+    out.push_str(content.trim());
+    out.push_str(&format!("</{}>", tag));
+    out.push('\n');
 }
 
 fn print_block_element(tag: &str, attrs: &[String], children: &[Node], depth: usize, out: &mut String, wrap_width: usize) {
@@ -959,10 +1008,6 @@ fn print_block_element(tag: &str, attrs: &[String], children: &[Node], depth: us
     out.push('\n');
 }
 
-fn is_text_only(children: &[Node]) -> bool {
-    children.iter().all(|n| matches!(n, Node::Text(_) | Node::ReeExpr(_) | Node::ReeCall(_) | Node::Comment(_)))
-}
-
 fn is_script_or_style(tag: &str) -> bool {
     tag.eq_ignore_ascii_case("script") || tag.eq_ignore_ascii_case("style")
 }
@@ -972,20 +1017,6 @@ fn all_children_are_whitespace(children: &[Node]) -> bool {
         Node::Text(t) => t.trim().is_empty(),
         _ => false,
     })
-}
-
-fn render_children_text(children: &[Node]) -> String {
-    let mut parts = Vec::new();
-    for child in children {
-        match child {
-            Node::Text(t) => parts.push(t.to_string()),
-            Node::ReeExpr(e) => parts.push(format!("{{= {}}}", e)),
-            Node::ReeCall(e) => parts.push(format!("{{~ {}}}", e)),
-            Node::Comment(c) => parts.push(c.trim().to_string()),
-            _ => parts.push("[complex]".to_string()),
-        }
-    }
-    parts.join("")
 }
 
 fn format_attrs_inline(attrs: &[String]) -> String {
@@ -1164,7 +1195,16 @@ mod tests {
 
     #[test]
     fn simple_element() {
+        // Source has both tags on one line → inline flag set → stays inline
         let input = "<div><p>hello</p></div>";
+        let output = format_ree(input, 120);
+        assert_eq!(output, "<div><p>hello</p></div>\n");
+    }
+
+    #[test]
+    fn simple_element_block() {
+        // Source has tags on separate lines → block formatting
+        let input = "<div>\n<p>hello</p>\n</div>";
         let output = format_ree(input, 120);
         assert_eq!(output, "<div>\n\t<p>hello</p>\n</div>\n");
     }
@@ -1331,19 +1371,31 @@ mod tests {
     }
 
     #[test]
-    fn ree_block_inline_children_grouped() {
-        // Consecutive inline children in a ReeBlock (like {= option} and {= selectors.per_page}
-        // in an {:else} branch) should be printed on one line, not split across separate lines.
+    fn ree_block_inline() {
+        // Source has {#if} and {/if} on the same line → inline flag → stays on one line
         let input = "{#if option===\"all\"}{= selectors.all}{:else}{= option} {= selectors.per_page}{/if}";
         let output = format_ree(input, 120);
         assert_eq!(
             output,
-            "{#if option===\"all\"}\n\t{= selectors.all}\n{:else}\n\t{= option} {= selectors.per_page}\n{/if}\n",
-            "Consecutive inline nodes in ReeBlock else-children should be grouped on one line"
+            "{#if option===\"all\"}{= selectors.all}{:else}{= option} {= selectors.per_page}{/if}\n",
+            "ReeBlock with opening and closing on same line should stay inline"
         );
-        // Verify idempotency
         let pass2 = format_ree(&output, 120);
-        assert_eq!(output, pass2, "ReeBlock inline grouping should be idempotent");
+        assert_eq!(output, pass2, "inline ReeBlock should be idempotent");
+    }
+
+    #[test]
+    fn ree_block_multiline() {
+        // Source has {#if} and {/if} on separate lines → block formatting
+        let input = "{#if option===\"all\"}\n{= selectors.all}\n{:else}\n{= option} {= selectors.per_page}\n{/if}";
+        let output = format_ree(input, 120);
+        assert_eq!(
+            output,
+            "{#if option===\"all\"}\n\t{= selectors.all}\n{:else}\n\t{= option} {= selectors.per_page}\n{/if}\n",
+            "Multi-line ReeBlock should be formatted with indented children"
+        );
+        let pass2 = format_ree(&output, 120);
+        assert_eq!(output, pass2, "multi-line ReeBlock should be idempotent");
     }
 
     #[test]
