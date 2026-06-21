@@ -1901,6 +1901,8 @@ pub(crate) fn format_code_file(path: &Path, mode: Mode, wrap_width: usize, colla
                 msg
             );
             eprintln!("File NOT written. Please report this as a bug.");
+            eprintln!("  effective config: wrapWidth={} collapseMaxMembers={} collapseEnabled={} removeUnusedImports={}",
+                wrap_width, collapse.max_object_members, collapse.enabled, remove_unused);
             eprintln!("\n--- diff (original → formatted) ---");
             print_diff(path, &normalized, &write_content);
             if std::env::var("REEFMT_DEBUG").is_ok() {
@@ -1918,6 +1920,8 @@ pub(crate) fn format_code_file(path: &Path, mode: Mode, wrap_width: usize, colla
             msg
         );
         eprintln!("File NOT written. Please report this as a bug.");
+        eprintln!("  effective config: wrapWidth={} collapseMaxMembers={} collapseEnabled={} removeUnusedImports={}",
+            wrap_width, collapse.max_object_members, collapse.enabled, remove_unused);
         eprintln!("\n--- diff (original → formatted) ---");
         print_diff(path, &normalized, &write_content);
         if std::env::var("REEFMT_DEBUG").is_ok() {

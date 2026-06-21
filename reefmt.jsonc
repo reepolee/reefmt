@@ -48,5 +48,10 @@
 	// When true, unused import declarations are removed from JS/TS files
 	// during formatting. Side-effect imports (import "./foo") are always
 	// kept. Defaults to false — enable if you want automatic cleanup.
-	"removeUnusedImports": false
+	"removeUnusedImports": false,
+	// When true, multi-line HTML elements in .ree files whose entire
+	// content (tag + children + closing tag) fits within wrapWidth are
+	// collapsed to a single line. Only applies to leaf elements (no child
+	// tags). Elements that exceed wrapWidth stay multi-line.
+	"oneline": true
 }

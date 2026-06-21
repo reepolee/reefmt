@@ -71,7 +71,7 @@ pub(crate) struct ReeConfig {
     /// When true, multi-line HTML elements in .ree files are collapsed to a
     /// single line when the full `<tag>content</tag>` fits within wrapWidth.
     /// Elements that don't fit stay multi-line.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     oneline: bool,
 }
 
@@ -350,6 +350,30 @@ fn main() {
             None
         }
     });
+
+    // Check for --help
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("reefmt v{} — formatter for .ree, .ts, .js, .css files", env!("CARGO_PKG_VERSION"));
+        println!();
+        println!("USAGE:");
+        println!("  reefmt [OPTIONS] [PATH...]");
+        println!();
+        println!("OPTIONS:");
+        println!("  --diff                   Show diff without writing files");
+        println!("  --check, -c              List files that would change (exit 1 if any)");
+        println!("  --git                    Format only uncommitted (git-changed) files");
+        println!("  --verbose                Print files that were already formatted");
+        println!("  --oneline                Collapse multi-line leaf HTML elements to one line when they fit");
+        println!("  --wrap-width <N>         Override wrapWidth from config");
+        println!("  --collapse-max-members <N>  Override collapseMaxMembers from config");
+        println!("  --stdin <.ext>           Read from stdin, write to stdout (.ree, .ts, .js, .css)");
+        println!("  --init                   Create or upgrade reefmt.jsonc in the current directory");
+        println!("  --version, -v            Print version");
+        println!("  --help, -h               Print this help");
+        println!();
+        println!("CONFIG: reefmt.jsonc in the current directory (or nearest parent)");
+        return;
+    }
 
     // Check for --version (no config needed)
     if args.len() == 1 && (args[0] == "-v" || args[0] == "--version") {
