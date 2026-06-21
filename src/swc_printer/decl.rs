@@ -240,6 +240,7 @@ impl<'a> Printer<'a> {
                 self.wi();
                 if m.is_static { self.w("static "); }
                 if let Some(acc) = &m.accessibility { self.print_accessibility(acc); }
+                if m.is_override { self.w("override "); }
                 match m.kind {
                     MethodKind::Getter => self.w("get "),
                     MethodKind::Setter => self.w("set "),
@@ -282,6 +283,7 @@ impl<'a> Printer<'a> {
                 self.wi();
                 if p.is_static { self.w("static "); }
                 if let Some(acc) = &p.accessibility { self.print_accessibility(acc); }
+                if p.is_override { self.w("override "); }
                 if p.readonly { self.w("readonly "); }
                 self.print_prop_name(&p.key);
                 if p.definite { self.w("!"); }
@@ -301,6 +303,7 @@ impl<'a> Printer<'a> {
                 self.wi();
                 if p.is_static { self.w("static "); }
                 if let Some(acc) = &p.accessibility { self.print_accessibility(acc); }
+                if p.is_override { self.w("override "); }
                 if p.readonly { self.w("readonly "); }
                 self.w("#");
                 self.w(&*p.key.name);

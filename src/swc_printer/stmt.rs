@@ -36,10 +36,25 @@ impl<'a> Printer<'a> {
                 self.w("if (");
                 self.print_expr(&i.test);
                 self.w(") ");
-                self.print_stmt(&i.cons);
+                // Force-expand the cons block when there is an else clause so the
+                // `else` keyword always lands on its own `} else` line rather than
+                // being appended to a collapsed one-liner.
+                if i.alt.is_some() {
+                    match i.cons.as_ref() {
+                        Stmt::Block(b) => self.print_block_expanded(b),
+                        _ => self.print_stmt(&i.cons),
+                    }
+                } else {
+                    self.print_stmt(&i.cons);
+                }
                 if let Some(alt) = &i.alt {
                     self.w(" else ");
-                    self.print_stmt(alt);
+                    // Force-expand a block-form else body for consistency with
+                    // the expanded if/else-if blocks above it.
+                    match alt.as_ref() {
+                        Stmt::Block(b) => self.print_block_expanded(b),
+                        _ => self.print_stmt(alt),
+                    }
                 }
             }
             Stmt::While(w) => {
@@ -191,9 +206,11 @@ impl<'a> Printer<'a> {
                 .get_leading(block.span.hi() - BytePos(1))
                 .map_or(false, |c| !c.is_empty());
             // Don't collapse blocks containing blocks (would look weird),
-            // statements that carry leading comments, or blocks with trailing
-            // comments before the closing brace.
-            let should_collapse = !matches!(stmt, Stmt::Block(_)) && !has_leading && !has_closing;
+            // statements that carry leading comments, blocks with trailing
+            // comments before the closing brace, or statements with their own
+            // trailing line comment (would be dropped in the collapsed form).
+            let has_trailing = self.has_trailing_line_comment(stmt.span().hi());
+            let should_collapse = !matches!(stmt, Stmt::Block(_)) && !has_leading && !has_closing && !has_trailing;
             if should_collapse {
                 let checkpoint = self.buf.len();
                 self.w("{ ");

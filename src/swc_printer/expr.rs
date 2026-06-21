@@ -20,13 +20,16 @@ impl<'a> Printer<'a> {
                             self.emit_leading_comments(e.span().lo());
                             if e.spread.is_some() { self.w("..."); }
                             self.print_expr(&e.expr);
+                            self.emit_trailing_comments(e.expr.span().hi());
                         }
                     }
                     // Emit closing-bracket comments so they force expansion when present
                     self.emit_leading_comments(a.span.hi() - BytePos(1));
                     self.w("]");
                     let added = &self.buf[checkpoint..];
-                    if !added.contains('\n') && self.current_line_len() <= self.wrap_width {
+                    // Reject if: contains \n (leading comment), contains // (inline line
+                    // comment that would break the rest of the line), or exceeds wrap width.
+                    if !added.contains('\n') && !added.contains("//") && self.current_line_len() <= self.wrap_width {
                         break 'arr;
                     }
                     self.buf.truncate(checkpoint);
@@ -41,10 +44,12 @@ impl<'a> Printer<'a> {
                         self.wi();
                         if e.spread.is_some() { self.w("..."); }
                         self.print_expr(&e.expr);
+                        self.w(",");
+                        self.emit_trailing_comments(e.expr.span().hi());
                     } else {
                         self.wi();
+                        self.w(",");
                     }
-                    self.w(",");
                     self.nl();
                 }
                 self.emit_leading_comments(a.span.hi() - BytePos(1));
@@ -63,13 +68,25 @@ impl<'a> Printer<'a> {
                     self.w("{ ");
                     for (i, p) in o.props.iter().enumerate() {
                         if i > 0 { self.w(", "); }
+                        let (lo, hi) = match p {
+                            PropOrSpread::Spread(s) => (s.span().lo(), s.span().hi()),
+                            PropOrSpread::Prop(p) => (p.span().lo(), p.span().hi()),
+                        };
+                        // Emit leading comments in the trial — if any prop has a leading
+                        // comment, the \n forces rollback to expanded form.
+                        self.emit_leading_comments(lo);
                         self.print_prop_or_spread(p);
+                        // Emit trailing comments in the trial — a trailing LINE comment
+                        // (` // ...`) doesn't add \n but marks the trial invalid via //
+                        self.emit_trailing_comments(hi);
                     }
                     // Emit closing-brace comments so they force expansion when present
                     self.emit_leading_comments(o.span.hi() - BytePos(1));
                     self.w(" }");
                     let added = &self.buf[checkpoint..];
-                    if !added.contains('\n') && self.current_line_len() <= self.wrap_width {
+                    // Reject if: contains \n (leading comment), contains // (inline line
+                    // comment that would break the rest of the line), or exceeds wrap width.
+                    if !added.contains('\n') && !added.contains("//") && self.current_line_len() <= self.wrap_width {
                         break 'obj;
                     }
                     self.buf.truncate(checkpoint);
@@ -79,14 +96,15 @@ impl<'a> Printer<'a> {
                 self.nl();
                 self.indent();
                 for p in o.props.iter() {
-                    let lo = match p {
-                        PropOrSpread::Spread(s) => s.span().lo(),
-                        PropOrSpread::Prop(p) => p.span().lo(),
+                    let (lo, hi) = match p {
+                        PropOrSpread::Spread(s) => (s.span().lo(), s.span().hi()),
+                        PropOrSpread::Prop(p) => (p.span().lo(), p.span().hi()),
                     };
                     self.emit_leading_comments(lo);
                     self.wi();
                     self.print_prop_or_spread(p);
                     self.w(",");
+                    self.emit_trailing_comments(hi);
                     self.nl();
                 }
                 self.emit_leading_comments(o.span.hi() - BytePos(1));
@@ -97,6 +115,11 @@ impl<'a> Printer<'a> {
             Expr::Call(c) => {
                 let call_start = self.buf.len();
                 self.print_callee(&c.callee);
+                if let Some(ta) = &c.type_args {
+                    self.w("<");
+                    for (i, p) in ta.params.iter().enumerate() { if i > 0 { self.w(", "); } self.print_ts_type(p); }
+                    self.w(">");
+                }
                 self.w("(");
                 for (i, a) in c.args.iter().enumerate() {
                     if i > 0 { self.w(", "); }
@@ -107,6 +130,11 @@ impl<'a> Printer<'a> {
                 if !c.args.is_empty() && self.current_line_len() > self.wrap_width {
                     self.buf.truncate(call_start);
                     self.print_callee(&c.callee);
+                    if let Some(ta) = &c.type_args {
+                        self.w("<");
+                        for (i, p) in ta.params.iter().enumerate() { if i > 0 { self.w(", "); } self.print_ts_type(p); }
+                        self.w(">");
+                    }
                     self.w("(");
                     self.nl();
                     self.indent();
@@ -126,6 +154,11 @@ impl<'a> Printer<'a> {
                 let new_start = self.buf.len();
                 self.w("new ");
                 self.print_expr(&n.callee);
+                if let Some(ta) = &n.type_args {
+                    self.w("<");
+                    for (i, p) in ta.params.iter().enumerate() { if i > 0 { self.w(", "); } self.print_ts_type(p); }
+                    self.w(">");
+                }
                 self.w("(");
                 if let Some(args) = &n.args {
                     for (i, a) in args.iter().enumerate() {
@@ -139,6 +172,11 @@ impl<'a> Printer<'a> {
                     self.buf.truncate(new_start);
                     self.w("new ");
                     self.print_expr(&n.callee);
+                    if let Some(ta) = &n.type_args {
+                        self.w("<");
+                        for (i, p) in ta.params.iter().enumerate() { if i > 0 { self.w(", "); } self.print_ts_type(p); }
+                        self.w(">");
+                    }
                     self.w("(");
                     self.nl();
                     self.indent();

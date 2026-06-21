@@ -3,6 +3,9 @@
 //! After the formatter produces output, re-parse it and compare the semantic
 //! token sequences of the original and formatted ASTs. If they differ, the
 //! formatter has corrupted the code — callers must not write the file.
+//!
+//! Also verifies that all comments from the original source are present in the
+//! formatted output, for all file types.
 
 use swc_core::ecma::ast::*;
 use swc_core::common::input::StringInput;
@@ -61,6 +64,149 @@ pub(crate) fn verify_semantics_preserved(original: &str, formatted: &str) -> Res
             fmt.last(),
         ))
     }
+}
+
+/// Collect all comment texts from a TS/JS source using SWC's parser.
+/// Returns a sorted list of trimmed comment texts, or `None` if parsing fails.
+/// Internal `__REEFMT_*` placeholder comments are excluded.
+pub(crate) fn collect_comment_texts_ts(src: &str) -> Option<Vec<String>> {
+    let cm: Lrc<SourceMap> = Lrc::new(SourceMap::default());
+    let fm = cm.new_source_file(FileName::Anon.into(), src.to_string());
+    let comments = swc_core::common::comments::SingleThreadedComments::default();
+
+    let syntax = Syntax::Typescript(TsSyntax { tsx: false, decorators: false, ..Default::default() });
+    let input = StringInput::new(&fm.src, fm.start_pos, fm.end_pos);
+    let lexer = Lexer::new(syntax, EsVersion::latest(), input, Some(&comments));
+    let mut parser = Parser::new_from(lexer);
+    if parser.parse_module().is_err() {
+        return None;
+    }
+
+    let mut texts: Vec<String> = Vec::new();
+    let (leading, trailing) = comments.borrow_all();
+    for (_, cs) in leading.iter().chain(trailing.iter()) {
+        for c in cs {
+            let text = c.text.trim().to_string();
+            if !text.contains("__REEFMT_") {
+                texts.push(text);
+            }
+        }
+    }
+    texts.sort();
+    Some(texts)
+}
+
+/// Extract comment texts from any source file using text scanning.
+/// Handles `//` line comments and `/* */` block comments.
+/// Skips string and template literal content so embedded `//` isn't collected.
+/// Internal `__REEFMT_*` placeholder comments are excluded.
+pub(crate) fn collect_comment_texts_text(src: &str) -> Vec<String> {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    let mut texts: Vec<String> = Vec::new();
+
+    while i < len {
+        // Skip double-quoted strings
+        if bytes[i] == b'"' {
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' { i += 2; }
+                else if bytes[i] == b'"' { i += 1; break; }
+                else { i += 1; }
+            }
+            continue;
+        }
+        // Skip single-quoted strings
+        if bytes[i] == b'\'' {
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' { i += 2; }
+                else if bytes[i] == b'\'' { i += 1; break; }
+                else { i += 1; }
+            }
+            continue;
+        }
+        // Skip template literals
+        if bytes[i] == b'`' {
+            i += 1;
+            let mut depth = 0u32;
+            while i < len {
+                if bytes[i] == b'\\' { i += 2; }
+                else if bytes[i] == b'$' && i + 1 < len && bytes[i + 1] == b'{' { i += 2; depth += 1; }
+                else if bytes[i] == b'}' && depth > 0 { i += 1; depth -= 1; }
+                else if bytes[i] == b'`' && depth == 0 { i += 1; break; }
+                else { i += 1; }
+            }
+            continue;
+        }
+        // Line comment `//`
+        if bytes[i] == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
+            i += 2;
+            let start = i;
+            while i < len && bytes[i] != b'\n' { i += 1; }
+            let text = src[start..i].trim().to_string();
+            if !text.contains("__REEFMT_") {
+                texts.push(text);
+            }
+            continue;
+        }
+        // Block comment `/* ... */`
+        if bytes[i] == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
+            i += 2;
+            let start = i;
+            while i + 1 < len {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' { i += 2; break; }
+                i += 1;
+            }
+            let text = src[start..i.saturating_sub(2)].trim().to_string();
+            if !text.contains("__REEFMT_") {
+                texts.push(text);
+            }
+            continue;
+        }
+        i += 1;
+    }
+
+    texts.sort();
+    texts
+}
+
+/// Verify that every comment in `original` is present in `formatted`.
+/// Uses SWC for TS/JS files (accurate, handles strings), text scanning for others.
+/// Falls back gracefully if parsing fails.
+pub(crate) fn verify_comments_preserved(original: &str, formatted: &str, ext: &str) -> Result<(), String> {
+    let orig_texts: Vec<String>;
+    let fmt_texts: Vec<String>;
+
+    match ext {
+        "ts" | "js" => {
+            orig_texts = match collect_comment_texts_ts(original) {
+                Some(t) => t,
+                None => return Ok(()), // unparseable — skip
+            };
+            fmt_texts = match collect_comment_texts_ts(formatted) {
+                Some(t) => t,
+                None => return Ok(()),
+            };
+        }
+        _ => {
+            orig_texts = collect_comment_texts_text(original);
+            fmt_texts = collect_comment_texts_text(formatted);
+        }
+    }
+
+    // Every comment from original must appear in formatted (order-independent,
+    // duplicate-aware: two identical comments in original need two in formatted).
+    let mut remaining = fmt_texts.clone();
+    for comment in &orig_texts {
+        if let Some(pos) = remaining.iter().position(|c| c == comment) {
+            remaining.remove(pos);
+        } else {
+            return Err(format!("comment lost during formatting: {:?}", comment));
+        }
+    }
+    Ok(())
 }
 
 // ─── atom helpers ───────────────────────────────────────────────────────────
@@ -796,5 +942,70 @@ mod tests {
         let original  = "const x = a;\n";
         let corrupted = "const x = a + b;\n";
         assert!(verify_semantics_preserved(original, corrupted).is_err());
+    }
+
+    // ─── comment preservation tests ──────────────────────────────────────────
+
+    #[test]
+    fn comments_preserved_when_unchanged() {
+        let src = "const x = 1; // my comment\n";
+        assert!(verify_comments_preserved(src, src, "ts").is_ok());
+    }
+
+    #[test]
+    fn comments_preserved_whitespace_reformatted() {
+        let orig = "const x = 1; // my comment\n";
+        let fmt  = "const x = 1; // my comment\n";
+        assert!(verify_comments_preserved(orig, fmt, "ts").is_ok());
+    }
+
+    #[test]
+    fn comments_detects_dropped_line_comment_ts() {
+        let orig = "const x = 1; // important\n";
+        let fmt  = "const x = 1;\n";
+        assert!(verify_comments_preserved(orig, fmt, "ts").is_err());
+    }
+
+    #[test]
+    fn comments_detects_dropped_block_comment_ts() {
+        let orig = "/* header */\nconst x = 1;\n";
+        let fmt  = "const x = 1;\n";
+        assert!(verify_comments_preserved(orig, fmt, "ts").is_err());
+    }
+
+    #[test]
+    fn comments_text_scanner_line_comment() {
+        let texts = collect_comment_texts_text("const x = 1; // hello\n");
+        assert_eq!(texts, vec!["hello"]);
+    }
+
+    #[test]
+    fn comments_text_scanner_block_comment() {
+        let texts = collect_comment_texts_text("/* block */\nconst x = 1;\n");
+        assert_eq!(texts, vec!["block"]);
+    }
+
+    #[test]
+    fn comments_text_scanner_skips_string_content() {
+        // `//` inside a string must not be treated as a comment
+        let texts = collect_comment_texts_text("const s = \"http://example.com\";\n");
+        assert!(texts.is_empty(), "got: {:?}", texts);
+    }
+
+    #[test]
+    fn comments_text_scanner_detects_dropped_css_comment() {
+        let orig = "/* color: red */\n.foo { color: red; }\n";
+        let fmt  = ".foo { color: red; }\n";
+        assert!(verify_comments_preserved(orig, fmt, "css").is_err());
+    }
+
+    #[test]
+    fn comments_duplicate_preserved() {
+        // Two identical comments in original → both must appear in formatted
+        let orig = "// note\nconst a = 1; // note\n";
+        let fmt_ok  = "// note\nconst a = 1; // note\n";
+        let fmt_bad = "const a = 1; // note\n"; // one dropped
+        assert!(verify_comments_preserved(orig, fmt_ok, "ts").is_ok());
+        assert!(verify_comments_preserved(orig, fmt_bad, "ts").is_err());
     }
 }

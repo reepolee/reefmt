@@ -103,13 +103,23 @@ impl<'a> Printer<'a> {
     }
 
     pub(super) fn has_trailing_line_comment(&self, pos: BytePos) -> bool {
-        self.comments.get_trailing(pos)
-            .map(|cs| cs.iter().any(|c| c.kind == swc_core::common::comments::CommentKind::Line))
-            .unwrap_or(false)
+        // SWC sometimes stores the trailing comment a few bytes after the node's
+        // hi() — e.g. at the space after the comma in `prop: val, // comment`.
+        // Scan a small range to catch it.
+        (0u32..4).any(|offset| {
+            self.comments.get_trailing(pos + BytePos(offset))
+                .map(|cs| cs.iter().any(|c| c.kind == swc_core::common::comments::CommentKind::Line))
+                .unwrap_or(false)
+        })
     }
 
     pub(super) fn emit_trailing_comments(&mut self, pos: BytePos) {
-        if let Some(comments) = self.comments.get_trailing(pos) {
+        // Scan a small range — SWC may store the comment a few bytes past hi().
+        let actual_pos = (0u32..4).find(|&offset| {
+            self.comments.get_trailing(pos + BytePos(offset))
+                .map_or(false, |cs| !cs.is_empty())
+        }).map(|offset| pos + BytePos(offset)).unwrap_or(pos);
+        if let Some(comments) = self.comments.get_trailing(actual_pos) {
             let stmt_line = self.cm.lookup_char_pos(pos).line;
             for c in &comments {
                 match c.kind {

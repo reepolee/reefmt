@@ -757,6 +757,7 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, max_members: u
             if !stmt_trimmed.is_empty()
                 && close_trimmed == "}"
                 && !stmt_trimmed.starts_with("//")
+                && !stmt_trimmed.contains(" //")
                 && !has_unclosed_template_literal(stmt_trimmed)
             {
                 let prefix = &line[..line.len() - trimmed.len()];
@@ -802,7 +803,10 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, max_members: u
                     // No statements (`;`). Brace-depth tracking handles nested
                     // structures correctly, and template literals like `${expr}`
                     // may contain `{`/`}` inside the expression.
+                    // No trailing line comments (` //`) — collapsing would make them
+                    // comment out the rest of the inline expression.
                     !cleaned.contains(';')
+                        && !cleaned.contains(" //")
                         && (cleaned.contains(':') || cleaned.starts_with("...") || is_simple_ident(cleaned))
                 });
 
@@ -856,8 +860,11 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, max_members: u
                 // must be a key:value pair, shorthand identifier, or spread operator.
                 let is_valid_obj = !body.is_empty() && body.len() <= max_members && body.iter().all(|l| {
                     let cleaned = l.trim_end_matches(',').trim();
-                    // No statements (`;`), no nested un-collapsed braces (`{`, `}`)
+                    // No statements (`;`), no nested un-collapsed braces (`{`, `}`),
+                    // no trailing line comments (` //`) — collapsing would make them
+                    // comment out the rest of the inline expression.
                     !cleaned.contains(';') && !cleaned.contains('{') && !cleaned.contains('}')
+                        && !cleaned.contains(" //")
                         && (cleaned.contains(':') || cleaned.starts_with("...") || is_simple_ident(cleaned))
                 });
 
@@ -914,10 +921,13 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, max_members: u
                         .filter(|l| !l.is_empty())
                         .collect();
 
-                    // Validate: body must contain no statements (no `;`), no nested arrays
+                    // Validate: body must contain no statements (no `;`), no nested arrays,
+                    // no trailing line comments (` //`) — collapsing would make them
+                    // comment out the rest of the inline expression.
                     let is_valid_arr = !body.is_empty() && body.len() <= max_members && body.iter().all(|l| {
                         let cleaned = l.trim_end_matches(',').trim();
                         !cleaned.contains(';') && !cleaned.contains('[') && !cleaned.contains(']')
+                            && !cleaned.contains(" //")
                     });
 
                     if is_valid_arr {
@@ -1808,6 +1818,22 @@ pub(crate) fn format_code_file(path: &Path, mode: Mode, wrap_width: usize, colla
             }
             return false;
         }
+    }
+
+    // Comment preservation check: abort if any comment was lost (all file types)
+    if let Err(msg) = crate::ast_check::verify_comments_preserved(&normalized, &write_content, ext) {
+        eprintln!(
+            "\n\x1b[1;31mFATAL: reefmt dropped a comment in {}:\x1b[0m {}",
+            path.display(),
+            msg
+        );
+        eprintln!("File NOT written. Please report this as a bug.");
+        if std::env::var("REEFMT_DEBUG").is_ok() {
+            eprintln!("\n=== [reefmt debug] formatted output ===\n{}", write_content);
+            eprintln!("\n=== [reefmt debug] diff ===");
+            print_diff(path, &normalized, &write_content);
+        }
+        return false;
     }
 
     if write_content == normalized {
