@@ -1336,7 +1336,7 @@ fn classify_declaration(trimmed: &str) -> Option<DeclType> {
 /// onto a single line, making them unreadable.
 ///
 /// If the conditions aren't met, returns `None` (no change).
-fn try_split_function_params(line: &str, max_width: usize) -> Option<String> {
+fn try_split_function_params(line: &str, max_width: usize, min_params_to_split: usize) -> Option<String> {
     let trimmed = line.trim();
 
     let decl_type = classify_declaration(trimmed)?;
@@ -1443,8 +1443,8 @@ fn try_split_function_params(line: &str, max_width: usize) -> Option<String> {
                             }
                         }
 
-                        // Only split if >3 params AND line exceeds wrapWidth
-                        if params.len() <= 3 || line.len() <= max_width {
+                        // Only split when params exceed the configured threshold AND line is too long
+                        if params.len() <= min_params_to_split || line.len() <= max_width {
                             return None;
                         }
 
@@ -1489,8 +1489,8 @@ fn try_split_function_params(line: &str, max_width: usize) -> Option<String> {
 ///
 /// Operates on each line independently — lines that don't match a function
 /// signature or that already have their params split are left untouched.
-fn wrap_long_function_params(code: &str, max_width: usize) -> String {
-    apply_with_context(code, |line| try_split_function_params(line, max_width))
+fn wrap_long_function_params(code: &str, max_width: usize, min_params_to_split: usize) -> String {
+    apply_with_context(code, |line| try_split_function_params(line, max_width, min_params_to_split))
 }
 
 /// Try to split a method chain that exceeds `max_width` across multiple lines.
@@ -1853,7 +1853,7 @@ pub(crate) fn format_code_content(
             // codegen path used, so long lines still wrap.
             let collapsed = collapse_inline_type_literals(&restored, wrap_width, collapse.max_type_members);
             log_stage!("after collapse_inline_type_literals", collapsed);
-            let params_split = wrap_long_function_params(&collapsed, wrap_width);
+            let params_split = wrap_long_function_params(&collapsed, wrap_width, collapse.max_function_params);
             log_stage!("after wrap_long_function_params", params_split);
             let chains_split = wrap_long_method_chains(&params_split, wrap_width);
             log_stage!("after wrap_long_method_chains", chains_split);
@@ -2951,7 +2951,7 @@ mod tests {
         // The colon in the date string previously satisfied the type-annotation
         // guard, causing the template content to be corrupted.
         let src = "async function seed_user(username: string, email: string) {\n\tawait test_db!`\n\t\tINSERT INTO users (email, name)\n\t\tVALUES (${email}, ${\"Seed\"}, ${\"\"}, ${username}, ${\"\"}, ${\"\"}, ${modules}, ${\"2026-01-01 00:00:00\"})\n\t`;\n}\n";
-        let result = wrap_long_function_params(src, 100);
+        let result = wrap_long_function_params(src, 100, 3);
         assert_eq!(result, src, "Template literal content must not be split as function params");
     }
 
@@ -2961,7 +2961,7 @@ mod tests {
         // treated as function params. The `:` in backtick literals like
         // `bun build:dist` previously satisfied the type-annotation guard.
         let src = "/**\n * pipeline (`bun build:dist`, `bun preview`, sitemap, rss) works against it.\n */\nexport const X = 1;\n";
-        let result = wrap_long_function_params(src, 80);
+        let result = wrap_long_function_params(src, 80, 3);
         assert_eq!(result, src, "Block comment content must not be split as function params");
     }
 
@@ -2969,7 +2969,7 @@ mod tests {
     fn wrap_split_function_params_6_params_exceeds_width() {
         // 6 params, line is ~230 chars, wrapWidth=180 → split one-per-line
         let src = "export async function search_records(search: string = \"\", offset: number = 0, limit: number = 20, order_by: string = \"id::asc\", scope_clause: string = \"\", filter_clauses: { clause: string; params: any[]; }[] = []): Promise<{ records: Record[]; total: number; }> {\n";
-        let result = wrap_long_function_params(src, 180);
+        let result = wrap_long_function_params(src, 180, 3);
         assert!(result.starts_with("export async function search_records("), "Should keep open paren on first line");
         assert!(result.contains("\n\tsearch: string = \"\""), "First param should be indented one level from column 0");
         assert!(result.contains("\n\tfilter_clauses: { clause: string; params: any[]; }[] = []"), "Last param indented one level");
@@ -2985,7 +2985,7 @@ mod tests {
     fn wrap_skip_function_3_params() {
         // 3 params, even if line exceeds width, should NOT split
         let src = "export function foo(a: string, b: string, c: string): void {\n";
-        let result = wrap_long_function_params(src, 40);
+        let result = wrap_long_function_params(src, 40, 3);
         assert_eq!(result, src);
     }
 
@@ -2994,7 +2994,7 @@ mod tests {
         // 4 params but line fits within maxWidth → keep one-line
         let src = "function foo(a: string, b: string, c: string, d: string) {\n";
         assert!(src.len() <= 80, "line should fit within 80 for this test");
-        let result = wrap_long_function_params(src, 80);
+        let result = wrap_long_function_params(src, 80, 3);
         assert_eq!(result, src);
     }
 
@@ -3003,7 +3003,7 @@ mod tests {
         // Async function declaration with many params
         let src = "export async function process_data(id: number, name: string, value: number, options: Record<string, any>, callback: () => void): Promise<void> {\n";
         assert!(src.len() > 120, "line should exceed 120 for this test");
-        let result = wrap_long_function_params(src, 120);
+        let result = wrap_long_function_params(src, 120, 3);
         assert!(result.starts_with("export async function process_data("), "Should start with function name + open paren");
         assert!(result.contains("\n\tid: number,"), "Params should be indented one level from column 0");
         assert!(result.contains("\n\tcallback: () => void,"), "Last param should have trailing comma");
@@ -3014,7 +3014,7 @@ mod tests {
     fn wrap_idempotent_already_split() {
         // If already formatted with params on separate lines, should not change
         let src = "export async function search_records(\n\tsearch: string = \"\",\n\toffset: number = 0,\n\tlimit: number = 20,\n\torder_by: string = \"id::asc\",\n\tscope_clause: string = \"\",\n\tfilter_clauses: { clause: string; params: any[]; }[] = [],\n): Promise<{ records: Record[]; total: number; }> {\n\ttry {\n\t\treturn { records: [], total: 0 };\n\t} catch (error) {\n\t\tconsole.error(\"Error:\", error);\n\t\treturn { records: [], total: 0 };\n\t}\n}\n";
-        let result = wrap_long_function_params(src, 180);
+        let result = wrap_long_function_params(src, 180, 3);
         assert_eq!(result, src, "Already-split function should not be modified");
     }
 
@@ -3022,7 +3022,7 @@ mod tests {
     fn wrap_no_function_keyword_no_change() {
         // Lines without `function` keyword should pass through unchanged
         let src = "const x = 1;\nconst y = 2;\n";
-        let result = wrap_long_function_params(src, 180);
+        let result = wrap_long_function_params(src, 180, 3);
         assert_eq!(result, src);
     }
 
@@ -3045,7 +3045,7 @@ mod tests {
         // Line is ~63 chars, wrapWidth=50 → should split
         let src = "\t\tgetData(a: string, b: number, c: string, d: boolean): void {\n";
         assert!(src.len() > 50, "line should exceed 50 chars for this test");
-        let result = wrap_long_function_params(src, 50);
+        let result = wrap_long_function_params(src, 50, 3);
         assert!(result.contains("getData("), "Should keep method name + open paren on first line");
         assert!(result.contains("\n\t\t\ta: string,"), "First param should be indented one more level");
         assert!(result.contains("\n\t\t\td: boolean,"), "Last param should have trailing comma");
@@ -3057,7 +3057,7 @@ mod tests {
         // Async method with 5 params exceeding width
         let src = "\tasync fetchData(id: number, name: string, value: number, options: Record<string, any>, callback: () => void): Promise<void> {\n";
         assert!(src.len() > 120, "line should exceed 120 chars");
-        let result = wrap_long_function_params(src, 120);
+        let result = wrap_long_function_params(src, 120, 3);
         assert!(result.starts_with("\tasync fetchData("), "Should keep async + method name");
         assert!(result.contains("\n\t\tid: number,"), "Params indented one more level");
     }
@@ -3066,7 +3066,7 @@ mod tests {
     fn wrap_interface_method_split() {
         // Interface method declaration (no body, just return type)
         let src = "getData(a: string, b: number, c: string, d: boolean): Record[];\n";
-        let result = wrap_long_function_params(src, 60);
+        let result = wrap_long_function_params(src, 60, 3);
         assert!(result.starts_with("getData("), "Should keep method name + open paren");
         assert!(result.contains("\n\ta: string,"), "Params indented one level");
         assert!(result.contains("\n): Record[];"), "Close paren at original indent");
@@ -3076,7 +3076,7 @@ mod tests {
     fn wrap_method_call_no_false_positive() {
         // Function call without type annotations should NOT trigger
         let src = "\treturn someFunction(a, b, c, d, e, f);\n";
-        let result = wrap_long_function_params(src, 40);
+        let result = wrap_long_function_params(src, 40, 3);
         assert_eq!(result, src, "Function calls without type annotations should not trigger");
     }
 
@@ -3084,7 +3084,7 @@ mod tests {
     fn wrap_method_3_params_only() {
         // Method with 3 params should NOT split
         let src = "\tgetName(a: string, b: string, c: string): string {\n";
-        let result = wrap_long_function_params(src, 40);
+        let result = wrap_long_function_params(src, 40, 3);
         assert_eq!(result, src, "Methods with <=3 params should not split");
     }
 
@@ -3093,7 +3093,7 @@ mod tests {
         // Method with 4 params that fits within width should NOT split
         let src = "\tgetShort(a: string, b: string, c: string, d: string) {\n";
         assert!(src.len() <= 80, "line should fit within 80 cols");
-        let result = wrap_long_function_params(src, 80);
+        let result = wrap_long_function_params(src, 80, 3);
         assert_eq!(result, src, "Method that fits within max_width should not split");
     }
 
@@ -3102,7 +3102,7 @@ mod tests {
         // Arrow function expression assigned to a const
         let src = "const processData = (a: string, b: number, c: string, d: boolean): void => {\n";
         assert!(src.len() > 70, "line should exceed 70 chars for this test");
-        let result = wrap_long_function_params(src, 70);
+        let result = wrap_long_function_params(src, 70, 3);
         assert!(result.starts_with("const processData = ("), "Should keep const + arrow function + open paren");
         assert!(result.contains("\n\ta: string,"), "First param indented");
         assert!(result.contains("\n): void => {"), "Close paren at original indent");
@@ -3114,12 +3114,12 @@ mod tests {
         // Async arrow function assigned to a const
         let src = "const fetchData = async (id: number, name: string, value: number, options: Record<string, any>, callback: () => void): Promise<void> => {\n";
         assert!(src.len() > 130, "line should exceed 130 chars for this test");
-        let result = wrap_long_function_params(src, 130);
+        let result = wrap_long_function_params(src, 130, 3);
         assert!(result.starts_with("const fetchData = async ("), "Should keep const + async + open paren");
         assert!(result.contains("\n\tid: number,"), "Params indented");
         assert!(result.contains("\n): Promise<void> => {"), "Close paren + arrow at original indent");
         // Verify idempotency
-        let pass2 = wrap_long_function_params(&result, 150);
+        let pass2 = wrap_long_function_params(&result, 150, 3);
         assert_eq!(result, pass2, "Arrow function split should be idempotent");
     }
 
@@ -3127,7 +3127,7 @@ mod tests {
     fn wrap_arrow_function_3_params_no_split() {
         // Arrow function with 3 params should NOT split
         let src = "const fn = (a: string, b: string, c: string): void => {\n";
-        let result = wrap_long_function_params(src, 40);
+        let result = wrap_long_function_params(src, 40, 3);
         assert_eq!(result, src);
     }
 
@@ -3135,7 +3135,7 @@ mod tests {
     fn wrap_arrow_function_call_no_false_positive() {
         // Regular function call assigned to const (no type annotations) should NOT trigger
         let src = "const result = someFunction(a, b, c, d, e, f);\n";
-        let result = wrap_long_function_params(src, 40);
+        let result = wrap_long_function_params(src, 40, 3);
         assert_eq!(result, src, "Function calls without type annotations should not trigger");
     }
 
@@ -3143,7 +3143,7 @@ mod tests {
     fn wrap_inside_body_no_false_positive() {
         // Function call or method call inside function body should not trigger
         let src = "\treturn someFunction(a, b, c, d, e, f);\n";
-        let result = wrap_long_function_params(src, 40);
+        let result = wrap_long_function_params(src, 40, 3);
         assert_eq!(result, src, "Function calls without 'function' keyword should not trigger");
     }
 
