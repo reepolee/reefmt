@@ -23,7 +23,7 @@ pub(crate) struct CollapseConfig {
 }
 
 impl CollapseConfig {
-    /// All categories share the same limit — convenience for tests and the ree formatter.
+    #[cfg(test)]
     pub(crate) fn uniform(enabled: bool, max: usize) -> Self {
         Self {
             enabled,
