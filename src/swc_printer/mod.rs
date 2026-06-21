@@ -103,23 +103,37 @@ impl<'a> Printer<'a> {
     }
 
     pub(super) fn has_trailing_line_comment(&self, pos: BytePos) -> bool {
-        // SWC sometimes stores the trailing comment a few bytes after the node's
-        // hi() — e.g. at the space after the comma in `prop: val, // comment`.
-        // Scan a small range to catch it.
+        self.has_trailing_line_comment_bounded(pos, BytePos(u32::MAX))
+    }
+
+    // Bounded variant: only scans positions < bound (used for property-level scans
+    // so statement-level trailing comments beyond the containing structure aren't
+    // claimed by the last property, which would cause duplicate emission).
+    pub(super) fn has_trailing_line_comment_bounded(&self, pos: BytePos, bound: BytePos) -> bool {
         (0u32..4).any(|offset| {
-            self.comments.get_trailing(pos + BytePos(offset))
+            let p = pos + BytePos(offset);
+            if p >= bound { return false; }
+            self.comments.get_trailing(p)
                 .map(|cs| cs.iter().any(|c| c.kind == swc_core::common::comments::CommentKind::Line))
                 .unwrap_or(false)
         })
     }
 
     pub(super) fn emit_trailing_comments(&mut self, pos: BytePos) {
-        // Scan a small range — SWC may store the comment a few bytes past hi().
+        self.emit_trailing_comments_bounded(pos, BytePos(u32::MAX));
+    }
+
+    // Bounded variant: only scans positions < bound. Use when emitting trailing
+    // comments for the last element of a structure (object/array/call) to avoid
+    // claiming statement-level comments that sit just past the closing delimiter.
+    pub(super) fn emit_trailing_comments_bounded(&mut self, pos: BytePos, bound: BytePos) {
         let actual_pos = (0u32..4).find(|&offset| {
-            self.comments.get_trailing(pos + BytePos(offset))
-                .map_or(false, |cs| !cs.is_empty())
-        }).map(|offset| pos + BytePos(offset)).unwrap_or(pos);
-        if let Some(comments) = self.comments.get_trailing(actual_pos) {
+            let p = pos + BytePos(offset);
+            if p >= bound { return false; }
+            self.comments.get_trailing(p).map_or(false, |cs| !cs.is_empty())
+        }).map(|offset| pos + BytePos(offset));
+        let Some(ap) = actual_pos else { return };
+        if let Some(comments) = self.comments.get_trailing(ap) {
             let stmt_line = self.cm.lookup_char_pos(pos).line;
             for c in &comments {
                 match c.kind {
@@ -131,13 +145,11 @@ impl<'a> Printer<'a> {
                     swc_core::common::comments::CommentKind::Line => {
                         let comment_line = self.cm.lookup_char_pos(c.span.lo).line;
                         if comment_line > stmt_line {
-                            // Comment was on its own line in the source — emit it on a new line.
                             self.nl();
                             self.wi();
                             self.w("//");
                             self.w(&c.text);
                         } else {
-                            // Comment was on the same line as the statement — keep it inline.
                             self.w(" //");
                             self.w(&c.text);
                         }

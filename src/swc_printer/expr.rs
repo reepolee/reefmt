@@ -20,7 +20,7 @@ impl<'a> Printer<'a> {
                             self.emit_leading_comments(e.span().lo());
                             if e.spread.is_some() { self.w("..."); }
                             self.print_expr(&e.expr);
-                            self.emit_trailing_comments(e.expr.span().hi());
+                            self.emit_trailing_comments_bounded(e.expr.span().hi(), a.span.hi());
                         }
                     }
                     // Emit closing-bracket comments so they force expansion when present
@@ -45,7 +45,7 @@ impl<'a> Printer<'a> {
                         if e.spread.is_some() { self.w("..."); }
                         self.print_expr(&e.expr);
                         self.w(",");
-                        self.emit_trailing_comments(e.expr.span().hi());
+                        self.emit_trailing_comments_bounded(e.expr.span().hi(), a.span.hi());
                     } else {
                         self.wi();
                         self.w(",");
@@ -76,9 +76,9 @@ impl<'a> Printer<'a> {
                         // comment, the \n forces rollback to expanded form.
                         self.emit_leading_comments(lo);
                         self.print_prop_or_spread(p);
-                        // Emit trailing comments in the trial — a trailing LINE comment
-                        // (` // ...`) doesn't add \n but marks the trial invalid via //
-                        self.emit_trailing_comments(hi);
+                        // Bounded: don't scan past the closing `}` so statement-level
+                        // trailing comments (stored at `;` position) don't force expansion.
+                        self.emit_trailing_comments_bounded(hi, o.span.hi());
                     }
                     // Emit closing-brace comments so they force expansion when present
                     self.emit_leading_comments(o.span.hi() - BytePos(1));
@@ -104,7 +104,7 @@ impl<'a> Printer<'a> {
                     self.wi();
                     self.print_prop_or_spread(p);
                     self.w(",");
-                    self.emit_trailing_comments(hi);
+                    self.emit_trailing_comments_bounded(hi, o.span.hi());
                     self.nl();
                 }
                 self.emit_leading_comments(o.span.hi() - BytePos(1));
@@ -127,7 +127,7 @@ impl<'a> Printer<'a> {
                     self.print_expr(&a.expr);
                 }
                 self.w(")");
-                if !c.args.is_empty() && self.current_line_len() > self.wrap_width {
+                if !c.args.is_empty() && (self.current_line_len() > self.wrap_width || (self.collapse_blocks && c.args.len() > self.max_members)) {
                     self.buf.truncate(call_start);
                     self.print_callee(&c.callee);
                     if let Some(ta) = &c.type_args {
@@ -168,7 +168,8 @@ impl<'a> Printer<'a> {
                     }
                 }
                 self.w(")");
-                if n.args.as_ref().map_or(false, |a| !a.is_empty()) && self.current_line_len() > self.wrap_width {
+                let n_arg_count = n.args.as_ref().map_or(0, |a| a.len());
+                if n_arg_count > 0 && (self.current_line_len() > self.wrap_width || (self.collapse_blocks && n_arg_count > self.max_members)) {
                     self.buf.truncate(new_start);
                     self.w("new ");
                     self.print_expr(&n.callee);
@@ -211,12 +212,27 @@ impl<'a> Printer<'a> {
             }
             Expr::Arrow(a) => {
                 if a.is_async { self.w("async "); }
-                self.w("(");
-                for (i, p) in a.params.iter().enumerate() {
-                    if i > 0 { self.w(", "); }
-                    self.print_pat(p);
+                if self.collapse_blocks && a.params.len() > self.max_members {
+                    self.w("(");
+                    self.nl();
+                    self.indent();
+                    for p in &a.params {
+                        self.wi();
+                        self.print_pat(p);
+                        self.w(",");
+                        self.nl();
+                    }
+                    self.dedent();
+                    self.wi();
+                    self.w(")");
+                } else {
+                    self.w("(");
+                    for (i, p) in a.params.iter().enumerate() {
+                        if i > 0 { self.w(", "); }
+                        self.print_pat(p);
+                    }
+                    self.w(")");
                 }
-                self.w(")");
                 if let Some(ret) = &a.return_type {
                     self.w(": ");
                     self.print_ts_type(&ret.type_ann);

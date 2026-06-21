@@ -139,12 +139,27 @@ impl<'a> Printer<'a> {
     }
 
     pub(super) fn print_fn_sig(&mut self, f: &Function) {
-        self.w("(");
-        for (i, p) in f.params.iter().enumerate() {
-            if i > 0 { self.w(", "); }
-            self.print_pat(&p.pat);
+        if self.collapse_blocks && f.params.len() > self.max_members {
+            self.w("(");
+            self.nl();
+            self.indent();
+            for p in &f.params {
+                self.wi();
+                self.print_pat(&p.pat);
+                self.w(",");
+                self.nl();
+            }
+            self.dedent();
+            self.wi();
+            self.w(")");
+        } else {
+            self.w("(");
+            for (i, p) in f.params.iter().enumerate() {
+                if i > 0 { self.w(", "); }
+                self.print_pat(&p.pat);
+            }
+            self.w(")");
         }
-        self.w(")");
         if let Some(ret) = &f.return_type {
             self.w(": ");
             self.print_ts_type(&ret.type_ann);
