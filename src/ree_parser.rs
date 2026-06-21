@@ -875,7 +875,8 @@ fn print_node(node: &Node, depth: usize, out: &mut String, wrap_width: usize) {
 }
 
 fn print_inline_element(tag: &str, attrs: &[String], children: &[Node], depth: usize, out: &mut String, wrap_width: usize) {
-    let content = render_children_text(children);
+    let raw_content = render_children_text(children);
+    let content = raw_content.trim();
     let attr_str = format_attrs_inline(attrs);
     let tag_open = if attr_str.is_empty() {
         format!("<{}>", tag)
@@ -904,7 +905,7 @@ fn print_inline_element(tag: &str, attrs: &[String], children: &[Node], depth: u
             out.push('\n');
         }
         out.push_str(&"\t".repeat(depth + 1));
-        out.push_str(content.trim());
+        out.push_str(content);
         out.push('\n');
         out.push_str(&"\t".repeat(depth));
         out.push_str(&closing);
@@ -914,7 +915,7 @@ fn print_inline_element(tag: &str, attrs: &[String], children: &[Node], depth: u
         out.push_str(&tag_open);
         out.push('\n');
         out.push_str(&"\t".repeat(depth + 1));
-        out.push_str(content.trim());
+        out.push_str(content);
         out.push('\n');
         out.push_str(&"\t".repeat(depth));
         out.push_str(&closing);

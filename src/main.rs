@@ -295,6 +295,20 @@ fn main() {
         })
     });
 
+    // Parse --wrap-width CLI override
+    let cli_wrap_width: Option<usize> = args.iter().position(|a| a == "--wrap-width").map(|pos| {
+        args.remove(pos);
+        if pos >= args.len() {
+            eprintln!("Error: --wrap-width requires a number argument");
+            std::process::exit(1);
+        }
+        let val = args.remove(pos);
+        val.parse().unwrap_or_else(|_| {
+            eprintln!("Error: --wrap-width must be a positive integer");
+            std::process::exit(1);
+        })
+    });
+
     let mode = if diff_mode {
         format::Mode::Diff
     } else if check_mode {
@@ -381,6 +395,11 @@ fn main() {
     // CLI --collapse-max-members overrides config
     if let Some(max_members) = cli_max_members {
         config.collapse_max_members = max_members;
+    }
+
+    // CLI --wrap-width overrides config
+    if let Some(w) = cli_wrap_width {
+        config.wrap_width = w;
     }
 
     // Handle --stdin (uses config)
