@@ -10,14 +10,14 @@
 use swc_core::ecma::ast::*;
 use swc_core::common::input::StringInput;
 use swc_core::common::sync::Lrc;
-use swc_core::common::{FileName, SourceMap};
+use swc_core::common::{FileName, SourceMap, Spanned};
 use swc_core::ecma::parser::lexer::Lexer;
 use swc_core::ecma::parser::{Parser, Syntax, TsSyntax};
 use swc_core::ecma::ast::EsVersion;
 
 /// Parse source and collect semantic tokens in document order.
-/// Returns `None` if the source cannot be parsed.
-pub(crate) fn collect_tokens(src: &str) -> Option<Vec<String>> {
+/// Returns `Ok(tokens)` on success, `Err(diagnostic)` if the source cannot be parsed.
+pub(crate) fn collect_tokens(src: &str) -> Result<Vec<String>, String> {
     let cm: Lrc<SourceMap> = Lrc::new(SourceMap::default());
     let fm = cm.new_source_file(FileName::Anon.into(), src.to_string());
     let comments = swc_core::common::comments::SingleThreadedComments::default();
@@ -26,22 +26,35 @@ pub(crate) fn collect_tokens(src: &str) -> Option<Vec<String>> {
     let input = StringInput::new(&fm.src, fm.start_pos, fm.end_pos);
     let lexer = Lexer::new(syntax, EsVersion::latest(), input, Some(&comments));
     let mut parser = Parser::new_from(lexer);
-    let module = parser.parse_module().ok()?;
+    let module = parser.parse_module().map_err(|e| {
+        // Translate the byte offset into a line:col for a human-readable error.
+        let lo = e.span().lo.0 as usize;
+        let (line, col) = byte_offset_to_line_col(src, lo);
+        format!("line {line}, col {col}: {e:?}")
+    })?;
 
     let mut tokens = Vec::new();
     walk_module(&module, &mut tokens);
-    Some(tokens)
+    Ok(tokens)
+}
+
+fn byte_offset_to_line_col(src: &str, offset: usize) -> (usize, usize) {
+    let safe = offset.min(src.len());
+    let before = &src[..safe];
+    let line = before.matches('\n').count() + 1;
+    let col = before.rfind('\n').map(|p| safe - p - 1).unwrap_or(safe) + 1;
+    (line, col)
 }
 
 /// Verify that formatting did not change the semantic content of the source.
 pub(crate) fn verify_semantics_preserved(original: &str, formatted: &str) -> Result<(), String> {
     let orig = match collect_tokens(original) {
-        Some(t) => t,
-        None => return Ok(()), // Can't parse original — skip check
+        Ok(t) => t,
+        Err(_) => return Ok(()), // Can't parse original — skip check
     };
     let fmt = match collect_tokens(formatted) {
-        Some(t) => t,
-        None => return Err("formatted output failed to parse as TypeScript".into()),
+        Ok(t) => t,
+        Err(diag) => return Err(format!("formatted output failed to parse as TypeScript ({diag})")),
     };
     if orig == fmt {
         return Ok(());
@@ -79,7 +92,7 @@ pub(crate) fn collect_comment_texts_ts(src: &str) -> Option<Vec<String>> {
     let lexer = Lexer::new(syntax, EsVersion::latest(), input, Some(&comments));
     let mut parser = Parser::new_from(lexer);
     if parser.parse_module().is_err() {
-        return None;
+        return None; // unparseable — skip comment check
     }
 
     let mut texts: Vec<String> = Vec::new();

@@ -1898,10 +1898,10 @@ pub(crate) fn format_code_file(path: &Path, mode: Mode, wrap_width: usize, colla
                 msg
             );
             eprintln!("File NOT written. Please report this as a bug.");
+            eprintln!("\n--- diff (original → formatted) ---");
+            print_diff(path, &normalized, &write_content);
             if std::env::var("REEFMT_DEBUG").is_ok() {
-                eprintln!("\n=== [reefmt debug] formatted output ===\n{}", write_content);
-                eprintln!("\n=== [reefmt debug] diff ===");
-                print_diff(path, &normalized, &write_content);
+                eprintln!("\n=== [reefmt debug] full formatted output ===\n{}", write_content);
             }
             return false;
         }
@@ -1915,10 +1915,10 @@ pub(crate) fn format_code_file(path: &Path, mode: Mode, wrap_width: usize, colla
             msg
         );
         eprintln!("File NOT written. Please report this as a bug.");
+        eprintln!("\n--- diff (original → formatted) ---");
+        print_diff(path, &normalized, &write_content);
         if std::env::var("REEFMT_DEBUG").is_ok() {
-            eprintln!("\n=== [reefmt debug] formatted output ===\n{}", write_content);
-            eprintln!("\n=== [reefmt debug] diff ===");
-            print_diff(path, &normalized, &write_content);
+            eprintln!("\n=== [reefmt debug] full formatted output ===\n{}", write_content);
         }
         return false;
     }
