@@ -899,9 +899,10 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &Col
                     // No statements (`;`). Brace-depth tracking handles nested
                     // structures correctly, and template literals like `${expr}`
                     // may contain `{`/`}` inside the expression.
-                    // No trailing line comments (` //`) — collapsing would make them
-                    // comment out the rest of the inline expression.
+                    // No comments (standalone `//` or trailing ` //`) — collapsing
+                    // would make them comment out the rest of the inline expression.
                     !cleaned.contains(';')
+                        && !cleaned.starts_with("//")
                         && !cleaned.contains(" //")
                         && (cleaned.contains(':') || cleaned.starts_with("...") || is_simple_ident(cleaned))
                 });
@@ -957,9 +958,10 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &Col
                 let is_valid_obj = !body.is_empty() && body.len() <= collapse.max_object_members && body.iter().all(|l| {
                     let cleaned = l.trim_end_matches(',').trim();
                     // No statements (`;`), no nested un-collapsed braces (`{`, `}`),
-                    // no trailing line comments (` //`) — collapsing would make them
-                    // comment out the rest of the inline expression.
+                    // no comments (standalone `//` or trailing ` //`) — collapsing
+                    // would make them comment out the rest of the inline expression.
                     !cleaned.contains(';') && !cleaned.contains('{') && !cleaned.contains('}')
+                        && !cleaned.starts_with("//")
                         && !cleaned.contains(" //")
                         && (cleaned.contains(':') || cleaned.starts_with("...") || is_simple_ident(cleaned))
                 });
@@ -1018,11 +1020,12 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &Col
                         .collect();
 
                     // Validate: body must contain no statements (no `;`), no nested arrays,
-                    // no trailing line comments (` //`) — collapsing would make them
-                    // comment out the rest of the inline expression.
+                    // no comments (standalone `//` or trailing ` //`) — collapsing
+                    // would make them comment out the rest of the inline expression.
                     let is_valid_arr = !body.is_empty() && body.len() <= collapse.max_array_elements && body.iter().all(|l| {
                         let cleaned = l.trim_end_matches(',').trim();
                         !cleaned.contains(';') && !cleaned.contains('[') && !cleaned.contains(']')
+                            && !cleaned.starts_with("//")
                             && !cleaned.contains(" //")
                     });
 
@@ -2676,6 +2679,64 @@ mod tests {
             result,
             "\treturn { ...obj, key: val };\n"
         );
+    }
+
+    #[test]
+    fn collapse_obj_with_comment_lines_stays_multiline() {
+        // Standalone object with embedded // comment lines must never collapse —
+        // the comment would comment out the closing `}`, producing invalid TS.
+        let src = "export const routes = {\n\t...build_routes(route_defs),\n\t...auth_crud,\n\t// GENERATED CHILD CRUD:start\n\t// GENERATED CHILD CRUD:end\n};\n";
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 10));
+        assert_eq!(result, src, "Object with embedded comments must stay multi-line");
+    }
+
+    #[test]
+    fn collapse_obj_arg_with_comment_line_stays_multiline() {
+        // Object passed as a function argument with an embedded // comment must not collapse.
+        let src = "someFunc({\n\tkey: \"val\",\n\t// generated\n});\n";
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 10));
+        assert_eq!(result, src, "Obj-arg with embedded comment must stay multi-line");
+    }
+
+    #[test]
+    fn collapse_obj_with_trailing_inline_comment_stays_multiline() {
+        // A member with a trailing // comment must not collapse — the comment
+        // would comment out the rest of the object when inlined.
+        let src = "const x = {\n\tkey: val, // intentional\n\tother: val\n};\n";
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 10));
+        assert_eq!(result, src, "Object with trailing inline comment must stay multi-line");
+    }
+
+    #[test]
+    fn collapse_obj_arg_with_trailing_inline_comment_stays_multiline() {
+        // Function-arg object with a trailing // comment on a member must not collapse.
+        let src = "fn({\n\tkey: val, // note\n\tother: val\n});\n";
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 10));
+        assert_eq!(result, src, "Obj-arg with trailing inline comment must stay multi-line");
+    }
+
+    #[test]
+    fn collapse_array_with_comment_lines_stays_multiline() {
+        // Array with embedded // comments must never collapse.
+        let src = "const arr = [\n\tfoo,\n\tbar,\n\t// generated\n];\n";
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 10));
+        assert_eq!(result, src, "Array with embedded comments must stay multi-line");
+    }
+
+    #[test]
+    fn collapse_array_with_trailing_inline_comment_stays_multiline() {
+        // Array element with a trailing // comment must not collapse.
+        let src = "const arr = [\n\tfoo, // keep\n\tbar\n];\n";
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 10));
+        assert_eq!(result, src, "Array with trailing inline comment must stay multi-line");
+    }
+
+    #[test]
+    fn collapse_obj_without_comments_still_collapses() {
+        // Sanity check: objects with no comments should still collapse normally.
+        let src = "const x = {\n\t...a,\n\t...b,\n};\n";
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 10));
+        assert_eq!(result, "const x = { ...a, ...b };\n");
     }
 
     // ─── Narrow wrapWidth boundary tests ──────────────────────────
