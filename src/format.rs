@@ -11,12 +11,12 @@ pub(crate) enum Mode { Write, Check, Diff }
 
 /// A placeholder entry for content extracted before SWC formatting
 /// and restored afterward.
-struct Placeholder {
-    tag: String,
-    original: String,
+pub(crate) struct Placeholder {
+    pub(crate) tag: String,
+    pub(crate) original: String,
     /// Leading whitespace on the line where `/*` appears (tabs/spaces before `/*`).
     /// Used by `reindent_block_comment` to strip the original structural indentation.
-    original_indent: String,
+    pub(crate) original_indent: String,
 }
 
 /// Pre-process source code before SWC formatting to preserve content that SWC
@@ -32,7 +32,7 @@ struct Placeholder {
 /// Each extracted piece is replaced with a `// __REEFMT_{type}_{id}__` placeholder
 /// comment that SWC preserves. After SWC formatting, the placeholders are restored
 /// to their original text.
-fn preprocess_for_swc(code: &str) -> (String, Vec<Placeholder>) {
+pub(crate) fn preprocess_for_swc(code: &str) -> (String, Vec<Placeholder>) {
     let mut placeholders = Vec::new();
     let mut id_counter = 0usize;
 
@@ -58,9 +58,37 @@ fn copy_utf8_char(code: &str, bytes: &[u8], out: &mut String, i: &mut usize) {
     }
 }
 
+/// Returns true if the content emitted so far (the `out` buffer) ends in a context where
+/// `/` starts a regex literal rather than a division operator.
+/// Heuristic: after `)` or `]` it's division; after an identifier it's division unless
+/// the identifier is a keyword that takes an expression (return, typeof, …); otherwise regex.
+fn could_be_regex_start(out: &str) -> bool {
+    let trimmed = out.trim_end();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let last = trimmed.chars().last().unwrap();
+    if last == ')' || last == ']' {
+        return false;
+    }
+    if last.is_alphanumeric() || last == '_' || last == '$' {
+        let last_word_start = trimmed
+            .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '$')
+            .map(|p| p + 1)
+            .unwrap_or(0);
+        let last_word = &trimmed[last_word_start..];
+        const REGEX_KEYWORDS: &[&str] = &[
+            "return", "typeof", "void", "delete", "throw", "new", "in",
+            "instanceof", "case", "yield", "await",
+        ];
+        return REGEX_KEYWORDS.contains(&last_word);
+    }
+    true
+}
+
 /// Scan character-by-character to find block comments on their own line
 /// and replace them with `// __REEFMT_BLOCK_N__` placeholders.
-/// Properly skips string literals, template literals, and single-line comments.
+/// Properly skips string literals, template literals, regex literals, and single-line comments.
 fn extract_block_comments(code: &str, placeholders: &mut Vec<Placeholder>, id: &mut usize) -> String {
     let mut out = String::with_capacity(code.len());
     let bytes = code.as_bytes();
@@ -103,6 +131,57 @@ fn extract_block_comments(code: &str, placeholders: &mut Vec<Placeholder>, id: &
                 } else if b == b'\'' {
                     out.push('\'');
                     i += 1;
+                    break;
+                } else {
+                    copy_utf8_char(code, bytes, &mut out, &mut i);
+                }
+            }
+            continue;
+        }
+
+        // Skip regex literals /pattern/flags so backticks inside them don't
+        // trigger spurious template-literal scanning.
+        if bytes[i] == b'/'
+            && i + 1 < len
+            && bytes[i + 1] != b'/'
+            && bytes[i + 1] != b'*'
+            && could_be_regex_start(&out)
+        {
+            out.push('/');
+            i += 1;
+            while i < len && bytes[i] != b'\n' {
+                let b = bytes[i];
+                if b == b'\\' && i + 1 < len {
+                    out.push('\\');
+                    i += 1;
+                    out.push(bytes[i] as char);
+                    i += 1;
+                } else if b == b'[' {
+                    // character class — `/` is allowed inside, scan until `]`
+                    out.push('[');
+                    i += 1;
+                    while i < len && bytes[i] != b']' {
+                        if bytes[i] == b'\\' && i + 1 < len {
+                            out.push('\\');
+                            i += 1;
+                            out.push(bytes[i] as char);
+                            i += 1;
+                        } else {
+                            copy_utf8_char(code, bytes, &mut out, &mut i);
+                        }
+                    }
+                    if i < len {
+                        out.push(']');
+                        i += 1;
+                    }
+                } else if b == b'/' {
+                    out.push('/');
+                    i += 1;
+                    // consume flags (gimsuy)
+                    while i < len && bytes[i].is_ascii_alphabetic() {
+                        out.push(bytes[i] as char);
+                        i += 1;
+                    }
                     break;
                 } else {
                     copy_utf8_char(code, bytes, &mut out, &mut i);
@@ -260,7 +339,7 @@ fn extract_blank_lines(code: &str, placeholders: &mut Vec<Placeholder>, id: &mut
 /// 1. First restore blank lines (they become empty lines, which won't interfere
 ///    with block comment pattern matching).
 /// 2. Then restore block comments (multi-line replacement).
-fn postprocess_from_swc(formatted: &str, placeholders: &[Placeholder]) -> String {
+pub(crate) fn postprocess_from_swc(formatted: &str, placeholders: &[Placeholder]) -> String {
     // Build a map for fast lookup
     let mut by_tag: HashMap<&str, &Placeholder> = HashMap::new();
     for p in placeholders {

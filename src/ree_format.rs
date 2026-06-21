@@ -132,17 +132,23 @@ fn format_script_content(content: &str, wrap_width: usize, collapse_blocks: bool
         .join("\n");
 
     // Protect Ree expressions
-    let mut placeholders: Vec<String> = Vec::new();
-    let protected = protect_ree_expressions(&bare_js, &mut placeholders);
+    let mut ree_placeholders: Vec<String> = Vec::new();
+    let protected = protect_ree_expressions(&bare_js, &mut ree_placeholders);
+
+    // Preserve blank lines and block comments across SWC (same pipeline as .ts/.js files)
+    let (preprocessed, swc_placeholders) = crate::format::preprocess_for_swc(&protected);
 
     // Format with SWC
-    let formatted = crate::swc_format::format_js_with_indent(&protected, "\t", remove_unused);
+    let swc_out = crate::swc_format::format_js_with_indent(&preprocessed, "\t", remove_unused);
+
+    // Restore blank lines and block comments
+    let restored_swc = crate::format::postprocess_from_swc(&swc_out, &swc_placeholders);
 
     // Fix arrow function spacing: `()=>{` → `() => {`
-    let formatted = crate::format::fix_arrow_spacing(&formatted);
+    let formatted = crate::format::fix_arrow_spacing(&restored_swc);
 
     // Restore Ree expressions
-    let restored = restore_ree_expressions(&formatted, &placeholders);
+    let restored = restore_ree_expressions(&formatted, &ree_placeholders);
 
     // Re-indent each line to match AST nesting level
     if restored.trim().is_empty() {
