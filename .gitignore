@@ -5,5 +5,4 @@ Cargo.lock
 reefmt-linux-*
 reefmt-macos-*
 reefmt-windows-*.exe
-test-files
-test-files/
+
