@@ -68,6 +68,11 @@ pub(crate) struct ReeConfig {
     /// during formatting. Side-effect imports (`import "./foo"`) are always kept.
     #[serde(rename = "removeUnusedImports", default)]
     remove_unused_imports: bool,
+    /// When true, multi-line HTML elements in .ree files are collapsed to a
+    /// single line when the full `<tag>content</tag>` fits within wrapWidth.
+    /// Elements that don't fit stay multi-line.
+    #[serde(default)]
+    oneline: bool,
 }
 
 impl ReeConfig {
@@ -309,6 +314,14 @@ fn main() {
         })
     });
 
+    // Parse --oneline flag (collapse multi-line HTML elements to one line when they fit)
+    let cli_oneline = if let Some(pos) = args.iter().position(|a| a == "--oneline") {
+        args.remove(pos);
+        true
+    } else {
+        false
+    };
+
     let mode = if diff_mode {
         format::Mode::Diff
     } else if check_mode {
@@ -402,6 +415,11 @@ fn main() {
         config.wrap_width = w;
     }
 
+    // CLI --oneline overrides config
+    if cli_oneline {
+        config.oneline = true;
+    }
+
     // Handle --stdin (uses config)
     if stdin_mode.is_some() {
         let mut input = String::new();
@@ -421,7 +439,7 @@ fn main() {
 
         let collapse = config.collapse_config();
         let formatted = match ext {
-            "ree" => ree_format::format_ree_content(&input, config.wrap_width, collapse, config.remove_unused_imports),
+            "ree" => ree_format::format_ree_content(&input, config.wrap_width, config.oneline, collapse, config.remove_unused_imports),
             "ts" | "js" | "css" => format::format_code_content(&input, ext, config.wrap_width, collapse, config.remove_unused_imports),
             _ => {
                 eprintln!("Unsupported extension for --stdin: .{}", ext);
@@ -621,6 +639,7 @@ mod tests {
             collapse_max_imports: None,
             collapse_max_type_members: None,
             remove_unused_imports: false,
+            oneline: false,
         };
         let modified = format::format_file(&path, format::Mode::Write, &config);
         assert!(!modified, "format_file should return false for unsupported extension");

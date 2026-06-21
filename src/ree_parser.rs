@@ -39,11 +39,11 @@ pub(crate) enum Node {
 // Public API
 // ═══════════════════════════════════════════════════════════════
 
-pub(crate) fn format_ree(input: &str, wrap_width: usize) -> String {
+pub(crate) fn format_ree(input: &str, wrap_width: usize, oneline: bool) -> String {
     let normalized = input.replace("\r\n", "\n");
     let nodes = parse(&normalized);
     let nodes = hoist_script_ree_blocks(nodes);
-    let out = print_nodes(&nodes, wrap_width);
+    let out = print_nodes(&nodes, wrap_width, oneline);
     // Normalize to exactly one trailing newline
     let trimmed = out.trim_end_matches('\n');
     format!("{}\n", trimmed)
@@ -775,15 +775,15 @@ fn hoist_script_ree_blocks(nodes: Vec<Node>) -> Vec<Node> {
 // Printer
 // ═══════════════════════════════════════════════════════════════
 
-fn print_nodes(nodes: &[Node], wrap_width: usize) -> String {
+fn print_nodes(nodes: &[Node], wrap_width: usize, oneline: bool) -> String {
     let mut out = String::new();
     for node in nodes {
-        print_node(node, 0, &mut out, wrap_width);
+        print_node(node, 0, &mut out, wrap_width, oneline);
     }
     out
 }
 
-fn print_node(node: &Node, depth: usize, out: &mut String, wrap_width: usize) {
+fn print_node(node: &Node, depth: usize, out: &mut String, wrap_width: usize, oneline: bool) {
     match node {
         Node::Text(text) => {
             let trimmed = text.trim();
@@ -824,10 +824,19 @@ fn print_node(node: &Node, depth: usize, out: &mut String, wrap_width: usize) {
                 print_self_closing(tag, attrs, depth, out);
             } else if children.is_empty() || all_children_are_whitespace(children) {
                 print_empty_element(tag, attrs, depth, out, wrap_width);
-            } else if *inline && !is_script_or_style(tag) {
-                print_inline_element(tag, attrs, children, depth, out);
+            } else if (*inline || oneline) && !is_script_or_style(tag) {
+                // Try to render on one line; fall back to block if it exceeds wrap_width.
+                let inline_str = render_node_inline(node);
+                let full_len = depth + inline_str.len(); // tabs counted as 1 char
+                if full_len <= wrap_width {
+                    out.push_str(&"\t".repeat(depth));
+                    out.push_str(&inline_str);
+                    out.push('\n');
+                } else {
+                    print_block_element(tag, attrs, children, depth, out, wrap_width, oneline);
+                }
             } else {
-                print_block_element(tag, attrs, children, depth, out, wrap_width);
+                print_block_element(tag, attrs, children, depth, out, wrap_width, oneline);
             }
         }
         Node::ReeBlock { keyword, expr, children, else_children, inline } => {
@@ -851,11 +860,11 @@ fn print_node(node: &Node, depth: usize, out: &mut String, wrap_width: usize) {
                 out.push_str(&"\t".repeat(depth));
                 out.push_str(&open);
                 out.push('\n');
-                print_ree_block_children(children, depth + 1, out, wrap_width);
+                print_ree_block_children(children, depth + 1, out, wrap_width, oneline);
                 if let Some(else_nodes) = else_children {
                     out.push_str(&"\t".repeat(depth));
                     out.push_str("{:else}\n");
-                    print_ree_block_children(else_nodes, depth + 1, out, wrap_width);
+                    print_ree_block_children(else_nodes, depth + 1, out, wrap_width, oneline);
                 }
                 out.push_str(&"\t".repeat(depth));
                 out.push_str(&format!("{{/{}}}", keyword));
@@ -957,22 +966,7 @@ fn render_node_inline(node: &Node) -> String {
     }
 }
 
-fn print_inline_element(tag: &str, attrs: &[String], children: &[Node], depth: usize, out: &mut String) {
-    let attr_str = format_attrs_inline(attrs);
-    let tag_open = if attr_str.is_empty() {
-        format!("<{}>", tag)
-    } else {
-        format!("<{} {}>", tag, attr_str)
-    };
-    let content: String = children.iter().map(render_node_inline).collect();
-    out.push_str(&"\t".repeat(depth));
-    out.push_str(&tag_open);
-    out.push_str(content.trim());
-    out.push_str(&format!("</{}>", tag));
-    out.push('\n');
-}
-
-fn print_block_element(tag: &str, attrs: &[String], children: &[Node], depth: usize, out: &mut String, wrap_width: usize) {
+fn print_block_element(tag: &str, attrs: &[String], children: &[Node], depth: usize, out: &mut String, wrap_width: usize, oneline: bool) {
     let attr_str = format_attrs_inline(attrs);
     let tag_line = if attr_str.is_empty() {
         format!("<{}>", tag)
@@ -1000,7 +994,7 @@ fn print_block_element(tag: &str, attrs: &[String], children: &[Node], depth: us
     }
 
     for child in children {
-        print_node(child, depth + 1, out, wrap_width);
+        print_node(child, depth + 1, out, wrap_width, oneline);
     }
 
     out.push_str(&"\t".repeat(depth));
@@ -1142,7 +1136,7 @@ fn print_inline_nodes(nodes: &[Node], depth: usize, out: &mut String, _wrap_widt
 /// Block-level children (Element, ReeBlock, etc.) still print on their own lines.
 /// Blank-line text nodes (Text with >= 2 newlines, whitespace only) act as
 /// separators between inline groups — they are preserved rather than merged.
-fn print_ree_block_children(children: &[Node], depth: usize, out: &mut String, wrap_width: usize) {
+fn print_ree_block_children(children: &[Node], depth: usize, out: &mut String, wrap_width: usize, oneline: bool) {
     let mut i = 0;
     while i < children.len() {
         if is_inline_node(&children[i]) {
@@ -1166,7 +1160,7 @@ fn print_ree_block_children(children: &[Node], depth: usize, out: &mut String, w
             }
             print_inline_nodes(&children[start..i], depth, out, wrap_width);
         } else {
-            print_node(&children[i], depth, out, wrap_width);
+            print_node(&children[i], depth, out, wrap_width, oneline);
             i += 1;
         }
     }
@@ -1197,7 +1191,7 @@ mod tests {
     fn simple_element() {
         // Source has both tags on one line → inline flag set → stays inline
         let input = "<div><p>hello</p></div>";
-        let output = format_ree(input, 120);
+        let output = format_ree(input, 120, false);
         assert_eq!(output, "<div><p>hello</p></div>\n");
     }
 
@@ -1205,14 +1199,14 @@ mod tests {
     fn simple_element_block() {
         // Source has tags on separate lines → block formatting
         let input = "<div>\n<p>hello</p>\n</div>";
-        let output = format_ree(input, 120);
+        let output = format_ree(input, 120, false);
         assert_eq!(output, "<div>\n\t<p>hello</p>\n</div>\n");
     }
 
     #[test]
     fn ree_block() {
         let input = "{#if show}<div>yes</div>{/if}";
-        let output = format_ree(input, 120);        assert!(output.contains("{#if show}"));
+        let output = format_ree(input, 120, false);        assert!(output.contains("{#if show}"));
         assert!(output.contains("<div>yes</div>"));
         assert!(output.contains("{/if}"));
     }
@@ -1220,21 +1214,21 @@ mod tests {
     #[test]
     fn ree_expression() {
         let input = "<span>{= title }</span>";
-        let output = format_ree(input, 120);
+        let output = format_ree(input, 120, false);
         assert_eq!(output, "<span>{= title}</span>\n");
     }
 
     #[test]
     fn void_element_self_closing() {
         let input = "<input type=\"text\" />";
-        let output = format_ree(input, 120);
+        let output = format_ree(input, 120, false);
         assert!(output.contains("<input type=\"text\" />"), "void elements should use /> syntax, got: {:?}", output);
     }
 
     #[test]
     fn comment_preserved() {
         let input = "<!-- hello -->";
-        let output = format_ree(input, 120);
+        let output = format_ree(input, 120, false);
         assert_eq!(output, "<!-- hello -->\n");
     }
 
@@ -1243,7 +1237,7 @@ mod tests {
         // Regression: {#if} blocks inside HTML tag attributes (like <option {#if cond}selected{/if}>)
         // were being parsed as separate broken attributes ({#if, name===, value, }...}selected...{/if}).
         let input = "{#each items as item }\n\t<option value=\"{= item.code }\" {#if item.selected}selected{/if}>{= item.label }</option>\n{/each}\n";
-        let output = format_ree(input, 120);
+        let output = format_ree(input, 120, false);
         assert!(            output.contains("{#if item.selected}"),
             "{{#if}} block should be preserved in output, got: {:?}",
             output
@@ -1263,14 +1257,14 @@ mod tests {
             "{{#if}} should NOT be split at attribute name boundary"
         );
         // Verify idempotency
-        let pass2 = format_ree(&output, 120);
+        let pass2 = format_ree(&output, 120, false);
         assert_eq!(output, pass2, "format_ree should be idempotent with Ree blocks inside HTML attrs");
     }
 
     #[test]
     fn doctype_preserved_and_html_root() {
         let input = "<!DOCTYPE html>\n\n<html lang=\"en\">\n\t<head>\n\t\t<meta charset=\"UTF-8\" />\n\t</head>\n</html>\n";
-        let output = format_ree(input, 120);
+        let output = format_ree(input, 120, false);
         assert!(output.starts_with("<!DOCTYPE html>"), "DOCTYPE should be first, got: {:?}", &output[..20]);
         assert!(!output.starts_with("\t<!DOCTYPE"), "DOCTYPE should not be indented");
         assert!(output.contains("\n<html"), "html should be at depth 0 after blank line");
@@ -1283,7 +1277,7 @@ mod tests {
         // semantically significant spaces like "{= name } © Year {= year }" →
         // "{= name }© Year{= year }" (missing spaces around ©).
         let input = "<p>{= props.site_name } © Reepolee {= props.year }</p>";
-        let output = format_ree(input, 120);
+        let output = format_ree(input, 120, false);
         assert_eq!(
             output,
             "<p>{= props.site_name} © Reepolee {= props.year}</p>\n",
@@ -1296,8 +1290,8 @@ mod tests {
         // The output of the previous test must be idempotent — formatting twice
         // should produce the same result.
         let input = "<p>{= props.site_name } © Reepolee {= props.year }</p>";
-        let pass1 = format_ree(input, 120);
-        let pass2 = format_ree(&pass1, 120);
+        let pass1 = format_ree(input, 120, false);
+        let pass2 = format_ree(&pass1, 120, false);
         assert_eq!(pass1, pass2, "Inline element with Ree expressions should be idempotent");
     }
 
@@ -1306,7 +1300,7 @@ mod tests {
         // Regression: text before a Ree expression should not lose its trailing space.
         // E.g. "<span>text {= expr }</span>" should stay as-is.
         let input = "<span>hello {= name }</span>";
-        let output = format_ree(input, 120);
+        let output = format_ree(input, 120, false);
         assert_eq!(
             output,
             "<span>hello {= name}</span>\n",
@@ -1318,7 +1312,7 @@ mod tests {
     fn inline_element_ree_expr_with_text_after() {
         // Regression: text after a Ree expression should not lose its leading space.
         let input = "<span>{= name } world</span>";
-        let output = format_ree(input, 120);
+        let output = format_ree(input, 120, false);
         assert_eq!(
             output,
             "<span>{= name} world</span>\n",
@@ -1330,7 +1324,7 @@ mod tests {
     fn inline_element_ree_expr_text_ree_expr() {
         // Multiple Ree expressions with text between — all spacing should be preserved.
         let input = "<span>{= a } between {= b }</span>";
-        let output = format_ree(input, 120);
+        let output = format_ree(input, 120, false);
         assert_eq!(
             output,
             "<span>{= a} between {= b}</span>\n",
@@ -1342,7 +1336,7 @@ mod tests {
     fn ree_block_close_trailing_space_if() {
         // Regression: {/if } (with trailing space before }) should be consumed entirely.
         let input = "{#if show}yes{/if }";
-        let output = format_ree(input, 120);
+        let output = format_ree(input, 120, false);
         assert_eq!(output, "{#if show}\n\tyes\n{/if}\n");
     }
 
@@ -1350,7 +1344,7 @@ mod tests {
     fn ree_block_close_trailing_space_each() {
         // Same for {/each } with trailing space before }.
         let input = "{#each items as item}{= item }{/each }";
-        let output = format_ree(input, 120);
+        let output = format_ree(input, 120, false);
         assert_eq!(output, "{#each items as item}\n\t{= item}\n{/each}\n");
     }
 
@@ -1358,15 +1352,15 @@ mod tests {
     fn ree_block_close_spaced_and_trailing_space() {
         // {/ if } (space after /) with trailing space before }.
         let input = "{#if show}yes{/ if }";
-        let output = format_ree(input, 120);
+        let output = format_ree(input, 120, false);
         assert_eq!(output, "{#if show}\n\tyes\n{/if}\n");
     }
 
     #[test]
     fn ree_block_close_trailing_space_idempotent() {
         let input = "{#if show}yes{/if }";
-        let pass1 = format_ree(input, 120);
-        let pass2 = format_ree(&pass1, 120);
+        let pass1 = format_ree(input, 120, false);
+        let pass2 = format_ree(&pass1, 120, false);
         assert_eq!(pass1, pass2, "close tag with trailing space should be idempotent");
     }
 
@@ -1374,13 +1368,13 @@ mod tests {
     fn ree_block_inline() {
         // Source has {#if} and {/if} on the same line → inline flag → stays on one line
         let input = "{#if option===\"all\"}{= selectors.all}{:else}{= option} {= selectors.per_page}{/if}";
-        let output = format_ree(input, 120);
+        let output = format_ree(input, 120, false);
         assert_eq!(
             output,
             "{#if option===\"all\"}{= selectors.all}{:else}{= option} {= selectors.per_page}{/if}\n",
             "ReeBlock with opening and closing on same line should stay inline"
         );
-        let pass2 = format_ree(&output, 120);
+        let pass2 = format_ree(&output, 120, false);
         assert_eq!(output, pass2, "inline ReeBlock should be idempotent");
     }
 
@@ -1388,13 +1382,13 @@ mod tests {
     fn ree_block_multiline() {
         // Source has {#if} and {/if} on separate lines → block formatting
         let input = "{#if option===\"all\"}\n{= selectors.all}\n{:else}\n{= option} {= selectors.per_page}\n{/if}";
-        let output = format_ree(input, 120);
+        let output = format_ree(input, 120, false);
         assert_eq!(
             output,
             "{#if option===\"all\"}\n\t{= selectors.all}\n{:else}\n\t{= option} {= selectors.per_page}\n{/if}\n",
             "Multi-line ReeBlock should be formatted with indented children"
         );
-        let pass2 = format_ree(&output, 120);
+        let pass2 = format_ree(&output, 120, false);
         assert_eq!(output, pass2, "multi-line ReeBlock should be idempotent");
     }
 
@@ -1402,7 +1396,7 @@ mod tests {
     fn inline_element_ree_call_text() {
         // Ree calls ({~ expr}) should also preserve spacing.
         let input = "<span>{~ props.greeting } user</span>";
-        let output = format_ree(input, 120);
+        let output = format_ree(input, 120, false);
         assert_eq!(
             output,
             "<span>{~ props.greeting} user</span>\n",
