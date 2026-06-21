@@ -655,7 +655,7 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, format::Mode::Check, 120, crate::format::CollapseConfig::uniform(true, 3), false);
+        let modified = crate::ree_format::format_ree_file(&path, format::Mode::Check, 120, false, crate::format::CollapseConfig::uniform(true, 3), false);
         assert!(modified, "Check mode should return true when file would change");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, unformatted, "Check mode should not modify the file");
@@ -706,6 +706,7 @@ mod tests {
             collapse_max_imports: None,
             collapse_max_type_members: None,
             remove_unused_imports: false,
+            oneline: false,
         };
 
         let matched = Path::new("generator/templates/ui/button.ts");

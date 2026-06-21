@@ -1403,4 +1403,57 @@ mod tests {
             "Spacing around Ree calls should be preserved"
         );
     }
+
+    // ─── --oneline tests ──────────────────────────────────────────
+
+    #[test]
+    fn oneline_collapses_multiline_element_that_fits() {
+        // Multi-line element (block form) collapses to one line with --oneline when it fits.
+        let input = "<div>\n<p>hello</p>\n</div>";
+        let output = format_ree(input, 120, true);
+        assert_eq!(output, "<div><p>hello</p></div>\n");
+    }
+
+    #[test]
+    fn oneline_keeps_block_when_too_wide() {
+        // Element that doesn't fit within wrap_width stays multi-line even with --oneline.
+        let input = "<div>\n<p>this content is quite long and would exceed the narrow wrap width</p>\n</div>";
+        let output = format_ree(input, 30, true);
+        // Should stay multi-line: full line would be ~70 chars, way over wrap=30
+        assert!(output.contains('\n'), "Should stay multi-line when collapsed line exceeds wrap_width");
+        assert!(output.contains("<div>"), "Opening tag should be on its own line");
+        assert!(output.contains("</div>"), "Closing tag should be on its own line");
+    }
+
+    #[test]
+    fn oneline_nested_elements_collapse() {
+        // Nested multi-line elements all collapse when everything fits.
+        let input = "<ul>\n<li>\nfoo\n</li>\n<li>\nbar\n</li>\n</ul>";
+        let output = format_ree(input, 120, true);
+        assert_eq!(output, "<ul><li>foo</li><li>bar</li></ul>\n");
+    }
+
+    #[test]
+    fn oneline_with_ree_expr_collapses() {
+        // Element with a Ree expression collapses correctly.
+        let input = "<span>\n{= title}\n</span>";
+        let output = format_ree(input, 120, true);
+        assert_eq!(output, "<span>{= title}</span>\n");
+    }
+
+    #[test]
+    fn oneline_false_preserves_block_form() {
+        // Without --oneline, multi-line elements stay multi-line (author intent preserved).
+        let input = "<div>\n<p>hello</p>\n</div>";
+        let output = format_ree(input, 120, false);
+        assert_eq!(output, "<div>\n\t<p>hello</p>\n</div>\n");
+    }
+
+    #[test]
+    fn oneline_already_inline_stays_inline() {
+        // Elements already on one line stay on one line (oneline has no effect on them).
+        let input = "<div><p>hello</p></div>";
+        let output = format_ree(input, 120, true);
+        assert_eq!(output, "<div><p>hello</p></div>\n");
+    }
 }
