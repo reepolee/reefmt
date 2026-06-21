@@ -1756,6 +1756,14 @@ pub(crate) fn format_code_content(
                 &preprocessed, "\t", wrap_width, collapse_blocks, max_members, remove_unused,
             );
             log_stage!("after format_js_with_printer", custom_formatted);
+            // If SWC produced no output but placeholders exist (e.g. a file that is
+            // only a block comment with no code), restore from the preprocessed input
+            // directly so the block comments are not silently dropped.
+            let custom_formatted = if custom_formatted.trim().is_empty() && !placeholders.is_empty() {
+                preprocessed.clone()
+            } else {
+                custom_formatted
+            };
             // Always run postprocess so it can also clean up stray __REEFMT_BLANK_ tokens
             // that leaked into files from a previous buggy reefmt run.
             let restored = postprocess_from_swc(&custom_formatted, &placeholders);
