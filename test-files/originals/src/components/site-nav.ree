@@ -1,0 +1,111 @@
+{{
+// Port of <Navigation>. Desktop links + language switch, plus a mobile menu.
+const n = props.nav || {};
+const langs = props.active_languages || [];
+const self_names = props.language_self_names || {};
+const cur = props.canonical_path;
+const nav_items = [
+	{ url: "/results", caption: n.results },
+	{ url: "/services", caption: n.services },
+	{ url: "/enterprise", caption: n.enterprise },
+	{ url: "/blog", caption: n.blog },
+	{ url: "/team", caption: n.team },
+	{ url: "/contact", caption: n.contact },
+];
+// Documentation dropdown: links straight to each product/tool docs site.
+const docs_sites = [
+	{ url: "/reepolee/docs", caption: "Reepolee" },
+	{ url: "/reeweb/docs", caption: "Reeweb" },
+	{ url: "/reefmt/docs", caption: "Reefmt" },
+	{ url: "/sqlfmt/docs", caption: "SQLfmt" },
+	{ url: "/reemerge/docs", caption: "Reemerge" },
+	{ url: "/ree-templates-vscode/docs", caption: "Ree Templates VS Code extension" },
+];
+const in_docs = ["/reepolee", "/reeweb", "/reefmt", "/sqlfmt", "/reemerge", "/ree-templates-vscode"].some((p) => cur.startsWith(p));
+}}
+<div class="z-50 hidden items-center gap-x-8 text-xl xl:flex">
+	{#each nav_items as item}
+		<div class="relative flex gap-x-2">
+			<a class="hover:text-brand font-semibold transition-all" href="{~ localized_path(item.url) }">{= item.caption }</a>
+			{#if cur === item.url}
+				<span class="bg-brand absolute top-8 h-0.5 left-0 w-full"></span>
+			{/if}
+		</div>
+		{#if item.url === "/services"}
+			<span class="font-normal opacity-30">/</span>
+			<!-- Documentation dropdown after Services -->
+			<div class="group relative flex gap-x-2">
+				<button class="hover:text-brand flex w-full cursor-pointer items-center gap-x-2 font-semibold transition-all" aria-label={= n.docs || "Documentation" }>
+					<span>{= n.docs }</span>
+					<span class="inline-block w-4 text-center"><span class="group-hover:hidden">+</span><span class="hidden group-hover:inline">-</span></span>
+				</button>
+				<div class="invisible absolute left-0 top-full z-50 mt-2 w-max min-w-56 translate-y-1 rounded-lg border border-divider bg-warm p-2 text-base text-ink opacity-0 shadow-lg transition-all group-hover:visible group-hover:translate-y-0 group-hover:opacity-100">
+					{#each docs_sites as site}
+						<a href="{~ localized_path(site.url) }" target="_blank" rel="noopener noreferrer" class="block whitespace-nowrap rounded-md px-3 py-2 font-medium transition-all hover:bg-white hover:text-brand{~ cur.startsWith(site.url) ? ' text-brand' : '' }">{= site.caption }</a>
+					{/each}
+				</div>
+				{#if in_docs}
+					<span class="bg-brand absolute top-8 h-0.5 left-0 w-full"></span>
+				{/if}
+			</div>
+			<span class="font-normal opacity-30">/</span>
+		{:else}
+			<span class="font-normal opacity-30">/</span>
+		{/if}
+	{/each}
+
+	{#each langs as l}
+		{#if l !== props.lang}
+			<a class="hover:text-brand font-semibold transition-all" href="{~ localized_path_for_lang(l, cur) }">{= l.toUpperCase() }</a>
+		{/if}
+	{/each}
+</div>
+
+<div class="z-50 flex h-12 w-12 items-center justify-end xl:hidden">
+	<button class="hamburger h-12 w-12 cursor-pointer p-2" aria-label="Menu button" data-menu-toggle>
+		<svg viewBox="0 0 32 24">
+			<line id="top" x1="0" y1="2" x2="32" y2="2" />
+			<line id="middle" x1="0" y1="12" x2="24" y2="12" />
+			<line id="bottom" x1="0" y1="22" x2="32" y2="22" />
+		</svg>
+	</button>
+
+	<div
+		data-mobile-menu
+		class="bg-white border-t-divider fixed top-24 left-0 z-40 hidden h-[calc(100svh-6rem)] w-screen flex-col items-start gap-y-8 overflow-y-auto border-t px-8 pt-8 pb-12 text-xl sm:px-12"
+	>
+		{#each nav_items as item}
+			<div class="relative">
+				<a class="py-2 font-semibold transition-all hover:text-brand" href="{~ localized_path(item.url) }">{= item.caption }</a>
+				{#if cur === item.url}
+					<span class="bg-brand mt-1 block h-0.5 w-full"></span>
+				{/if}
+			</div>
+			{#if item.url === "/services"}
+				<!-- Documentation accordion (closed by default) -->
+				<details{~ in_docs ? ' open' : '' } class="ree-accordion w-full">
+					<summary class="cursor-pointer list-none py-2 font-semibold transition-all hover:text-brand [&::-webkit-details-marker]:hidden">
+						<div class="relative flex w-full items-center">
+							<span>{= n.docs }</span>
+							<span class="ml-auto inline-block w-4 text-center"><span class="ree-indicator-plus">+</span><span class="ree-indicator-minus">-</span></span>
+							{#if in_docs}
+								<span class="bg-brand absolute -bottom-1 left-0 h-0.5 w-full"></span>
+							{/if}
+						</div>
+					</summary>
+					<div class="mt-4 flex flex-col gap-y-3">
+						{#each docs_sites as site}
+							<a class="pl-3 text-base font-medium transition-all hover:text-brand{~ cur.startsWith(site.url) ? ' text-brand' : '' }" href="{~ localized_path(site.url) }" target="_blank" rel="noopener noreferrer">{= site.caption }</a>
+						{/each}
+					</div>
+				</details>
+			{/if}
+		{/each}
+		<div class="border-divider w-full border-t"></div>
+		{#each langs as l}
+			{#if l !== props.lang}
+				<a class="py-2 font-semibold transition-all hover:text-brand" href="{~ localized_path_for_lang(l, cur) }">{= self_names[l] }</a>
+			{/if}
+		{/each}
+	</div>
+</div>

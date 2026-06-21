@@ -1,0 +1,28 @@
+{{
+const c = {
+	en: {
+		title: "Cookie policy | Reepolee",
+		kicker: "Legal",
+		h1: "Yummy, **cookies**!",
+		h2: "We are very **strict** about cookies ... **dark chocolate** or bust! Now, when it comes to **browser cookies**, we're even stricter.",
+	},
+	sl: {
+		title: "Politika piškotkov | Reepolee",
+		kicker: "Pravno",
+		h1: "Okusno, **piškotki**!",
+		h2: "Glede piškotkov smo zelo **strogi** ... **temna čokolada** ali nič! Ampak ko gre za **piškotke brskalnika**, smo še strožji.",
+	},
+}[lang];
+props.c = c;
+props.page_title = c.title;
+props.light_hero = true;
+props.hero = { kicker: c.kicker, title: c.h1, subtitle: c.h2 };
+}}
+{#layout("layout")}
+
+<main>
+	<page-hero></page-hero>
+	<div class="pb-g container mx-auto">
+		<div class="markdown mt-16 lg:text-xl lg:leading-10">{~ props.policy_html[lang] }</div>
+	</div>
+</main>

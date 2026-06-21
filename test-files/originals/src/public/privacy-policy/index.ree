@@ -1,0 +1,28 @@
+{{
+const c = {
+	en: {
+		title: "Privacy policy | Reepolee",
+		kicker: "Legal",
+		h1: "**Legal** stuff",
+		h2: "You're welcome to read our **Privacy Policy** to find out we are **serious** about protecting your **anonymity** and just collect the bare minimum of your use patterns here to genuinely **improve** the website and **experience** for all the visitors.",
+	},
+	sl: {
+		title: "Politika zasebnosti | Reepolee",
+		kicker: "Pravno",
+		h1: "**Pravne** zadeve",
+		h2: "Vabimo vas, da preberete naš **Politiko zasebnosti** in ugotovite, da **resno** skrbimo za zaščito vaše **anonimnosti** in zbiramo le minimalne podatke o vaših vzorcih uporabe, da bi resnično **izboljšali** spletno mesto in **izkušnjo** za vse obiskovalce.",
+	},
+}[lang];
+props.c = c;
+props.page_title = c.title;
+props.light_hero = true;
+props.hero = { kicker: c.kicker, title: c.h1, subtitle: c.h2 };
+}}
+{#layout("layout")}
+
+<main>
+	<page-hero></page-hero>
+	<div class="pb-g container mx-auto">
+		<div class="markdown mt-16 lg:text-xl lg:leading-10">{~ props.policy_html[lang] }</div>
+	</div>
+</main>

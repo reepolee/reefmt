@@ -1,0 +1,52 @@
+{{
+// Port of <Partner>. Receives a partner object via `item` and an index `id` attribute.
+const a = props.attributes || {};
+const it = a.item || {};
+const idx = parseInt(a.id ?? 0);
+const _class = a.class || "text-5xl font-semibold";
+const first_name = it.first_name || "";
+const last_name = it.last_name || "";
+const photo = it.photo || "";
+const linkedin_url = it.linkedin_url || "";
+const company_url = it.company_url || "";
+const company = it.company || "";
+const slug = it.slug || "";
+const content = it.content || "";
+const experience = it.experience || "";
+const special_url = it.special_url || "";
+const special_caption = it.special_caption || "";
+const person = first_name + " " + last_name;
+const is_even = idx % 2 === 0;
+const row_class = is_even ? "lg:flex-row" : "lg:flex-row-reverse";
+const name_text = first_name + " **" + last_name + "**";
+const photo_alt = "Head shot of " + first_name;
+}}
+<div class="partner {= _class } flex scroll-mt-36 flex-col {= row_class } lg:items-center" id="{= slug }">
+	<div class="shrink-0 sm:w-[320px] md:w-[360px] xl:w-[460px]">
+		<responsive-image src="{= photo }" alt="{= photo_alt }" class=" rounded-xl " sizes="(max-width: 512px) 300px, 800px" image_class="object-cover rounded-xl "></responsive-image>
+	</div>
+
+	<div class="flex shrink flex-col pt-12 lg:px-12 lg:py-0">
+		<md-text type="h3" as="h3" class="pb-6 md:pb-10 lg:pb-12" text="{= name_text }"></md-text>
+
+		<md-text type="text" class="pb-8 font-normal" text="{= content }"></md-text>
+		<md-text type="text" class="text-muted pb-8 text-pretty md:pb-10 lg:pb-12" text="{= experience }"></md-text>
+
+		<div class="flex flex-col gap-x-6 gap-y-6 lg:flex-row lg:items-center">
+			{#if special_url.length > 0}
+				<div>
+					<link-button class="text-ink hover:bg-black/5 px-7 py-3.5 text-lg font-semibold" href="{= special_url }" label="{= special_caption }"></link-button>
+				</div>
+			{/if}
+
+			<div class="flex items-center gap-x-2">
+				{#if linkedin_url.length > 0}
+					<a class="social-icons size-10 p-1 sm:size-12" href="{= linkedin_url }" aria-label="{= person } LinkedIn" title="{= person }">{#include('$components/svgs/linkedin.svg')}</a>
+				{/if}
+				{#if company_url.length > 0}
+					<a class="social-icons size-10 p-1 sm:size-12" href="{= company_url }" aria-label="{= company } web site" title="{= company_url }">{#include('$components/svgs/www.svg')}</a>
+				{/if}
+			</div>
+		</div>
+	</div>
+</div>

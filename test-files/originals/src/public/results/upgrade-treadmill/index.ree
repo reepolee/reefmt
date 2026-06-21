@@ -1,0 +1,58 @@
+{#layout("layout")}
+{{
+// NOTE: replace bracketed placeholders with real, client-verified numbers before publishing.
+const c = {
+	en: {
+		title: "Off the upgrade treadmill | Results | Reepolee",
+		context: "Framework churn",
+		headline: "Off the upgrade treadmill — a stable, owned baseline",
+		situation_label: "The situation",
+		situation:
+			"A team was spending a meaningful slice of every quarter just keeping up: bugfix releases, breaking changes, and periodic architectural shifts in their underlying framework forced constant, unplanned migration work. The roadmap kept slipping to pay down churn the business never asked for.",
+		approach_label: "What we did",
+		approach:
+			"We moved them onto a zero-dependency, fully-owned baseline built on the Reepolee framework — the same conventions, none of the forced churn. With a tiny dependency tree there's nothing pushing breaking changes from underneath, so upgrades happen on the team's schedule, not someone else's.",
+		outcomes_label: "Outcomes",
+		outcomes: [
+			"No forced migrations — upgrades happen when the team chooses.",
+			"A **predictable roadmap**: engineering time goes to features, not churn.",
+			"Far lower long-term maintenance cost and a baseline the team fully owns.",
+		],
+		quote:
+			"Our partnership allows us to enhance our knowledge and deepen our understanding, which ultimately helps us improve our technical skills.",
+		quote_author: "— Goran Mrvoš, CEO & Founder @ Infosit",
+		tech_label: "Stack",
+		tech: "Reepolee framework · Ree · Bun",
+		tools_cta: "Explore the tools",
+		contact_cta: "Let's talk",
+	},
+	sl: {
+		title: "Konec nenehnih nadgradenj | Rezultati | Reepolee",
+		context: "Menjava ogrodij",
+		headline: "Konec nenehnih nadgradenj — stabilna osnova v vaši lasti",
+		situation_label: "Izhodišče",
+		situation:
+			"Ekipa je velik del vsakega četrtletja porabila le za dohitevanje: popravki, prelomne spremembe in občasni arhitekturni premiki v osnovnem ogrodju so silili v nenehno, nenačrtovano migracijsko delo. Načrt razvoja je nenehno drsel, da so poplačali spremembe, ki jih posel nikoli ni zahteval.",
+		approach_label: "Kaj smo naredili",
+		approach:
+			"Prenesli smo jih na lastno osnovo brez odvisnosti, zgrajeno na ogrodju Reepolee — enake konvencije, brez vsiljenih sprememb. Z majhnim drevesom odvisnosti nič od spodaj ne sili prelomnih sprememb, zato se nadgradnje zgodijo po urniku ekipe, ne tujem.",
+		outcomes_label: "Rezultati",
+		outcomes: [
+			"Brez vsiljenih migracij — nadgradnje, ko se odloči ekipa.",
+			"**Predvidljiv načrt razvoja**: inženirski čas gre v funkcije, ne v dohitevanje.",
+			"Bistveno nižji dolgoročni stroški vzdrževanja in osnova v popolni lasti ekipe.",
+		],
+		quote:
+			"Sodelovanje nam omogoča, da širimo svoje znanje in poglabljamo razumevanje, kar nam na koncu pomaga izpiliti tehnične veščine.",
+		quote_author: "— Goran Mrvoš, CEO & ustanovitelj @ Infosit",
+		tech_label: "Sklad",
+		tech: "Ogrodje Reepolee · Ree · Bun",
+		tools_cta: "Razišči orodja",
+		contact_cta: "Kontakt",
+	},
+}[lang];
+props.page_title = c.title;
+props.cs = c;
+props.light_hero = true;
+}}
+<case-study-article></case-study-article>

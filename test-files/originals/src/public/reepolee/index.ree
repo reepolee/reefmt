@@ -1,0 +1,262 @@
+{#layout("layout")}
+{{
+const c = {
+	en: {
+		title: "Reepolee framework | Reepolee",
+		kicker: "Full-stack framework",
+		h1: "The full-stack baseline<br>**your team actually owns**",
+		promise: "A standardised, dependency-light full-stack toolkit your whole team builds on: SSR, a database layer, auth, modules and generators. One golden path, zero vendor lock-in.",
+		docs: "Get started",
+		github: "GitHub",
+
+		proof_kicker: "The golden path",
+		proof_line: "From internal tools to customer-facing products — one toolkit teams standardise on and keep.",
+		proof_logos: [
+			{ caption: "logo — public sector" },
+			{ caption: "logo — fintech" },
+			{ caption: "logo — saas" },
+			{ caption: "logo — agency" },
+			{ caption: "logo — enterprise" },
+		],
+
+		why_h: "Why teams standardise on it",
+		why_intro: "A baseline you control end to end — fast to build on, cheap to maintain, impossible to be locked out of.",
+		why: [
+			{ title: "Fully owned, zero lock-in", desc: "No vendor can change the rules from under you. The whole stack is yours to read, fork and keep.", caption: "diagram — owned stack" },
+			{ title: "Zero runtime dependencies", desc: "A tiny dependency tree means fewer surprises and nothing forcing breaking changes from underneath.", caption: "diagram — dependency tree" },
+			{ title: "Bun-native today", desc: "Fast, batteries-included — the runtime we back right now, never baked into the name.", caption: "screenshot — server startup" },
+		],
+
+		features_h: "Everything an app needs, in one toolkit",
+		features_intro: "The parts every real product ends up needing — designed to work together, not bolted on.",
+		features: [
+			{ title: "Server-side rendering", desc: "Render .ree templates on the server with a minimal, familiar curly-brace syntax that compiles to async functions.", caption: "screenshot — SSR page" },
+			{ title: "Database layer & generators", desc: "A clean data layer with CRUD and schema generators — scaffold models and screens in seconds.", caption: "screenshot — generated CRUD" },
+			{ title: "Auth & localization", desc: "Cookie-based auth and URL localization built in, so the boring-but-critical parts are handled.", caption: "screenshot — auth flow" },
+			{ title: "Optional module system", desc: "Grow the app in well-bounded modules — add capability without turning the codebase into a maze.", caption: "screenshot — module layout" },
+		],
+
+		how_h: "From clone to running app",
+		how_intro: "Install, run, build. The same simple loop, all the way to production.",
+		steps: [
+			{ n: "01", title: "Install", desc: "Pull in the framework — a tiny dependency tree, Bun-native from the start." },
+			{ n: "02", title: "Generate & build", desc: "Scaffold models, screens and auth with the generators, then build out your domain." },
+			{ n: "03", title: "Ship", desc: "Deploy the SSR app to your infrastructure of choice — you own every layer." },
+		],
+		code: "bun install\nbun dev",
+
+		built_h: "Built on the framework",
+		built_intro: "A few of the products and back-offices running on it. Yours could be next.",
+		built_with: [
+			{ caption: "screenshot — admin dashboard" },
+			{ caption: "screenshot — customer portal" },
+			{ caption: "screenshot — internal tool" },
+			{ caption: "screenshot — booking system" },
+			{ caption: "screenshot — CMS" },
+			{ caption: "screenshot — analytics view" },
+		],
+
+		quote: "Standardising on the Reepolee framework gave our team one way to build everything. New people are productive in days, not months.",
+		quote_by: "Placeholder testimonial — CTO",
+
+		ladder_h: "Just need static?",
+		ladder: "If a project only needs static pages, start with Reeweb — same engine, same conventions — and grow into the framework when you need a database, auth or a backoffice.",
+		ladder_cta: "See Reeweb",
+
+		cta_h: "Adopt this as your team's baseline?",
+		cta: "If you want the framework as your organisation's development baseline, we can help you plan the adoption, embed it with your team and get the most out of it.",
+		results_cta: "See the results",
+		talk_cta: "Talk to Reepolee",
+	},
+	sl: {
+		title: "Ogrodje Reepolee | Reepolee",
+		kicker: "Full-stack ogrodje",
+		h1: "Full-stack osnova,<br>**ki je zares vaša**",
+		promise: "Standardiziran full-stack komplet z malo odvisnostmi, na katerem gradi vsa ekipa: SSR, podatkovni sloj, avtentikacija, moduli in generatorji. Ena glavna pot, brez vezave na dobavitelja.",
+		docs: "Začni",
+		github: "GitHub",
+
+		proof_kicker: "Glavna pot",
+		proof_line: "Od internih orodij do izdelkov za stranke — en komplet, ki ga ekipe sprejmejo in obdržijo.",
+		proof_logos: [
+			{ caption: "logotip — javni sektor" },
+			{ caption: "logotip — fintech" },
+			{ caption: "logotip — saas" },
+			{ caption: "logotip — agencija" },
+			{ caption: "logotip — podjetje" },
+		],
+
+		why_h: "Zakaj ga ekipe standardizirajo",
+		why_intro: "Osnova, ki jo nadzorujete od začetka do konca — hitra za gradnjo, poceni za vzdrževanje, nemogoče vas je izkleniti.",
+		why: [
+			{ title: "V celoti lasten, brez vezave", desc: "Noben dobavitelj ne more spremeniti pravil pod vami. Cel sklad je vaš za branje, razvejanje in obdržanje.", caption: "diagram — lasten sklad" },
+			{ title: "Brez odvisnosti ob izvajanju", desc: "Majhno drevo odvisnosti pomeni manj presenečenj in nič, kar bi od spodaj silil prelomne spremembe.", caption: "diagram — drevo odvisnosti" },
+			{ title: "Danes Bun-native", desc: "Hiter, opremljen z vsem — runtime, ki ga podpiramo zdaj, nikoli vgrajen v ime.", caption: "posnetek — zagon strežnika" },
+		],
+
+		features_h: "Vse, kar aplikacija potrebuje, v enem kompletu",
+		features_intro: "Deli, ki jih vsak pravi izdelek na koncu potrebuje — zasnovani za skupno delovanje, ne priviti naknadno.",
+		features: [
+			{ title: "Izris na strežniku", desc: "Izriši .ree predloge na strežniku z minimalnim, znanim sintaksom z zavitimi oklepaji, ki se prevede v asinhrone funkcije.", caption: "posnetek — SSR stran" },
+			{ title: "Podatkovni sloj in generatorji", desc: "Čist podatkovni sloj z generatorji CRUD in shem — modele in zaslone postavite v sekundah.", caption: "posnetek — ustvarjen CRUD" },
+			{ title: "Avtentikacija in lokalizacija", desc: "Vgrajena avtentikacija s piškotki in lokalizacija URL-jev, da so dolgočasni, a ključni deli urejeni.", caption: "posnetek — potek prijave" },
+			{ title: "Izbirni sistem modulov", desc: "Aplikacijo širite v dobro omejenih modulih — dodajajte zmožnosti, ne da bi koda postala labirint.", caption: "posnetek — razporeditev modulov" },
+		],
+
+		how_h: "Od kloniranja do delujoče aplikacije",
+		how_intro: "Namesti, zaženi, zgradi. Ista preprosta zanka, vse do produkcije.",
+		steps: [
+			{ n: "01", title: "Namesti", desc: "Vključi ogrodje — majhno drevo odvisnosti, Bun-native od začetka." },
+			{ n: "02", title: "Generiraj in gradi", desc: "Postavi modele, zaslone in avtentikacijo z generatorji, nato razvij svojo domeno." },
+			{ n: "03", title: "Objavi", desc: "SSR aplikacijo objavi na izbrani infrastrukturi — vsak sloj je vaš." },
+		],
+		code: "bun install\nbun dev",
+
+		built_h: "Zgrajeno na ogrodju",
+		built_intro: "Nekaj izdelkov in zaledij, ki tečejo na njem. Naslednji je lahko vaš.",
+		built_with: [
+			{ caption: "posnetek — administrativna plošča" },
+			{ caption: "posnetek — portal za stranke" },
+			{ caption: "posnetek — interno orodje" },
+			{ caption: "posnetek — rezervacijski sistem" },
+			{ caption: "posnetek — CMS" },
+			{ caption: "posnetek — analitični pogled" },
+		],
+
+		quote: "Standardizacija na ogrodju Reepolee je ekipi dala en sam način za gradnjo vsega. Novi ljudje so produktivni v dnevih, ne mesecih.",
+		quote_by: "Placeholder izjava — CTO",
+
+		ladder_h: "Potrebujete le statično?",
+		ladder: "Če projekt potrebuje le statične strani, začnite z Reeweb — isti pogon, iste konvencije — in zrastite v ogrodje, ko potrebujete bazo, avtentikacijo ali zaledje.",
+		ladder_cta: "Poglej Reeweb",
+
+		cta_h: "Bi to sprejeli kot osnovo svoje ekipe?",
+		cta: "Če želite ogrodje kot razvojno osnovo svoje organizacije, vam lahko pomagamo načrtovati uvedbo, jo vključiti v ekipo in iz nje iztržiti kar največ.",
+		results_cta: "Poglej rezultate",
+		talk_cta: "Kontaktiraj Reepolee",
+	},
+}[lang];
+props.c = c;
+props.page_title = c.title;
+props.light_hero = true;
+props.hero = {
+	kicker: c.kicker,
+	title: c.h1,
+	subtitle: c.promise,
+	image: "/images/responsive/hero-privacy.png",
+	image_alt: "",
+	ctas: [
+		{ href: "/reepolee/docs", label: c.docs, primary: true },
+		{ href: "https://github.com/reepolee/reepolee", label: c.github },
+	],
+};
+}}
+
+<main>
+	<page-hero></page-hero>
+
+	<!-- ── Social proof strip ── -->
+	<div class="bg-warm py-16">
+		<div class="container mx-auto">
+			<div class="flex items-center gap-x-4 text-sm font-semibold tracking-[0.2em] text-brand uppercase">
+				<span class="h-px w-10 bg-brand"></span>
+				<span>{= c.proof_kicker }</span>
+			</div>
+			<md-text type="text" class="mt-6 max-w-3xl font-normal">{~ props.c.proof_line }</md-text>
+			<div class="mt-10 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+				{#each c.proof_logos as logo}
+					<media-frame label="{= logo.caption }" ratio="3/1"></media-frame>
+				{/each}
+			</div>
+		</div>
+	</div>
+
+	<!-- ── Why ── -->
+	<div class="py-g container mx-auto">
+		<md-text type="h1" as="h2">{~ props.c.why_h }</md-text>
+		<md-text type="text" class="mt-6 max-w-3xl font-normal">{~ props.c.why_intro }</md-text>
+		<div class="mt-16 grid grid-cols-1 gap-12 lg:grid-cols-3">
+			{#each c.why as item}
+				<div class="flex flex-col gap-5">
+					<media-frame label="{= item.caption }" ratio="4/3"></media-frame>
+					<div class="text-xl font-semibold">{= item.title }</div>
+					<div class="text-muted leading-relaxed">{= item.desc }</div>
+				</div>
+			{/each}
+		</div>
+	</div>
+
+	<!-- ── Feature showcase (alternating imagery rows) ── -->
+	<div class="bg-warm py-g">
+		<div class="container mx-auto">
+			<md-text type="h1" as="h2">{~ props.c.features_h }</md-text>
+			<md-text type="text" class="mt-6 max-w-3xl font-normal">{~ props.c.features_intro }</md-text>
+			<div class="mt-16 flex flex-col gap-16 lg:gap-24">
+				{#each c.features as f, i}
+					<div class="grid items-center gap-10 lg:grid-cols-2 lg:gap-16{~ i % 2 === 1 ? ' lg:[&>*:first-child]:order-2' : '' }">
+						<media-frame label="{= f.caption }" ratio="16/9"></media-frame>
+						<div class="flex flex-col gap-4">
+							<div class="text-2xl font-semibold lg:text-3xl">{= f.title }</div>
+							<div class="text-muted text-lg leading-relaxed">{= f.desc }</div>
+						</div>
+					</div>
+				{/each}
+			</div>
+		</div>
+	</div>
+
+	<!-- ── How it works ── -->
+	<div class="py-g container mx-auto">
+		<md-text type="h1" as="h2">{~ props.c.how_h }</md-text>
+		<md-text type="text" class="mt-6 max-w-3xl font-normal">{~ props.c.how_intro }</md-text>
+		<div class="mt-16 grid grid-cols-1 gap-8 md:grid-cols-3">
+			{#each c.steps as step}
+				<div class="border-divider flex flex-col gap-3 border-t pt-6">
+					<div class="text-brand text-4xl font-semibold">{= step.n }</div>
+					<div class="text-xl font-semibold">{= step.title }</div>
+					<div class="text-muted leading-relaxed">{= step.desc }</div>
+				</div>
+			{/each}
+		</div>
+		<pre class="bg-code-bg text-paper mt-12 overflow-x-auto rounded-lg p-6 text-sm leading-7"><code>{= c.code }</code></pre>
+	</div>
+
+	<!-- ── Built on the framework ── -->
+	<div class="bg-warm py-g">
+		<div class="container mx-auto">
+			<md-text type="h1" as="h2">{~ props.c.built_h }</md-text>
+			<md-text type="text" class="mt-6 max-w-3xl font-normal">{~ props.c.built_intro }</md-text>
+			<div class="mt-16 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+				{#each c.built_with as site}
+					<media-frame label="{= site.caption }" ratio="16/10"></media-frame>
+				{/each}
+			</div>
+		</div>
+	</div>
+
+	<!-- ── Quote ── -->
+	<div class="py-g container mx-auto max-w-4xl text-center">
+		<div class="prose mx-auto text-balance text-2xl font-semibold leading-snug lg:text-4xl">“{= c.quote }”</div>
+		<div class="text-muted mt-8 font-semibold">{= c.quote_by }</div>
+	</div>
+
+	<!-- ── Downgrade ladder + Final CTA ── -->
+	<div class="py-g container mx-auto max-w-4xl">
+		<div class="border-divider border-t pt-16">
+			<md-text type="h3" as="h2" class="normal-case">{~ props.c.ladder_h }</md-text>
+			<md-text type="text" class="mt-6">{~ props.c.ladder }</md-text>
+			<div class="mt-8">
+				<link-button href="/reeweb">{~ props.c.ladder_cta }</link-button>
+			</div>
+		</div>
+
+		<div class="border-divider mt-16 border-t pt-8">
+			<md-text type="h3" as="h2" class="normal-case">{~ props.c.cta_h }</md-text>
+			<md-text type="text" class="mt-6">{~ props.c.cta }</md-text>
+			<div class="mt-8 flex flex-col gap-6 sm:flex-row">
+				<link-button href="/results">{~ props.c.results_cta }</link-button>
+				<link-button href="/contact" class="primary">{~ props.c.talk_cta }</link-button>
+			</div>
+		</div>
+	</div>
+</main>

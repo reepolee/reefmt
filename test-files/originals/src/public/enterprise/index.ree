@@ -1,0 +1,98 @@
+{#layout("layout")}
+{{
+const c = {
+	en: {
+		title: "Enterprise | Reepolee",
+		kicker: "For enterprise",
+		h1: "Off legacy,<br>onto a base you **own**",
+		lets_talk: "Let's talk",
+		intro_h: "**Need a partner**, not just another agency?",
+		intro_lg: "**Hi, I'm Aleš and I run Reepolee.**",
+		intro_1:
+			"For close to four decades — since 1986 — I've helped teams in the public and private sector find the bottlenecks in their software-based products and processes, and in the people building them. I believe in wholesome but simple, battle-tested solutions, with intense focus on the UX, DX and CX.",
+		intro_2:
+			"That's why Reepolee isn't a classic agency. The framework and its tools are open source and yours to keep — what we offer enterprises is a partnership around them: funding their future, shaping them to your needs, and getting your team to the point where they no longer need us.",
+		intro_alt: "Headshot of Aleš",
+		subtitle:
+			"We move the business-critical app nobody wants to touch onto a **modern base your team fully owns** — one that won't be legacy again in three years. The enterprise plan keeps it **funded and evolving**.",
+		results_cta: "See the results",
+		offering_h: "The enterprise<br>**plan**",
+		offering_1:
+			"Reepolee is free and open source — and always will be. An enterprise plan is how the teams that depend on it fund its future and put it to work for their business, not just with it. Take the parts you need; it all rests on the same open baseline your team fully owns.",
+	},
+	sl: {
+		title: "Za podjetja | Reepolee",
+		kicker: "Za podjetja",
+		h1: "Stran od podedovane kode,<br>na osnovo, ki je **vaša**",
+		lets_talk: "Kontakt",
+		intro_h: "**Potrebujete partnerja** namesto še ene agencije?",
+		intro_lg: "**Zdravo, jaz sem Aleš in vodim Reepolee.**",
+		intro_1:
+			"Že skoraj štiri desetletja — vse od leta 1986 — pomagam ekipam v javnem in zasebnem sektorju odkrivati ozka grla v njihovih programskih izdelkih in procesih ter pri ljudeh, ki jih gradijo. Verjamem v enostavne in preverjene rešitve, pri čemer se intenzivno osredotočam na uporabniške in programerske izkušnje.",
+		intro_2:
+			"Prav zato Reepolee ni klasična agencija. Ogrodje in njegova orodja so odprtokodna in ostanejo vaša — podjetjem ponujamo partnerstvo okoli njih: financiranje njihove prihodnosti, oblikovanje po vaših potrebah in to, da vašo ekipo pripeljemo do točke, ko nas ne potrebuje več.",
+		intro_alt: "Alešev portret",
+		subtitle:
+			"Poslovno kritično aplikacijo, ki se je nihče noče dotakniti, preselimo na **sodobno osnovo, ki je v celoti vaša** — takšno, ki čez tri leta ne bo spet zastarela. Podjetniški paket poskrbi, da je **financirana in se razvija**.",
+		results_cta: "Poglej rezultate",
+		offering_h: "Podjetniški<br>**paket**",
+		offering_1:
+			"Reepolee je brezplačen in odprtokoden — in tak bo ostal. Podjetniški paket je način, kako ekipe, ki se nanj zanašajo, financirajo njegovo prihodnost in poskrbijo, da dela za njihov posel, ne le z njim. Vzemite dele, ki jih potrebujete; vse stoji na isti odprti osnovi, ki je v celoti vaša.",
+	},
+}[lang];
+props.c = c;
+props.page_title = c.title;
+props.light_hero = true;
+props.hero = {
+	kicker: c.kicker,
+	title: c.h1,
+	subtitle: c.subtitle,
+	image: "/images/responsive/hero-enterprise.png",
+	image_alt: "",
+	ctas: [
+		{ href: "/contact", label: c.lets_talk, primary: true },
+		{ href: "/results", label: c.results_cta },
+	],
+};
+}}
+
+<main>
+	<page-hero></page-hero>
+
+	<!-- A partner, not an agency — Aleš's background and the model -->
+	<div class="bg-warm py-g" style="content-visibility: auto; contain-intrinsic-size: auto 700px;">
+		<div class="container mx-auto">
+			<md-text type="h1" as="h2" class="text-center">{~ props.c.intro_h }</md-text>
+
+			<div class="text-ink mx-auto flex max-w-7xl flex-col-reverse gap-x-12 gap-y-5 pt-24 md:items-center lg:flex-row lg:gap-x-24">
+				<div class="flex flex-col gap-y-5 pt-8">
+					<md-text type="text-lg" class="font-semibold">{~ props.c.intro_lg }</md-text>
+					<md-text type="text">{~ props.c.intro_1 }</md-text>
+					<md-text type="text">{~ props.c.intro_2 }</md-text>
+				</div>
+
+				<responsive-image src="/images/responsive/ales-4-5.jpg" alt="{= props.c.intro_alt }" class="h-full w-full" sizes="(max-width: 512px) 300px, 800px" image_class="w-[410px] aspect-[4/5] rounded-lg"></responsive-image>
+			</div>
+		</div>
+	</div>
+
+	<!-- The enterprise plan — numbered offering (My Services layout).
+	     White surface so it alternates with the warm intro section above. -->
+	<div style="content-visibility: auto; contain-intrinsic-size: auto 700px;">
+		<div class="py-g container mx-auto">
+			<md-text type="h1" as="h2">{~ props.c.offering_h }</md-text>
+
+			<div class="mt-12 flex flex-col gap-y-24 md:mt-24 lg:flex-row lg:gap-x-16">
+				<div class="left flex-1 text-xl leading-8">
+					<md-text type="text" class="pb-10">{~ props.c.offering_1 }</md-text>
+					<link-button href="/contact" class="primary">{~ props.c.lets_talk }</link-button>
+				</div>
+				<div class="right flex-2">
+					{#each props.offering[lang] as service, id}
+						<service-item title="{= service.title }" content="{= service.content }" id="{= id }"></service-item>
+					{/each}
+				</div>
+			</div>
+		</div>
+	</div>
+</main>

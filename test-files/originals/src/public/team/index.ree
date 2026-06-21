@@ -1,0 +1,34 @@
+{{
+const c = {
+	en: {
+		title: "Team | Reepolee",
+		kicker: "The team",
+		h1: "Trusted **partners**",
+		h2: "Every project asks for some **extraordinary** coworkers in different fields. I am lucky to have a bunch of them around to cover all the bases.  **Let me introduce some of them**, in random order. Feel free to contact them directly or ping me.",
+	},
+	sl: {
+		title: "Ekipa | Reepolee",
+		kicker: "Ekipa",
+		h1: "Zanesljivi **sodelavci**",
+		h2: "Vsak projekt zahteva **izjemne** sodelavce z različnih področij. Imam srečo, da jih imam okoli sebe kar nekaj, ki pokrivajo vse baze.  **Naj vam jih predstavim**, po naključnem vrstnem redu. Lahko jih kontaktirate neposredno ali preko mene.",
+	},
+}[lang];
+props.c = c;
+props.page_title = c.title;
+props.light_hero = true;
+props.hero = { kicker: c.kicker, title: c.h1, subtitle: c.h2, image: "/images/responsive/hero-team.png", image_alt: "" };
+}}
+{#layout("layout")}
+
+<main>
+	<page-hero></page-hero>
+	<div class="pb-g container mx-auto">
+		<div class="py-g container mx-auto" style="content-visibility: auto; contain-intrinsic-size: auto 700px;">
+			<div class="mt-24 flex flex-col gap-y-24 md:gap-y-48">
+				{#each props.partners[lang] as item, id}
+					<partner-card item="{= item }" id="{= id }"></partner-card>
+				{/each}
+			</div>
+		</div>
+	</div>
+</main>

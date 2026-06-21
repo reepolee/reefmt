@@ -1,0 +1,40 @@
+{{
+// Homepage Results strip (decision-maker hook). Self-contained custom element:
+// reads props.results_teaser + props.home straight from the render context.
+const t = props.home[lang] || {};
+const items = props.results_teaser[lang] || [];
+const read_more = lang === "sl" ? "Preberi zgodbo" : "Read the story";
+}}
+<div class="py-g container mx-auto" style="content-visibility: auto; contain-intrinsic-size: auto 600px;">
+	<h2 class="heading prose text-balance text-4xl lg:text-5xl">{~ md(t.results_h2) }</h2>
+	<div class="prose mt-8 max-w-3xl text-base text-balance lg:text-lg">{~ md(t.results_intro) }</div>
+
+	<!-- grid-rows-subgrid: image / outcome / CTA rows share track heights across cards
+	     so the CTA (and outcome block) align regardless of copy length. The card sets
+	     its own row-gap; the 2rem band gap comes from the parent grid. -->
+	<div class="mt-12 grid grid-cols-1 gap-8 md:mt-24 md:grid-cols-3">
+		{#each items as item}
+			<a href="{~ localized_path('/results/' + item.slug) }" class="group row-span-3 grid grid-rows-subgrid gap-y-4 overflow-hidden rounded-lg border border-divider bg-warm transition-all duration-300 hover:-translate-y-1 hover:shadow-xl">
+				<!-- Duotone cover photo with a category chip — ties the card imagery to the hero. -->
+				<div class="relative h-52 overflow-hidden">
+					<responsive-image src="{= item.image }" alt="{= item.context }" image_class="h-full w-full object-cover saturate-[0.85] transition-transform duration-500 group-hover:scale-105" sizes="(max-width: 768px) 100vw, 33vw"></responsive-image>
+					<div class="absolute inset-0 bg-brand/15 mix-blend-multiply"></div>
+					<div class="absolute inset-0 bg-linear-to-t from-ink/35 to-transparent"></div>
+					<span class="absolute top-4 left-4 rounded-full bg-ink/80 px-3 py-1 text-xs font-semibold tracking-wide text-white uppercase backdrop-blur-sm">{= item.context }</span>
+				</div>
+				<div class="prose px-7 pt-6 text-lg font-semibold text-balance">{~ md(item.outcome) }</div>
+				<div class="inline-flex items-center gap-x-3 px-7 pb-7 font-semibold text-brand">
+					<span>{= read_more }</span>
+					<re-arrow direction="right" class="h-6 w-6 transition-transform group-hover:translate-x-1"></re-arrow>
+				</div>
+			</a>
+		{/each}
+	</div>
+
+	<div class="mt-12">
+		<a href="{~ localized_path('/results') }" class="flex w-fit items-center gap-x-4 rounded border border-divider px-6 py-3 font-semibold transition-all hover:bg-black/5">
+			<span>{= t.results_all }</span>
+			<re-arrow direction="right" class="h-6 w-6"></re-arrow>
+		</a>
+	</div>
+</div>

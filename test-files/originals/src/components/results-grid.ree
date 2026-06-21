@@ -1,0 +1,26 @@
+{{
+// Results listing grid. Self-contained custom element: reads props.case_studies
+// from the render context and loops internally.
+const items = props.case_studies[lang] || [];
+const read_more = lang === "sl" ? "Preberi zgodbo" : "Read the story";
+}}
+<!-- grid-rows-subgrid: image / title+outcome / CTA rows align across cards
+     regardless of copy length. Card sets its own row-gap; 2rem band gap from parent. -->
+<div class="mt-16 grid grid-cols-1 gap-8 md:mt-24 md:grid-cols-3">
+	{#each items as item}
+		<a href="{~ localized_path('/results/' + item.slug) }" class="group row-span-3 grid grid-rows-subgrid gap-y-4 overflow-hidden rounded-lg border border-divider bg-warm transition-all duration-300 hover:-translate-y-1 hover:shadow-xl">
+			<!-- Duotone cover photo with a category chip -->
+			<div class="relative h-52 overflow-hidden">
+				<responsive-image src="{= item.image }" alt="{= item.context }" image_class="h-full w-full object-cover saturate-[0.85] transition-transform duration-500 group-hover:scale-105" sizes="(max-width: 768px) 100vw, 33vw"></responsive-image>
+				<div class="absolute inset-0 bg-brand/15 mix-blend-multiply"></div>
+				<div class="absolute inset-0 bg-linear-to-t from-ink/35 to-transparent"></div>
+				<span class="absolute top-4 left-4 rounded-full bg-ink/80 px-3 py-1 text-xs font-semibold tracking-wide text-white uppercase backdrop-blur-sm">{= item.context }</span>
+			</div>
+			<div class="prose px-7 pt-6 text-lg font-semibold text-balance">{~ md(item.title + " — " + item.outcome) }</div>
+			<div class="inline-flex items-center gap-x-3 px-7 pb-7 font-semibold text-brand">
+				<span>{= read_more }</span>
+				<re-arrow direction="right" class="h-6 w-6 transition-transform group-hover:translate-x-1"></re-arrow>
+			</div>
+		</a>
+	{/each}
+</div>

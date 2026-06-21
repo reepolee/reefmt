@@ -1,0 +1,25 @@
+{{
+const c = {
+	en: { title: "Page not found | Reepolee", h3: "**Looks like this page doesn’t exist!**", p: "Return home to explore more.", cta: "Home" },
+	sl: { title: "Stran ne obstaja | Reepolee", h3: "**Ups, ta stran pa ne obstaja**", p: "Mogoče poskusite na domači strani?", cta: "Domov" },
+}[lang];
+props.c = c;
+props.page_title = c.title;
+props.light_hero = true;
+}}
+{#layout("layout")}
+
+<main>
+	<div class="hero-bg h-[100svh]">
+		<div class="pb-g container mx-auto min-h-[600px] pt-36 sm:pt-52">
+			<div class="flex w-full flex-col items-center gap-y-12">
+				<md-text type="h1" as="h1" text="**404**"></md-text>
+				<div class="text-center">
+					<md-text type="h3" class="font-semibold normal-case">{~ props.c.h3 }</md-text>
+					<p class="prose mt-4 text-center text-xl">{= c.p }</p>
+				</div>
+				<link-button href="/" class="primary">{~ props.c.cta }</link-button>
+			</div>
+		</div>
+	</div>
+</main>

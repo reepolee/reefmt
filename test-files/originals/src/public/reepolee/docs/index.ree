@@ -1,0 +1,316 @@
+{#layout("reepolee/docs/docs.layout")}
+
+{#if lang === 'sl'}
+<div class="mb-12 rounded-xl border border-divider bg-warm p-5">
+	<p class="text-muted">Dokumentacija za ogrodje Reepolee je na voljo samo v angleščini.</p>
+</div>
+{/if}
+
+<!-- Introduction -->
+<section id="introduction" data-intersect="introduction" class="scroll-mt-30 fade-in">
+	<div class="flex items-center gap-3 mb-2">
+		<span class="inline-flex items-center gap-1.5 text-xs font-mono font-medium text-badge bg-badge-light rounded-full px-3 py-1">
+			<span class="w-1.5 h-1.5 rounded-full bg-badge"></span>
+			Zero Dependencies
+		</span>
+		<span class="text-xs text-muted font-mono">"dependencies": {}</span>
+	</div>
+	<h1 class="font-display text-5xl lg:text-6xl italic leading-[1.05] mb-6">
+		Zero ceremony. <br/>
+		<span class="text-accent">Ship business apps fast.</span>
+	</h1>
+	<p class="text-lg leading-relaxed text-muted max-w-2xl mb-8">
+		Reepolee is a template for Bun applications with zero runtime dependencies. Powered by the Ree templating language and Tailwind CSS, it simplifies the entire build pipeline so you can ship business apps fast.
+	</p>
+
+	<!-- Feature cards -->
+	<div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-16">
+		<div class="group bg-warm rounded-xl p-5 hover:bg-ink hover:text-paper transition-all duration-300 cursor-default">
+			<div class="mb-3"><img src="/bun.svg" class="w-8 h-8" alt="Bun" /></div>
+			<h3 class="font-bold text-sm mb-1 group-hover:text-paper">Bun-Powered</h3>
+			<p class="text-xs text-muted group-hover:text-paper/60 leading-relaxed">Built on Bun for blazing fast startup, hot reloading, and a simplified build pipeline.</p>
+		</div>
+		<div class="group bg-warm rounded-xl p-5 hover:bg-ink hover:text-paper transition-all duration-300 cursor-default">
+			<div class="mb-3"><span class="font-mono text-2xl font-bold">.ree</span></div>
+			<h3 class="font-bold text-sm mb-1 group-hover:text-paper">Ree Templates</h3>
+			<p class="text-xs text-muted group-hover:text-paper/60 leading-relaxed">Expressive .ree templating language with layouts, partials, loops, and components.</p>
+		</div>
+		<div class="group bg-warm rounded-xl p-5 hover:bg-ink hover:text-paper transition-all duration-300 cursor-default">
+			<div class="text-2xl mb-3">🚀</div>
+			<h3 class="font-bold text-sm mb-1 group-hover:text-paper">Zero Ceremony</h3>
+			<p class="text-xs text-muted group-hover:text-paper/60 leading-relaxed">No boilerplate. Routes, middleware, and views wire up in minutes so you ship faster.</p>
+		</div>
+	</div>
+</section>
+
+<hr class="border-divider mb-12" />
+
+<!-- Preparation -->
+<section id="preparation" data-intersect="preparation" class="scroll-mt-30 fade-in mb-16">
+	<h2 class="font-display text-3xl italic mb-6">Preparation</h2>
+	<p class="text-muted leading-relaxed mb-6">Install the prerequisites globally so they can be reused across projects. <code class="font-mono text-xs bg-warm px-1.5 py-0.5 rounded border border-divider">conc</code> is used until <code class="font-mono text-xs bg-warm px-1.5 py-0.5 rounded border border-divider">bun --parallel</code> is production ready.</p>
+
+	<div class="bg-warm rounded-xl p-6 space-y-4 mb-6">
+		<div class="flex items-start gap-4">
+			<span class="shrink-0 w-8 h-8 flex items-center justify-center"><img src="/bun.svg" class="size-5" alt="Bun" /></span>
+			<div>
+				<p class="font-semibold mb-1">Bun</p>
+				<p class="text-muted leading-relaxed">Install from <a href="https://bun.com/docs/installation" class="text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent transition-colors">bun.com</a> — the JavaScript runtime that powers Reepolee.</p>
+			</div>
+		</div>
+		<div class="flex items-start gap-4">
+			<span class="shrink-0 w-8 h-8 flex items-center justify-center"><img src="/tailwindcss.svg" class="size-5" alt="Tailwind CSS" /></span>
+			<div>
+				<p class="font-semibold mb-1">Tailwind CSS</p>
+				<p class="text-muted leading-relaxed">Install via <code class="font-mono text-xs bg-paper px-1.5 py-0.5 rounded">bun add -g @tailwindcss/cli</code> or from <a href="https://github.com/tailwindlabs/tailwindcss/releases" class="text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent transition-colors">GitHub releases</a>.</p>
+			</div>
+		</div>
+		<div class="flex items-start gap-4">
+			<span class="shrink-0 w-8 h-8 flex items-center justify-center">⚙️</span>
+			<div>
+				<p class="font-semibold mb-1">Concurrently</p>
+				<p class="text-muted leading-relaxed">Install via <code class="font-mono text-xs bg-paper px-1.5 py-0.5 rounded">bun add -g concurrently</code> — used until <code class="font-mono text-xs bg-paper px-1.5 py-0.5 rounded">bun --parallel</code> is production ready.</p>
+			</div>
+		</div>
+		<div class="flex items-start gap-4">
+			<span class="shrink-0 w-8 h-8 flex items-center justify-center"><span class="font-mono text-xs font-bold text-muted">fmt</span></span>
+			<div>
+				<p class="font-semibold mb-1">oxfmt</p>
+				<p class="text-muted leading-relaxed">Install via <code class="font-mono text-xs bg-paper px-1.5 py-0.5 rounded">bun add -g oxfmt</code> — formatter for JS/TS files.</p>
+			</div>
+		</div>
+		<div class="flex items-start gap-4">
+			<span class="shrink-0 w-8 h-8 flex items-center justify-center"><span class="font-mono text-xs font-bold text-muted">lint</span></span>
+			<div>
+				<p class="font-semibold mb-1">oxlint</p>
+				<p class="text-muted leading-relaxed">Install via <code class="font-mono text-xs bg-paper px-1.5 py-0.5 rounded">bun add -g oxlint</code> — fast JavaScript linter.</p>
+			</div>
+		</div>
+	</div>
+
+	<p class="text-muted leading-relaxed mb-4">Verify your installation — you should get version output for each:</p>
+	<div class="code-block relative rounded-xl overflow-hidden bg-code-bg border border-white/5">
+		<pre class="p-5 overflow-x-auto"><code class="hljs language-bash text-sm leading-relaxed">bun -v
+tailwindcss -h | grep v
+conc -v
+oxfmt --version
+oxlint --version</code></pre>
+	</div>
+</section>
+
+<hr class="border-divider mb-12" />
+
+<!-- Development -->
+<section id="development" data-intersect="development" class="scroll-mt-30 fade-in mb-16">
+	<h2 class="font-display text-3xl italic mb-6">Get Started</h2>
+	<p class="text-muted leading-relaxed mb-6">
+		Create your project from the Reepolee template repository, wire <code class="font-mono text-xs bg-warm px-1.5 py-0.5 rounded border border-divider">reepolee/reepolee</code> back in as upstream so future Reepolee releases stay one command away, install, and run.
+	</p>
+
+	<div class="space-y-8 mb-8">
+		<div>
+			<div class="flex items-center gap-3 mb-3">
+				<span class="shrink-0 w-8 h-8 rounded-md bg-accent text-white flex items-center justify-center text-sm font-mono font-bold">1</span>
+				<p class="font-semibold">Create your repo from the template</p>
+			</div>
+			<p class="text-muted leading-relaxed mb-3">Reepolee is a GitHub <em>template repository</em>. Click <strong>Use this template → Create a new repository</strong> on <a href="https://github.com/reepolee/reepolee" target="_blank" rel="noopener noreferrer" class="text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent transition-colors">github.com/reepolee/reepolee</a> to spin up your own repo with clean history, then clone it locally:</p>
+			<div class="copy-row flex items-center rounded-xl bg-code-bg border border-white/5 px-5 py-4">
+				<code class="font-mono text-sm" style="color:#e2e0d8">git clone git@github.com:&lt;your-account&gt;/my-app.git &amp;&amp; cd my-app</code>
+				<button type="button" data-copy="git clone git@github.com:<your-account>/my-app.git && cd my-app" class="shrink-0 ml-auto cursor-pointer" title="Copy">
+					<svg class="copy-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+					<svg class="check-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>
+				</button>
+			</div>
+			<p class="text-xs text-muted mt-2">Prefer to do the same thing by hand without GitHub's UI? <a href="/getting-started/quick-start#without-the-github-ui" class="text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent transition-colors">Quick Start walks through the manual flow</a>.</p>
+		</div>
+
+		<div>
+			<div class="flex items-center gap-3 mb-3">
+				<span class="shrink-0 w-8 h-8 rounded-md bg-accent text-white flex items-center justify-center text-sm font-mono font-bold">2</span>
+				<p class="font-semibold">Wire Reepolee back in as upstream</p>
+			</div>
+			<p class="text-muted leading-relaxed mb-3">Your repo's <code class="font-mono text-xs bg-warm px-1.5 py-0.5 rounded border border-divider">origin</code> points to your account — it knows nothing about Reepolee. This one-time script adds <code class="font-mono text-xs bg-warm px-1.5 py-0.5 rounded border border-divider">reepolee/reepolee</code> as <code class="font-mono text-xs bg-warm px-1.5 py-0.5 rounded border border-divider">upstream</code> so you can pull future Reepolee releases into your project with <code class="font-mono text-xs bg-warm px-1.5 py-0.5 rounded border border-divider">bun git:sync</code>.</p>
+			<div class="copy-row flex items-center rounded-xl bg-code-bg border border-white/5 px-5 py-4">
+				<code class="font-mono text-sm" style="color:#e2e0d8">bun git:add-sync</code>
+				<button type="button" data-copy="bun git:add-sync" class="shrink-0 ml-auto cursor-pointer" title="Copy">
+					<svg class="copy-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+					<svg class="check-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>
+				</button>
+			</div>
+		</div>
+
+		<div>
+			<div class="flex items-center gap-3 mb-3">
+				<span class="shrink-0 w-8 h-8 rounded-md bg-accent text-white flex items-center justify-center text-sm font-mono font-bold">3</span>
+				<p class="font-semibold">Install dev dependencies</p>
+			</div>
+			<div class="copy-row flex items-center rounded-xl bg-code-bg border border-white/5 px-5 py-4">
+				<code class="font-mono text-sm" style="color:#e2e0d8">bun install</code>
+				<button type="button" data-copy="bun install" class="shrink-0 ml-auto cursor-pointer" title="Copy">
+					<svg class="copy-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+					<svg class="check-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>
+				</button>
+			</div>
+		</div>
+
+		<div>
+			<div class="flex items-center gap-3 mb-3">
+				<span class="shrink-0 w-8 h-8 rounded-md bg-accent text-white flex items-center justify-center text-sm font-mono font-bold">4</span>
+				<p class="font-semibold">Copy the environment file</p>
+			</div>
+			<div class="copy-row flex items-center rounded-xl bg-code-bg border border-white/5 px-5 py-4">
+				<code class="font-mono text-sm" style="color:#e2e0d8">cp .env.example .env</code>
+				<button type="button" data-copy="cp .env.example .env" class="shrink-0 ml-auto cursor-pointer" title="Copy">
+					<svg class="copy-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+					<svg class="check-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>
+				</button>
+			</div>
+		</div>
+
+		<div>
+			<div class="flex items-center gap-3 mb-3">
+				<span class="shrink-0 w-8 h-8 rounded-md bg-accent text-white flex items-center justify-center text-sm font-mono font-bold">5</span>
+				<p class="font-semibold">Run in development</p>
+			</div>
+			<div class="copy-row flex items-center rounded-xl bg-code-bg border border-white/5 px-5 py-4">
+				<code class="font-mono text-sm" style="color:#e2e0d8">bun dev</code>
+				<button type="button" data-copy="bun dev" class="shrink-0 ml-auto cursor-pointer" title="Copy">
+					<svg class="copy-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+					<svg class="check-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>
+				</button>
+			</div>
+		</div>
+
+		<div>
+			<div class="flex items-center gap-3 mb-3">
+				<span class="shrink-0 w-8 h-8 rounded-md bg-accent text-white flex items-center justify-center text-sm font-mono font-bold">6</span>
+				<p class="font-semibold">Run in production</p>
+			</div>
+			<div class="copy-row flex items-center rounded-xl bg-code-bg border border-white/5 px-5 py-4">
+				<code class="font-mono text-sm" style="color:#e2e0d8">bun start</code>
+				<button type="button" data-copy="bun start" class="shrink-0 ml-auto cursor-pointer" title="Copy">
+					<svg class="copy-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+					<svg class="check-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>
+				</button>
+			</div>
+		</div>
+	</div>
+
+	<div class="flex gap-3 bg-accent-dim border border-accent/15 rounded-xl p-5">
+		<span class="text-accent text-lg leading-none mt-0.5">→</span>
+		<div>
+			<p class="text-sm font-semibold text-ink mb-1">No runtime dependencies</p>
+			<p class="text-sm text-muted leading-relaxed">Really, <code class="font-mono text-xs bg-warm px-1.5 py-0.5 rounded">"dependencies": {}</code>. Reepolee only has dev dependencies — everything runs on Bun's built-in APIs. That's also why <code class="font-mono text-xs bg-warm px-1.5 py-0.5 rounded">bun git:sync</code> works so cleanly: upgrades are a git operation, not a package-manager dance.</p>
+		</div>
+	</div>
+</section>
+
+<hr class="border-divider mb-12" />
+
+<!-- Generators -->
+<section id="generators" data-intersect="generators" class="scroll-mt-30 fade-in mb-16">
+	<h2 class="font-display text-3xl italic mb-6">Generators</h2>
+	<p class="text-muted leading-relaxed mb-6">Scaffold entire CRUD resources from your database schema. The generator introspects tables and writes routes, queries, validation, and templates, and wires up navigation automatically. It ships in-tree — there's nothing to install.</p>
+
+	<div class="space-y-8 mb-8">
+		<div>
+			<div class="flex items-center gap-3 mb-3">
+				<span class="shrink-0 w-8 h-8 rounded-md bg-accent text-white flex items-center justify-center text-sm font-mono font-bold">1</span>
+				<p class="font-semibold">Launch the Resource Manager</p>
+			</div>
+			<p class="text-muted leading-relaxed mb-3">The interactive TUI is the recommended way in. It opens a grouped menu — generate a <strong>single table</strong>, <strong>schema only</strong>, <strong>CRUD only</strong>, <strong>bulk CRUD</strong> across many tables, <strong>all tables</strong>, or auto-detected <strong>nested children</strong>; plus simple pages, database/session config, "Run SQL file", route removal, "Refresh CRUD", "Add language", and a guided <strong>Quick Start</strong>:</p>
+			<div class="copy-row flex items-center rounded-xl bg-code-bg border border-white/5 px-5 py-4">
+				<code class="font-mono text-sm" style="color:#e2e0d8">bun tui</code>
+				<button type="button" data-copy="bun tui" class="shrink-0 ml-auto cursor-pointer" title="Copy">
+					<svg class="copy-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+					<svg class="check-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>
+				</button>
+			</div>
+		</div>
+		<div>
+			<div class="flex items-center gap-3 mb-3">
+				<span class="shrink-0 w-8 h-8 rounded-md bg-accent text-white flex items-center justify-center text-sm font-mono font-bold">2</span>
+				<p class="font-semibold">Or run the full pipeline from the CLI</p>
+			</div>
+			<p class="text-muted leading-relaxed mb-3">Introspects your database, generates schemas and all CRUD routes + templates:</p>
+			<div class="copy-row flex items-center rounded-xl bg-code-bg border border-white/5 px-5 py-4">
+				<code class="font-mono text-sm" style="color:#e2e0d8">bun generator/resource all</code>
+				<button type="button" data-copy="bun generator/resource all" class="shrink-0 ml-auto cursor-pointer" title="Copy">
+					<svg class="copy-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+					<svg class="check-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>
+				</button>
+			</div>
+		</div>
+		<div>
+			<div class="flex items-center gap-3 mb-3">
+				<span class="shrink-0 w-8 h-8 rounded-md bg-accent text-white flex items-center justify-center text-sm font-mono font-bold">3</span>
+				<p class="font-semibold">Or target a specific table</p>
+			</div>
+			<p class="text-muted leading-relaxed">Run the schema and CRUD steps independently. Add <code class="font-mono text-xs bg-paper px-1.5 py-0.5 rounded">--force</code> to overwrite existing files, <code class="font-mono text-xs bg-paper px-1.5 py-0.5 rounded">--translate</code> to auto-translate labels (OpenRouter / Ollama / Hugging Face), <code class="font-mono text-xs bg-paper px-1.5 py-0.5 rounded">--prefix &lt;name&gt;</code> to scope under a sub-path, or <code class="font-mono text-xs bg-paper px-1.5 py-0.5 rounded">--parent &lt;table&gt;</code> for a nested child:</p>
+		</div>
+	</div>
+
+	<div class="code-block relative rounded-xl overflow-hidden bg-code-bg border border-white/5 mb-6">
+		<pre class="px-5 py-5"><code class="hljs language-bash text-sm leading-relaxed">bun generator/resource schema frameworks  # introspect DB → schema files
+bun generator/resource crud frameworks  # CRUD routes + templates
+bun generator/resource crud frameworks --force  # overwrite existing files
+bun generator/resource crud frameworks --refresh-fields  # only regen field sections
+bun generator/resource all --translate  # full pipeline + AI translation</code></pre>
+	</div>
+
+	<p class="text-muted leading-relaxed mb-4">Validation is generated as a Zod schema in <code class="font-mono text-xs bg-warm px-1.5 py-0.5 rounded border border-divider">schema/validation_server.ts</code>. Add custom rules there — the error strings are translation keys:</p>
+	<div class="code-block relative rounded-xl overflow-hidden bg-code-bg border border-white/5">
+		<pre class="p-5"><code class="hljs language-typescript text-sm leading-relaxed">export const schema = z.object(&#123;
+  // generated fields, plus your own rules:
+  country_code: z.enum(["SI", "DE", "HR"], &#123; message: "country_code_invalid" &#125;),
+&#125;);</code></pre>
+	</div>
+</section>
+
+<hr class="border-divider mb-12" />
+
+<!-- Ecosystem -->
+<section id="ecosystem" data-intersect="ecosystem" class="scroll-mt-30 fade-in mb-16">
+	<h2 class="font-display text-3xl italic mb-6">Explore the ecosystem</h2>
+	<p class="text-muted leading-relaxed mb-6">
+		Reepolee is a small family of tools that work together. Explore the others — each has its own documentation.
+	</p>
+
+	<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+		<a href="/reeweb/docs" target="_blank" rel="noopener noreferrer" class="group flex items-center gap-3 bg-warm rounded-xl px-5 py-4 hover:ring-2 hover:ring-accent/20 transition-all">
+			<img src="/ree-file.svg" alt="" class="w-8 h-8 shrink-0" />
+			<div class="min-w-0">
+				<p class="text-sm font-semibold group-hover:text-accent transition-colors">Reeweb</p>
+				<p class="text-xs text-muted">Static site generator</p>
+			</div>
+		</a>
+		<a href="/reefmt/docs" target="_blank" rel="noopener noreferrer" class="group flex items-center gap-3 bg-warm rounded-xl px-5 py-4 hover:ring-2 hover:ring-accent/20 transition-all">
+			<img src="/ree-file.svg" alt="" class="w-8 h-8 shrink-0" />
+			<div class="min-w-0">
+				<p class="text-sm font-semibold group-hover:text-accent transition-colors">Reefmt</p>
+				<p class="text-xs text-muted">Ree template formatter</p>
+			</div>
+		</a>
+		<a href="/sqlfmt/docs" target="_blank" rel="noopener noreferrer" class="group flex items-center gap-3 bg-warm rounded-xl px-5 py-4 hover:ring-2 hover:ring-accent/20 transition-all">
+			<img src="/ree-file.svg" alt="" class="w-8 h-8 shrink-0" />
+			<div class="min-w-0">
+				<p class="text-sm font-semibold group-hover:text-accent transition-colors">SQLfmt</p>
+				<p class="text-xs text-muted">SQL formatter</p>
+			</div>
+		</a>
+		<a href="/ree-templates-vscode/docs" target="_blank" rel="noopener noreferrer" class="group flex items-center gap-3 bg-warm rounded-xl px-5 py-4 hover:ring-2 hover:ring-accent/20 transition-all">
+			<img src="/ree-file.svg" alt="" class="w-8 h-8 shrink-0" />
+			<div class="min-w-0">
+				<p class="text-sm font-semibold group-hover:text-accent transition-colors">Ree Templates for VSCode</p>
+				<p class="text-xs text-muted">Formatter &amp; syntax highlighter</p>
+			</div>
+		</a>
+		<a href="/reemerge/docs" target="_blank" rel="noopener noreferrer" class="group flex items-center gap-3 bg-warm rounded-xl px-5 py-4 hover:ring-2 hover:ring-accent/20 transition-all">
+			<img src="/ree-file.svg" alt="" class="w-8 h-8 shrink-0" />
+			<div class="min-w-0">
+				<p class="text-sm font-semibold group-hover:text-accent transition-colors">Reemerge</p>
+				<p class="text-xs text-muted">Interactive cherry-pick for PRs</p>
+			</div>
+		</a>
+	</div>
+</section>

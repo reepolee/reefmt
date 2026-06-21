@@ -1,0 +1,58 @@
+{#layout("layout")}
+{{
+// NOTE: replace bracketed placeholders with real, client-verified numbers before publishing.
+const c = {
+	en: {
+		title: "Simplified operations | Results | Reepolee",
+		context: "Operations",
+		headline: "Simplified operations — fewer incidents, lower cost",
+		situation_label: "The situation",
+		situation:
+			"Over-provisioned servers, fragile deploys, and a stressed-out ops rotation. Crashes derailed the sales team and made customers' lives harder, while the infrastructure bill kept growing to paper over the fragility.",
+		approach_label: "What we did",
+		approach:
+			"We applied Reepolee's deployment principles: a combination of household-name providers and simple, cost-effective solutions sized to actual need. The application was simplified to run reliably on infrastructure the team can reason about — no babysitting required.",
+		outcomes_label: "Outcomes",
+		outcomes: [
+			"Infrastructure cost cut to **a fraction** of the over-provisioned spend.",
+			"Fewer incidents and far less deploy-day stress.",
+			"Operations the team can run themselves, confidently.",
+		],
+		quote:
+			"His inexhaustible energy, innovation and passion for technology have always been an inspiration. He quickly finds creative solutions even for more demanding IT challenges.",
+		quote_author: "— Gregor Rupnik, CEO & Partner @ Creatim",
+		tech_label: "Stack",
+		tech: "Reepolee framework · Ree · Bun · Cloudflare",
+		tools_cta: "Explore the tools",
+		contact_cta: "Let's talk",
+	},
+	sl: {
+		title: "Poenostavljene operacije | Rezultati | Reepolee",
+		context: "Operacije",
+		headline: "Poenostavljene operacije — manj izpadov, nižji stroški",
+		situation_label: "Izhodišče",
+		situation:
+			"Predimenzionirani strežniki, krhki uvajalni procesi in preobremenjena operativna izmena. Sesutja so onemogočala prodajno ekipo in oteževala življenje strankam, račun za infrastrukturo pa je rasel, da je zakrival krhkost.",
+		approach_label: "Kaj smo naredili",
+		approach:
+			"Uporabili smo Reepolejeva načela uvajanja: kombinacijo uveljavljenih ponudnikov in preprostih, stroškovno učinkovitih rešitev, dimenzioniranih dejanskim potrebam. Aplikacijo smo poenostavili, da zanesljivo teče na infrastrukturi, ki jo ekipa razume — brez nenehnega skrbništva.",
+		outcomes_label: "Rezultati",
+		outcomes: [
+			"Strošek infrastrukture znižan na **delček** prejšnje predimenzionirane porabe.",
+			"Manj izpadov in bistveno manj stresa ob uvajanju.",
+			"Operacije, ki jih ekipa lahko samozavestno vodi sama.",
+		],
+		quote:
+			"Njegova neusahljiva energija, inovativnost in strast do tehnologije so bili vedno navdih. Hitro najde ustvarjalne rešitve tudi za zahtevnejše IT izzive.",
+		quote_author: "— Gregor Rupnik, direktor & partner @ Creatim",
+		tech_label: "Sklad",
+		tech: "Ogrodje Reepolee · Ree · Bun · Cloudflare",
+		tools_cta: "Razišči orodja",
+		contact_cta: "Kontakt",
+	},
+}[lang];
+props.page_title = c.title;
+props.cs = c;
+props.light_hero = true;
+}}
+<case-study-article></case-study-article>

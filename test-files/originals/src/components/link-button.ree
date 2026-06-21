@@ -1,0 +1,32 @@
+{{
+// Port of <LinkButton>: bordered link with a trailing arrow.
+// External URLs automatically get target="_blank" and rel="noopener noreferrer".
+// Usage: link-button with an href attribute and the label as slot content,
+// or via a `label` attribute (interpolated) when slot content isn't available
+// (e.g. inside a loop). The href is a canonical path the component localizes itself.
+// Attributes (custom-element usage) take precedence over inherited props so a
+// parent's own `class`/`href` can't leak in; props.* is the function-call fallback.
+const a = props.attributes || {};
+const _raw = a.href || props.href || "/";
+const is_external = typeof _raw === "string" && (_raw.startsWith("http://") || _raw.startsWith("https://"));
+const _href = is_external ? _raw : localized_path(_raw);
+const _class = a.class || props.class || "";
+const _children = props.children || a.label || "";
+const _target = a.target || props.target || (is_external ? "_blank" : "");
+const _rel = is_external ? "noopener noreferrer" : "";
+// Primary (solid-red) variant for marking the primary action on a page — opt in
+// with `class="primary"`. We swap the base so it carries no border-divider /
+// hover:bg-black/5 (tw_merge can't dedupe those custom tokens), keeping the red
+// button clean and deterministic. Secondary (default) stays the outline button.
+const is_primary = / \bprimary\b/.test(" " + _class);
+const base = "flex w-fit items-center gap-x-4 rounded border px-6 py-3 font-semibold transition-all";
+// `primary` utility itself comes from the caller's class="primary"; the base
+// only supplies the structural bits + the overrides it needs (transparent border,
+// white text) so the red fill stays clean.
+const default_class = is_primary ? base + " border-transparent text-white" : base + " border-divider hover:bg-black/5";
+const final_class = tw_merge(default_class, _class);
+}}
+<a class="{= final_class }" href="{= _href }" target="{= _target }" rel="{= _rel }">
+	<span>{~ _children }</span>
+	<re-arrow direction="right" class="h-8 w-8"></re-arrow>
+</a>

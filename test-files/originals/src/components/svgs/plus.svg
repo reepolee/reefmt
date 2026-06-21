@@ -1,0 +1,11 @@
+<svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Frame 23" opacity="0.5" clip-path="url(#clip0_3765_790)">
+<circle id="Ellipse 2" cx="32" cy="32" r="31.5" stroke="currentColor"/>
+<path id="Subtract" fill-rule="evenodd" clip-rule="evenodd" d="M32 36.375V52.875H33V36.375H32ZM36.375 33L52.875 33V32L36.375 32V33ZM33 27.625V11.125H32V27.625H33ZM27.625 32L11.125 32V33L27.625 33V32Z" fill="currentColor"/>
+</g>
+<defs>
+<clipPath id="clip0_3765_790">
+<rect width="64" height="64" fill="currentColor"/>
+</clipPath>
+</defs>
+</svg>
