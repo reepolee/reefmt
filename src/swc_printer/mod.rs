@@ -26,12 +26,11 @@ pub(crate) struct Printer<'a> {
     comments: &'a SingleThreadedComments,
     cm: Lrc<SourceMap>,
     wrap_width: usize,
-    collapse_blocks: bool,
-    max_members: usize,
+    collapse: crate::format::CollapseConfig,
 }
 
 impl<'a> Printer<'a> {
-    pub fn new(indent_str: &str, wrap_width: usize, collapse_blocks: bool, max_members: usize, comments: &'a SingleThreadedComments, cm: Lrc<SourceMap>) -> Self {
+    pub fn new(indent_str: &str, wrap_width: usize, collapse: crate::format::CollapseConfig, comments: &'a SingleThreadedComments, cm: Lrc<SourceMap>) -> Self {
         Self {
             buf: String::with_capacity(4096),
             indent_level: 0,
@@ -39,8 +38,7 @@ impl<'a> Printer<'a> {
             comments,
             cm,
             wrap_width,
-            collapse_blocks,
-            max_members,
+            collapse,
         }
     }
 
@@ -233,7 +231,7 @@ impl<'a> Printer<'a> {
                         }
                     }
                     self.w(" }");
-                    if named.len() > self.max_members || self.current_line_len() > self.wrap_width {
+                    if named.len() > self.collapse.max_imports || self.current_line_len() > self.wrap_width {
                         self.buf.truncate(checkpoint);
                         self.w("{");
                         self.nl();
@@ -378,8 +376,7 @@ pub(crate) fn format_js_with_printer(
     code: &str,
     indent: &str,
     wrap_width: usize,
-    collapse_blocks: bool,
-    max_members: usize,
+    collapse: crate::format::CollapseConfig,
     _remove_unused: bool,
 ) -> String {
     if code.trim().is_empty() {
@@ -396,7 +393,7 @@ pub(crate) fn format_js_with_printer(
         None => return code.to_string(),
     };
 
-    let printer = Printer::new(indent, wrap_width, collapse_blocks, max_members, &comments, cm);
+    let printer = Printer::new(indent, wrap_width, collapse, &comments, cm);
     printer.print_module(&module)
 }
 

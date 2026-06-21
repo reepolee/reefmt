@@ -119,7 +119,7 @@ impl<'a> Printer<'a> {
             TsType::TsTypeLit(l) => 'ty: {
                 let members = &l.members;
                 let any_trailing_line = members.iter().any(|m| self.has_trailing_line_comment(m.span().hi));
-                if !any_trailing_line && self.collapse_blocks && members.len() <= self.max_members {
+                if !any_trailing_line && self.collapse.enabled && members.len() <= self.collapse.max_type_members {
                     let checkpoint = self.buf.len();
                     self.w("{ ");
                     for (i, m) in members.iter().enumerate() {

@@ -11,7 +11,7 @@ impl<'a> Printer<'a> {
             Expr::Tpl(t) => self.print_tpl(t),
             Expr::Array(a) => 'arr: {
                 // Array literals: try inline, expand if too many members or too wide
-                if self.collapse_blocks && a.elems.len() <= self.max_members {
+                if self.collapse.enabled && a.elems.len() <= self.collapse.max_array_elements {
                     let checkpoint = self.buf.len();
                     self.w("[");
                     for (i, e) in a.elems.iter().enumerate() {
@@ -63,7 +63,7 @@ impl<'a> Printer<'a> {
                     break 'obj;
                 }
                 // Object literals: try inline, expand if too many members or too wide
-                if self.collapse_blocks && o.props.len() <= self.max_members {
+                if self.collapse.enabled && o.props.len() <= self.collapse.max_object_members {
                     let checkpoint = self.buf.len();
                     self.w("{ ");
                     for (i, p) in o.props.iter().enumerate() {
@@ -127,7 +127,7 @@ impl<'a> Printer<'a> {
                     self.print_expr(&a.expr);
                 }
                 self.w(")");
-                if !c.args.is_empty() && (self.current_line_len() > self.wrap_width || (self.collapse_blocks && c.args.len() > self.max_members)) {
+                if !c.args.is_empty() && (self.current_line_len() > self.wrap_width || (self.collapse.enabled && c.args.len() > self.collapse.max_call_args)) {
                     self.buf.truncate(call_start);
                     self.print_callee(&c.callee);
                     if let Some(ta) = &c.type_args {
@@ -169,7 +169,7 @@ impl<'a> Printer<'a> {
                 }
                 self.w(")");
                 let n_arg_count = n.args.as_ref().map_or(0, |a| a.len());
-                if n_arg_count > 0 && (self.current_line_len() > self.wrap_width || (self.collapse_blocks && n_arg_count > self.max_members)) {
+                if n_arg_count > 0 && (self.current_line_len() > self.wrap_width || (self.collapse.enabled && n_arg_count > self.collapse.max_call_args)) {
                     self.buf.truncate(new_start);
                     self.w("new ");
                     self.print_expr(&n.callee);
@@ -212,7 +212,7 @@ impl<'a> Printer<'a> {
             }
             Expr::Arrow(a) => {
                 if a.is_async { self.w("async "); }
-                if self.collapse_blocks && a.params.len() > self.max_members {
+                if self.collapse.enabled && a.params.len() > self.collapse.max_function_params {
                     self.w("(");
                     self.nl();
                     self.indent();

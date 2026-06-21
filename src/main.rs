@@ -47,15 +47,42 @@ pub(crate) struct ReeConfig {
     /// are collapsed onto one line when they fit within wrapWidth.
     #[serde(rename = "collapseSingleStatementBlocks", default = "default_true")]
     collapse_single_stmt_blocks: bool,
-    /// Maximum number of object literal members or type literal members
-    /// allowed before collapsing is prevented. Members beyond this count
-    /// stay multi-line regardless of wrapWidth.
+    /// Global fallback limit for all categories below. Any category not
+    /// explicitly configured falls back to this value.
     #[serde(rename = "collapseMaxMembers", default = "default_three")]
     collapse_max_members: usize,
+    /// Per-category overrides (fall back to collapseMaxMembers when absent).
+    #[serde(rename = "collapseMaxObjectMembers", default)]
+    collapse_max_object_members: Option<usize>,
+    #[serde(rename = "collapseMaxArrayElements", default)]
+    collapse_max_array_elements: Option<usize>,
+    #[serde(rename = "collapseMaxFunctionParams", default)]
+    collapse_max_function_params: Option<usize>,
+    #[serde(rename = "collapseMaxCallArgs", default)]
+    collapse_max_call_args: Option<usize>,
+    #[serde(rename = "collapseMaxImports", default)]
+    collapse_max_imports: Option<usize>,
+    #[serde(rename = "collapseMaxTypeMembers", default)]
+    collapse_max_type_members: Option<usize>,
     /// When true, unused import declarations are removed from JS/TS files
     /// during formatting. Side-effect imports (`import "./foo"`) are always kept.
     #[serde(rename = "removeUnusedImports", default)]
     remove_unused_imports: bool,
+}
+
+impl ReeConfig {
+    pub(crate) fn collapse_config(&self) -> crate::format::CollapseConfig {
+        let def = self.collapse_max_members;
+        crate::format::CollapseConfig {
+            enabled: self.collapse_single_stmt_blocks,
+            max_object_members: self.collapse_max_object_members.unwrap_or(def),
+            max_array_elements: self.collapse_max_array_elements.unwrap_or(def),
+            max_function_params: self.collapse_max_function_params.unwrap_or(def),
+            max_call_args: self.collapse_max_call_args.unwrap_or(def),
+            max_imports: self.collapse_max_imports.unwrap_or(def),
+            max_type_members: self.collapse_max_type_members.unwrap_or(def),
+        }
+    }
 }
 
 
@@ -303,29 +330,46 @@ fn main() {
         return;
     }
 
-    // Check for --init (no config needed — creates it)
+    // Check for --init (no config needed — creates or upgrades it)
     if args.iter().any(|a| a == "--init") {
         let cwd = env::current_dir().unwrap_or_else(|_| {
             eprintln!("Error: could not determine current directory");
             std::process::exit(1);
         });
         let config_path = cwd.join("reefmt.jsonc");
-        if config_path.exists() {
-            eprintln!(
-                "Error: {} already exists in this directory",
-                config_path.display()
-            );
-            std::process::exit(1);
-        }
         let template = include_str!("../reefmt.jsonc");
-        match fs::write(&config_path, template.trim_start()) {
-            Ok(_) => {
-                println!("Created: {}", config_path.display());
-                println!("Edit this file to configure reefmt formatting behavior.");
-            }
-            Err(e) => {
-                eprintln!("Error writing {}: {}", config_path.display(), e);
+        if config_path.exists() {
+            let existing = fs::read_to_string(&config_path).unwrap_or_else(|e| {
+                eprintln!("Error reading {}: {}", config_path.display(), e);
                 std::process::exit(1);
+            });
+            let (upgraded, added_keys) = upgrade_init_config(&existing, template);
+            if added_keys.is_empty() {
+                println!("{} is already up to date.", config_path.display());
+            } else {
+                match fs::write(&config_path, &upgraded) {
+                    Ok(_) => {
+                        println!("Upgraded: {}", config_path.display());
+                        for key in &added_keys {
+                            println!("  + {}", key);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error writing {}: {}", config_path.display(), e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+        } else {
+            match fs::write(&config_path, template.trim_start()) {
+                Ok(_) => {
+                    println!("Created: {}", config_path.display());
+                    println!("Edit this file to configure reefmt formatting behavior.");
+                }
+                Err(e) => {
+                    eprintln!("Error writing {}: {}", config_path.display(), e);
+                    std::process::exit(1);
+                }
             }
         }
         return;
@@ -350,9 +394,10 @@ fn main() {
         let ext = stdin_ext.as_deref().unwrap_or(".ree");
         let ext = ext.trim_start_matches('.');
 
+        let collapse = config.collapse_config();
         let formatted = match ext {
-            "ree" => ree_format::format_ree_content(&input, config.wrap_width, config.collapse_single_stmt_blocks, config.collapse_max_members, config.remove_unused_imports),
-            "ts" | "js" | "css" => format::format_code_content(&input, ext, config.wrap_width, config.collapse_single_stmt_blocks, config.collapse_max_members, config.remove_unused_imports),
+            "ree" => ree_format::format_ree_content(&input, config.wrap_width, collapse, config.remove_unused_imports),
+            "ts" | "js" | "css" => format::format_code_content(&input, ext, config.wrap_width, collapse, config.remove_unused_imports),
             _ => {
                 eprintln!("Unsupported extension for --stdin: .{}", ext);
                 std::process::exit(1);
@@ -432,6 +477,98 @@ fn main() {
     }
 }
 
+/// Merge template keys into an existing reefmt.jsonc.
+/// Returns the merged content and the list of keys that were added.
+fn upgrade_init_config(existing: &str, template: &str) -> (String, Vec<String>) {
+    // Parse template into groups: each group is (comment_lines, key_name, full_key_line).
+    // Comment lines are the `// ...` lines immediately preceding a key.
+    struct Group {
+        comments: Vec<String>,
+        key: String,
+        line: String,
+    }
+    let mut groups: Vec<Group> = vec![];
+    let mut pending_comments: Vec<String> = vec![];
+    for raw in template.lines() {
+        let trimmed = raw.trim();
+        if trimmed.starts_with("//") {
+            pending_comments.push(raw.to_string());
+        } else if trimmed.starts_with('"') {
+            // Extract key name (the part between the first pair of quotes)
+            let key = trimmed
+                .trim_start_matches('"')
+                .split('"')
+                .next()
+                .unwrap_or("")
+                .to_string();
+            if !key.is_empty() {
+                groups.push(Group {
+                    comments: std::mem::take(&mut pending_comments),
+                    key,
+                    line: raw.to_string(),
+                });
+            } else {
+                pending_comments.clear();
+            }
+        } else if !trimmed.is_empty() && trimmed != "{" && trimmed != "}" {
+            pending_comments.clear();
+        }
+    }
+
+    // Find which keys are missing from the existing file.
+    let mut additions = String::new();
+    let mut added_keys: Vec<String> = vec![];
+    for g in &groups {
+        let needle = format!("\"{}\"", g.key);
+        if !existing.contains(&needle) {
+            for c in &g.comments {
+                additions.push_str(c);
+                additions.push('\n');
+            }
+            // Ensure key line has a trailing comma (valid in JSON5/JSONC).
+            let key_line = if g.line.trim_end().ends_with(',') {
+                g.line.clone()
+            } else {
+                format!("{},", g.line.trim_end())
+            };
+            additions.push_str(&key_line);
+            additions.push('\n');
+            added_keys.push(g.key.clone());
+        }
+    }
+
+    if added_keys.is_empty() {
+        return (existing.to_string(), added_keys);
+    }
+
+    // Insert additions just before the final `}`.
+    // Find the last `}` line.
+    let last_brace = existing.rfind('}');
+    let (before, after) = if let Some(pos) = last_brace {
+        (&existing[..pos], &existing[pos..])
+    } else {
+        return (existing.to_string(), vec![]);
+    };
+
+    // Ensure the content before the new entries ends with a comma.
+    let before_trimmed = before.trim_end();
+    let needs_comma = !before_trimmed.ends_with(',')
+        && !before_trimmed.ends_with('{')
+        && !before_trimmed.is_empty();
+
+    let mut result = before_trimmed.to_string();
+    if needs_comma {
+        result.push(',');
+    }
+    result.push('\n');
+    result.push_str(&additions);
+    result.push_str(after);
+    if !result.ends_with('\n') {
+        result.push('\n');
+    }
+    (result, added_keys)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,6 +589,12 @@ mod tests {
             wrap_width: 120,
             collapse_single_stmt_blocks: true,
             collapse_max_members: 3,
+            collapse_max_object_members: None,
+            collapse_max_array_elements: None,
+            collapse_max_function_params: None,
+            collapse_max_call_args: None,
+            collapse_max_imports: None,
+            collapse_max_type_members: None,
             remove_unused_imports: false,
         };
         let modified = format::format_file(&path, format::Mode::Write, &config);
@@ -468,7 +611,7 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, format::Mode::Check, 120, true, 3, false);
+        let modified = crate::ree_format::format_ree_file(&path, format::Mode::Check, 120, crate::format::CollapseConfig::uniform(true, 3), false);
         assert!(modified, "Check mode should return true when file would change");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, unformatted, "Check mode should not modify the file");
@@ -493,6 +636,12 @@ mod tests {
         assert!(config.skip_dot_dirs);
         assert_eq!(config.wrap_width, 180);
         assert_eq!(config.collapse_max_members, 3);
+        assert_eq!(config.collapse_max_object_members, Some(3));
+        assert_eq!(config.collapse_max_array_elements, Some(3));
+        assert_eq!(config.collapse_max_function_params, Some(3));
+        assert_eq!(config.collapse_max_call_args, Some(3));
+        assert_eq!(config.collapse_max_imports, Some(3));
+        assert_eq!(config.collapse_max_type_members, Some(3));
     }
 
     #[test]
@@ -506,6 +655,12 @@ mod tests {
             wrap_width: 120,
             collapse_single_stmt_blocks: true,
             collapse_max_members: 3,
+            collapse_max_object_members: None,
+            collapse_max_array_elements: None,
+            collapse_max_function_params: None,
+            collapse_max_call_args: None,
+            collapse_max_imports: None,
+            collapse_max_type_members: None,
             remove_unused_imports: false,
         };
 

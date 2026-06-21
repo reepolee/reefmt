@@ -34,10 +34,17 @@
 	// object literal function params collapse onto one line when
 	// they fit within wrapWidth.
 	"collapseSingleStatementBlocks": true,
-	// Maximum number of object literal members or type literal members
-	// allowed before collapsing is prevented. Members beyond this count
-	// stay multi-line regardless of wrapWidth.
+	// Per-category maximum member/param/arg counts for inline collapsing.
+	// Structures with more items than their limit stay multi-line regardless
+	// of wrapWidth. collapseMaxMembers is the global fallback — set a
+	// category key to override it for that category only.
 	"collapseMaxMembers": 3,
+	"collapseMaxObjectMembers": 3,
+	"collapseMaxArrayElements": 3,
+	"collapseMaxFunctionParams": 3,
+	"collapseMaxCallArgs": 3,
+	"collapseMaxImports": 3,
+	"collapseMaxTypeMembers": 3,
 	// When true, unused import declarations are removed from JS/TS files
 	// during formatting. Side-effect imports (import "./foo") are always
 	// kept. Defaults to false — enable if you want automatic cleanup.

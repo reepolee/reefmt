@@ -9,6 +9,34 @@ use crate::ree_format::flatten_concat;
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Mode { Write, Check, Diff }
 
+/// Per-category collapsing limits. Controls how many members each kind of
+/// syntactic structure may have before it is forced to stay multi-line.
+#[derive(Clone, Copy)]
+pub(crate) struct CollapseConfig {
+    pub enabled: bool,
+    pub max_object_members: usize,
+    pub max_array_elements: usize,
+    pub max_function_params: usize,
+    pub max_call_args: usize,
+    pub max_imports: usize,
+    pub max_type_members: usize,
+}
+
+impl CollapseConfig {
+    /// All categories share the same limit — convenience for tests and the ree formatter.
+    pub(crate) fn uniform(enabled: bool, max: usize) -> Self {
+        Self {
+            enabled,
+            max_object_members: max,
+            max_array_elements: max,
+            max_function_params: max,
+            max_call_args: max,
+            max_imports: max,
+            max_type_members: max,
+        }
+    }
+}
+
 /// A placeholder entry for content extracted before SWC formatting
 /// and restored afterward.
 pub(crate) struct Placeholder {
@@ -548,13 +576,13 @@ pub(crate) fn print_diff(path: &Path, original: &str, formatted: &str) {
 /// Runs iteratively until stable — collapsing one type literal may reveal another
 /// on the same line (e.g. collapsing a parameter type literal exposes a return type
 /// type literal in `Promise<{...}>`).
-fn collapse_inline_type_literals(code: &str, max_width: usize, max_members: usize) -> String {
-    let mut result = collapse_inline_type_literals_pass(code, max_width, max_members);
+fn collapse_inline_type_literals(code: &str, max_width: usize, max_type_members: usize) -> String {
+    let mut result = collapse_inline_type_literals_pass(code, max_width, max_type_members);
     // Run multiple passes until stable — collapsing one type literal may reveal another
     // (e.g. collapsing a parameter type literal reveals a return type type literal
     // on the same line).
     loop {
-        let next = collapse_inline_type_literals_pass(&result, max_width, max_members);
+        let next = collapse_inline_type_literals_pass(&result, max_width, max_type_members);
         if next == result {
             return result;
         }
@@ -564,7 +592,7 @@ fn collapse_inline_type_literals(code: &str, max_width: usize, max_members: usiz
 
 /// Single pass of `collapse_inline_type_literals`. Returns the code with some
 /// inline type literals collapsed. May need multiple passes for cascading cases.
-fn collapse_inline_type_literals_pass(code: &str, max_width: usize, max_members: usize) -> String {
+fn collapse_inline_type_literals_pass(code: &str, max_width: usize, max_type_members: usize) -> String {
     let mut result = String::with_capacity(code.len());
     let lines: Vec<&str> = code.lines().collect();
     let mut i = 0;
@@ -632,7 +660,7 @@ fn collapse_inline_type_literals_pass(code: &str, max_width: usize, max_members:
                         .map(|l| l.trim_end_matches(';').trim())
                         .collect();
 
-                    if members.len() > max_members {
+                    if members.len() > max_type_members {
                         // Too many members — keep multi-line
                         result.push_str(line);
                         result.push('\n');
@@ -723,7 +751,7 @@ fn is_block_opener(trimmed: &str) -> bool {
 
 /// Run one pass of the collapse logic. Returns `true` if any changes were made
 /// (meaning another pass may find more opportunities).
-fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, max_members: usize, out: &mut String) -> bool {
+fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &CollapseConfig, out: &mut String) -> bool {
     out.clear();
     let lines: Vec<&str> = code.lines().collect();
     let mut i = 0;
@@ -798,7 +826,7 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, max_members: u
 
                 // Validate: body must contain no statements (no `;`), and each line
                 // must be a key:value pair, shorthand identifier, or spread operator.
-                let is_valid_obj_lit = !body.is_empty() && body.len() <= max_members && body.iter().all(|l| {
+                let is_valid_obj_lit = !body.is_empty() && body.len() <= collapse.max_object_members && body.iter().all(|l| {
                     let cleaned = l.trim_end_matches(',').trim();
                     // No statements (`;`). Brace-depth tracking handles nested
                     // structures correctly, and template literals like `${expr}`
@@ -858,7 +886,7 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, max_members: u
 
                 // Validate: body must contain no statements (no `;`), and each line
                 // must be a key:value pair, shorthand identifier, or spread operator.
-                let is_valid_obj = !body.is_empty() && body.len() <= max_members && body.iter().all(|l| {
+                let is_valid_obj = !body.is_empty() && body.len() <= collapse.max_object_members && body.iter().all(|l| {
                     let cleaned = l.trim_end_matches(',').trim();
                     // No statements (`;`), no nested un-collapsed braces (`{`, `}`),
                     // no trailing line comments (` //`) — collapsing would make them
@@ -924,7 +952,7 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, max_members: u
                     // Validate: body must contain no statements (no `;`), no nested arrays,
                     // no trailing line comments (` //`) — collapsing would make them
                     // comment out the rest of the inline expression.
-                    let is_valid_arr = !body.is_empty() && body.len() <= max_members && body.iter().all(|l| {
+                    let is_valid_arr = !body.is_empty() && body.len() <= collapse.max_array_elements && body.iter().all(|l| {
                         let cleaned = l.trim_end_matches(',').trim();
                         !cleaned.contains(';') && !cleaned.contains('[') && !cleaned.contains(']')
                             && !cleaned.contains(" //")
@@ -973,11 +1001,11 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, max_members: u
 /// further collapses are possible (handles nested structures like `if (x) {
 ///   fn({ key: val });
 /// }` where the inner object-literal collapses first, then the if-block).
-pub(crate) fn collapse_single_stmt_blocks(code: &str, max_width: usize, max_members: usize) -> String {
+pub(crate) fn collapse_single_stmt_blocks(code: &str, max_width: usize, collapse: &CollapseConfig) -> String {
     let mut result = code.to_string();
     let mut buf = String::with_capacity(code.len());
     loop {
-        if !collapse_single_stmt_blocks_pass(&result, max_width, max_members, &mut buf) {
+        if !collapse_single_stmt_blocks_pass(&result, max_width, collapse, &mut buf) {
             return result;
         }
         std::mem::swap(&mut result, &mut buf);
@@ -1732,8 +1760,7 @@ pub(crate) fn format_code_content(
     content: &str,
     ext: &str,
     wrap_width: usize,
-    collapse_blocks: bool,
-    max_members: usize,
+    collapse: CollapseConfig,
     remove_unused: bool,
 ) -> String {
     let normalized = content.replace("\r\n", "\n");
@@ -1753,7 +1780,7 @@ pub(crate) fn format_code_content(
             let (preprocessed, placeholders) = preprocess_for_swc(&flattened);
             log_stage!("after preprocess_for_swc", preprocessed);
             let custom_formatted = crate::swc_printer::format_js_with_printer(
-                &preprocessed, "\t", wrap_width, collapse_blocks, max_members, remove_unused,
+                &preprocessed, "\t", wrap_width, collapse, remove_unused,
             );
             log_stage!("after format_js_with_printer", custom_formatted);
             // If SWC produced no output but placeholders exist (e.g. a file that is
@@ -1772,14 +1799,14 @@ pub(crate) fn format_code_content(
             // method chains on a single line; re-apply the line-wrapping passes
             // (and type-literal / single-statement collapsing) that the old
             // codegen path used, so long lines still wrap.
-            let collapsed = collapse_inline_type_literals(&restored, wrap_width, max_members);
+            let collapsed = collapse_inline_type_literals(&restored, wrap_width, collapse.max_type_members);
             log_stage!("after collapse_inline_type_literals", collapsed);
             let params_split = wrap_long_function_params(&collapsed, wrap_width);
             log_stage!("after wrap_long_function_params", params_split);
             let chains_split = wrap_long_method_chains(&params_split, wrap_width);
             log_stage!("after wrap_long_method_chains", chains_split);
-            if collapse_blocks {
-                let final_result = collapse_single_stmt_blocks(&chains_split, wrap_width, max_members);
+            if collapse.enabled {
+                let final_result = collapse_single_stmt_blocks(&chains_split, wrap_width, &collapse);
                 log_stage!("after collapse_single_stmt_blocks", final_result);
                 final_result
             } else {
@@ -1797,7 +1824,7 @@ pub(crate) fn format_code_content(
 }
 
 /// Format a standalone code file (TS, JS, CSS). Returns `true` if modified.
-pub(crate) fn format_code_file(path: &Path, mode: Mode, wrap_width: usize, collapse_blocks: bool, max_members: usize, remove_unused: bool) -> bool {
+pub(crate) fn format_code_file(path: &Path, mode: Mode, wrap_width: usize, collapse: CollapseConfig, remove_unused: bool) -> bool {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -1808,7 +1835,7 @@ pub(crate) fn format_code_file(path: &Path, mode: Mode, wrap_width: usize, colla
 
     let normalized = content.replace("\r\n", "\n");
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-    let write_content = format_code_content(&normalized, ext, wrap_width, collapse_blocks, max_members, remove_unused);
+    let write_content = format_code_content(&normalized, ext, wrap_width, collapse, remove_unused);
 
     // AST safety check: abort if semantics changed (only for TS/JS files)
     if matches!(ext, "ts" | "js") {
@@ -1876,9 +1903,10 @@ pub(crate) fn format_file(path: &Path, mode: Mode, config: &crate::ReeConfig) ->
     if crate::should_skip_file(path, config) {
         return false;
     }
+    let collapse = config.collapse_config();
     match ext {
-        "ree" => crate::ree_format::format_ree_file(path, mode, config.wrap_width, config.collapse_single_stmt_blocks, config.collapse_max_members, config.remove_unused_imports),
-        "ts" | "js" | "css" => format_code_file(path, mode, config.wrap_width, config.collapse_single_stmt_blocks, config.collapse_max_members, config.remove_unused_imports),
+        "ree" => crate::ree_format::format_ree_file(path, mode, config.wrap_width, collapse, config.remove_unused_imports),
+        "ts" | "js" | "css" => format_code_file(path, mode, config.wrap_width, collapse, config.remove_unused_imports),
         _ => false,
     }
 }
@@ -1896,7 +1924,7 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Check, 120, true, 3, false);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Check, 120, CollapseConfig::uniform(true, 3), false);
         assert!(modified, "Check mode should return true when file would change");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, unformatted, "Check mode should not modify the file");
@@ -1912,7 +1940,7 @@ mod tests {
         let content = "<span>text</span>\n";
         fs::write(&path, content).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Check, 120, true, 3, false);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Check, 120, CollapseConfig::uniform(true, 3), false);
         assert!(!modified, "Check mode should return false for already-formatted file (modified={})", modified);
 
         let content_after = fs::read_to_string(&path).unwrap();
@@ -1929,7 +1957,7 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Diff, 120, true, 3, false);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Diff, 120, CollapseConfig::uniform(true, 3), false);
         assert!(modified, "Diff mode should return true when file would change");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, unformatted, "Diff mode should not modify the file");
@@ -1945,7 +1973,7 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Write, 120, true, 3, false);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Write, 120, CollapseConfig::uniform(true, 3), false);
         assert!(modified, "Write mode should return true when file changes");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_ne!(content_after, unformatted, "Write mode should modify the file");
@@ -1961,7 +1989,7 @@ mod tests {
         let content = "<span>text</span>\n";
         fs::write(&path, content).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Diff, 120, true, 3, false);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Diff, 120, CollapseConfig::uniform(true, 3), false);
         assert!(!modified, "Diff mode should return false for already-formatted file");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, content, "Diff mode should not modify the file");
@@ -1977,7 +2005,7 @@ mod tests {
         let content = "const x = 1;\n";
         fs::write(&path, content).unwrap();
 
-        let _modified = format_code_file(&path, Mode::Check, 180, true, 3, false);
+        let _modified = format_code_file(&path, Mode::Check, 180, CollapseConfig::uniform(true, 3), false);
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, content, "Check mode should not modify the code file");
 
@@ -1987,37 +2015,37 @@ mod tests {
     #[test]
     fn diff_mode_code_file_missing_returns_false() {
         let path = Path::new("/tmp/nonexistent_file_reefmt_diff_test.ts");
-        let modified = format_code_file(path, Mode::Diff, 180, true, 3, false);
+        let modified = format_code_file(path, Mode::Diff, 180, CollapseConfig::uniform(true, 3), false);
         assert!(!modified, "format_code_file Diff should return false for missing file");
     }
 
     #[test]
     fn check_mode_ree_file_missing_returns_false() {
         let path = Path::new("/tmp/nonexistent_file_reefmt_test.ree");
-        let modified = crate::ree_format::format_ree_file(path, Mode::Check, 120, true, 3, false);
+        let modified = crate::ree_format::format_ree_file(path, Mode::Check, 120, CollapseConfig::uniform(true, 3), false);
         assert!(!modified, "format_ree_file should return false for missing file");
     }
 
     #[test]
     fn format_code_content_js_uses_swc() {
         let src = "const x=1;const y=2;";
-        let result = format_code_content(src, "js", 180, true, 3, false);
+        let result = format_code_content(src, "js", 180, CollapseConfig::uniform(true, 3), false);
         assert!(result.contains("const x = 1;"), "SWC should format JS: got {:?}", result);
     }
 
     #[test]
     fn idempotent_format_code_content_js() {
         let src = "const x = 1;\n";
-        let pass1 = format_code_content(src, "js", 180, true, 3, false);
-        let pass2 = format_code_content(&pass1, "js", 180, true, 3, false);
+        let pass1 = format_code_content(src, "js", 180, CollapseConfig::uniform(true, 3), false);
+        let pass2 = format_code_content(&pass1, "js", 180, CollapseConfig::uniform(true, 3), false);
         assert_eq!(pass1, pass2, "format_code_content should be idempotent for JS");
     }
 
     #[test]
     fn idempotent_format_code_content_non_ascii_comment() {
         let src = "// Café naïve — ščüéø\nconst x = 1;\n";
-        let pass1 = format_code_content(src, "js", 180, true, 3, false);
-        let pass2 = format_code_content(&pass1, "js", 180, true, 3, false);
+        let pass1 = format_code_content(src, "js", 180, CollapseConfig::uniform(true, 3), false);
+        let pass2 = format_code_content(&pass1, "js", 180, CollapseConfig::uniform(true, 3), false);
         assert_eq!(pass1, pass2,
             "format_code_content should be idempotent with non-ASCII chars");
     }
@@ -2025,14 +2053,14 @@ mod tests {
     #[test]
     fn format_code_content_css_passthrough() {
         let src = "body { color: red; }\n";
-        let result = format_code_content(src, "css", 180, true, 3, false);
+        let result = format_code_content(src, "css", 180, CollapseConfig::uniform(true, 3), false);
         assert_eq!(result, src, "CSS should pass through unchanged");
     }
 
     #[test]
     fn preserves_block_comments() {
         let src = "/**\n * doc\n */\nexport const x = 1;\n";
-        let result = format_code_content(src, "ts", 180, true, 3, false);
+        let result = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert!(result.contains("/**"), "block comment /** should be preserved");
         assert!(result.contains("* doc\n"), "block comment content should be preserved (space before * is normalized)");
         assert!(result.contains("*/\nexport"), "*/ should be on its own line before export");
@@ -2041,7 +2069,7 @@ mod tests {
     #[test]
     fn jsdoc_comment_inside_type_preserved() {
         let src = "export type Opts = {\n\t/**\n\t * A doc comment.\n\t */\n\tcrop?: number;\n};\n";
-        let result = format_code_content(src, "ts", 180, true, 3, false);
+        let result = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert!(result.contains("/**"), "JSDoc /** inside type literal should be preserved");
         assert!(result.contains("* A doc comment."), "JSDoc body should be preserved");
         assert!(result.contains("crop?"), "property after JSDoc should be preserved");
@@ -2050,14 +2078,14 @@ mod tests {
     #[test]
     fn inline_comment_on_type_member_preserved() {
         let src = "export type Opts = {\n\tleft: number; // my comment\n\ttop: number;\n};\n";
-        let result = format_code_content(src, "ts", 180, true, 3, false);
+        let result = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert!(result.contains("// my comment"), "inline trailing comment on type member should be preserved");
     }
 
     #[test]
     fn preserves_blank_lines_between_statements() {
         let src = "export interface A {\n\tx: number;\n}\n\nexport interface B {\n\ty: number;\n}\n";
-        let result = format_code_content(src, "ts", 180, true, 3, false);
+        let result = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert!(result.contains("}\n\nexport"), "blank line between interfaces should be preserved");
     }
 
@@ -2105,29 +2133,29 @@ mod tests {
     #[test]
     fn inline_block_comment_not_extracted() {
         let src = "const x = 1; /* inline */\n";
-        let result = format_code_content(src, "ts", 180, true, 3, false);
+        let result = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert!(result.contains("/* inline */"), "inline block comments should stay inline");
     }
 
     #[test]
     fn block_comment_in_string_not_extracted() {
         let src = "const s = \"/* not a comment */\";\n";
-        let result = format_code_content(src, "ts", 180, true, 3, false);
+        let result = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert!(result.contains("/* not a comment */"), "comments inside strings should be preserved");
     }
 
     #[test]
     fn single_line_block_comment_own_line() {
         let src = "/* standalone */\nexport const x = 1;\n";
-        let result = format_code_content(src, "ts", 180, true, 3, false);
+        let result = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert!(result.contains("/* standalone */\nexport"), "standalone block comment should be on its own line");
     }
 
     #[test]
     fn idempotent_with_block_comments_and_blank_lines() {
         let src = "/**\n * Translation helpers\n */\n\n// ─── Types ─────────────────────────────────────────────────────\n\nexport interface TranslationRow {\n\tid: number;\n\tlang: string;\n}\n\nexport interface GroupInfo {\n\tnamespace: string;\n\tchild_keys: string[];\n}\n";
-        let pass1 = format_code_content(src, "ts", 180, true, 3, false);
-        let pass2 = format_code_content(&pass1, "ts", 180, true, 3, false);
+        let pass1 = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
+        let pass2 = format_code_content(&pass1, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert_eq!(pass1, pass2, "output should be idempotent with block comments and blank lines");
     }
 
@@ -2138,15 +2166,15 @@ mod tests {
         // on each pass because SWC re-indented placeholder lines and the
         // content lines of the comment had extra spacing that accumulated.
         let src = "export function create_cache(redis_client: typeof default_redis) {\n\treturn {\n\t\t/**\n\t\t * Wraps a search query with Redis caching and dependency tracking.\n\t\t * On cache miss, stores the result and registers it in dependency sets\n\t\t * for each table in `view_deps`.\n\t\t *\n\t\t * On Redis error, falls back to `query_fn()` directly with a warning.\n\t\t */\n\t\tasync search<T>(\n\t\t\troute: string,\n\t\t\tparams: Record<string, unknown>,\n\t\t\tview_deps: string[],\n\t\t\tquery_fn: () => Promise<T>,\n\t\t): Promise<T> {\n\t\t\treturn cached_query(route, params, view_deps, query_fn);\n\t\t}\n\t};\n}\n";
-        let pass1 = format_code_content(src, "ts", 180, true, 3, false);
-        let pass2 = format_code_content(&pass1, "ts", 180, true, 3, false);
+        let pass1 = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
+        let pass2 = format_code_content(&pass1, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert_eq!(pass1, pass2, "block comment inside object literal should be idempotent");
     }
 
     #[test]
     fn line_comment_before_array_element_preserved() {
         let src = "const x = [\n\t// first\n\t1,\n\t// second\n\t2,\n];\n";
-        let result = format_code_content(src, "ts", 180, true, 3, false);
+        let result = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert!(result.contains("// first"), "// comment before array element must be preserved");
         assert!(result.contains("// second"), "// comment before array element must be preserved");
     }
@@ -2154,8 +2182,8 @@ mod tests {
     #[test]
     fn line_comment_before_array_element_idempotent() {
         let src = "const x = [\n\t// Pages\n\t{ url: \"/\" },\n\t// System\n\t{ url: \"/system\" },\n];\n";
-        let pass1 = format_code_content(src, "ts", 180, true, 3, false);
-        let pass2 = format_code_content(&pass1, "ts", 180, true, 3, false);
+        let pass1 = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
+        let pass2 = format_code_content(&pass1, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert!(pass1.contains("// Pages"), "// Pages comment must be in output");
         assert!(pass1.contains("// System"), "// System comment must be in output");
         assert_eq!(pass1, pass2, "array with line comments should format idempotently");
@@ -2166,7 +2194,7 @@ mod tests {
         // Comments after the last prop (before closing }) must be preserved
         // and must force the object to expand rather than collapse inline.
         let src = "export const routes = {\n\t...a,\n\t...b,\n\t// GENERATED:start\n\t// GENERATED:end\n};\n";
-        let result = format_code_content(src, "ts", 180, true, 3, false);
+        let result = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert!(result.contains("// GENERATED:start"), "trailing comment in object must be preserved");
         assert!(result.contains("// GENERATED:end"), "trailing comment in object must be preserved");
         assert!(!result.contains("...a, ...b"), "object with trailing comments must not be collapsed inline");
@@ -2175,23 +2203,23 @@ mod tests {
     #[test]
     fn line_comment_at_end_of_object_idempotent() {
         let src = "export const routes = {\n\t...a,\n\t...b,\n\t// GENERATED:start\n\t// GENERATED:end\n};\n";
-        let pass1 = format_code_content(src, "ts", 180, true, 3, false);
-        let pass2 = format_code_content(&pass1, "ts", 180, true, 3, false);
+        let pass1 = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
+        let pass2 = format_code_content(&pass1, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert_eq!(pass1, pass2, "object with trailing line comments should format idempotently");
     }
 
     #[test]
     fn line_comment_before_class_member_preserved() {
         let src = "class Foo {\n\t// a comment\n\tbar() {}\n}\n";
-        let result = format_code_content(src, "ts", 180, true, 3, false);
+        let result = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert!(result.contains("// a comment"), "// comment before class member must be preserved");
     }
 
     #[test]
     fn line_comment_before_class_member_idempotent() {
         let src = "class Foo {\n\t// getter\n\tget value() { return this._v; }\n\t// setter\n\tset value(v: number) { this._v = v; }\n}\n";
-        let pass1 = format_code_content(src, "ts", 180, true, 3, false);
-        let pass2 = format_code_content(&pass1, "ts", 180, true, 3, false);
+        let pass1 = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
+        let pass2 = format_code_content(&pass1, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert!(pass1.contains("// getter"), "// getter comment must survive formatting");
         assert!(pass1.contains("// setter"), "// setter comment must survive formatting");
         assert_eq!(pass1, pass2, "class with line comments before members should format idempotently");
@@ -2200,22 +2228,22 @@ mod tests {
     #[test]
     fn line_comment_at_end_of_block_preserved() {
         let src = "function foo() {\n\tconst x = 1;\n\t// trailing comment\n}\n";
-        let result = format_code_content(src, "ts", 180, true, 3, false);
+        let result = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert!(result.contains("// trailing comment"), "// comment before closing brace must be preserved");
     }
 
     #[test]
     fn line_comment_at_end_of_block_idempotent() {
         let src = "function foo() {\n\tconst x = 1;\n\t// trailing comment\n}\n";
-        let pass1 = format_code_content(src, "ts", 180, true, 3, false);
-        let pass2 = format_code_content(&pass1, "ts", 180, true, 3, false);
+        let pass1 = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
+        let pass2 = format_code_content(&pass1, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert_eq!(pass1, pass2, "block with trailing line comment should format idempotently");
     }
 
     #[test]
     fn line_comment_before_interface_member_preserved() {
         let src = "interface Foo {\n\t// id field\n\tid: number;\n\t// name field\n\tname: string;\n}\n";
-        let result = format_code_content(src, "ts", 180, true, 3, false);
+        let result = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert!(result.contains("// id field"), "// comment before interface member must be preserved");
         assert!(result.contains("// name field"), "// comment before interface member must be preserved");
     }
@@ -2225,7 +2253,7 @@ mod tests {
     #[test]
     fn collapse_simple_if_block() {
         let src = "\tif (cond) {\n\t\tdoSomething();\n\t}\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, "\tif (cond) { doSomething(); }\n");
     }
 
@@ -2233,7 +2261,7 @@ mod tests {
     fn collapse_nested_if_with_obj_lit() {
         // The inner obj lit must collapse first, then the outer if-block
         let src = "\tif (items[activeIndex]) {\n\t\titems[activeIndex].scrollIntoView({\n\t\t\tblock: \"nearest\"\n\t\t});\n\t}\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(
             result,
             "\tif (items[activeIndex]) { items[activeIndex].scrollIntoView({ block: \"nearest\" }); }\n"
@@ -2243,21 +2271,21 @@ mod tests {
     #[test]
     fn collapse_else_if_chain() {
         let src = "\t} else if (e.key === \"Escape\") {\n\t\tlist.classList.add(\"hidden\");\n\t}\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, "\t} else if (e.key === \"Escape\") { list.classList.add(\"hidden\"); }\n");
     }
 
     #[test]
     fn collapse_obj_lit_param() {
         let src = "\t\titems[activeIndex].scrollIntoView({\n\t\t\tblock: \"nearest\"\n\t\t});\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, "\t\titems[activeIndex].scrollIntoView({ block: \"nearest\" });\n");
     }
 
     #[test]
     fn collapse_triple_nested_blocks() {
         let src = "if (a) {\n\tif (b) {\n\t\tif (c) {\n\t\t\tstmt;\n\t\t}\n\t}\n}\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, "if (a) { if (b) { if (c) { stmt; } } }\n");
     }
 
@@ -2265,14 +2293,14 @@ mod tests {
     fn collapse_too_wide_stays_multi_line() {
         // The collapsed line would exceed 40 chars, so it stays multi-line
         let src = "if (reallyLongConditionName) {\n\treallyLongFunctionCall(withArgs);\n}\n";
-        let result = collapse_single_stmt_blocks(src, 40, 3);
+        let result = collapse_single_stmt_blocks(src, 40, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, src);
     }
 
     #[test]
     fn collapse_already_collapsed_is_idempotent() {
         let src = "if (cond) { doSomething(); }\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, src);
     }
 
@@ -2281,7 +2309,7 @@ mod tests {
         // A block whose only content is a `//` comment must NOT be collapsed:
         // collapsing would make the closing `}` part of the comment, breaking JS parsing.
         let src = "} catch (e) {\n\t// Silent fail\n}\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         // Must stay multi-line — the comment body cannot be safely collapsed
         assert_eq!(result, src);
     }
@@ -2341,21 +2369,21 @@ mod tests {
     fn collapse_no_false_positive_do_while() {
         // `do {` ends with `{` but before brace is `o`, not `)`
         let src = "do {\n\tstmt;\n} while (cond);\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, src);
     }
 
     #[test]
     fn collapse_consecutive_blocks() {
         let src = "if (a) {\n\tfa();\n}\nif (b) {\n\tfb();\n}\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, "if (a) { fa(); }\nif (b) { fb(); }\n");
     }
 
     #[test]
     fn collapse_empty_body_not_touched() {
         let src = "if (cond) {\n\t\n}\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         // Empty body should stay as-is (stmt_trimmed.is_empty() check)
         assert_eq!(result, src);
     }
@@ -2363,14 +2391,14 @@ mod tests {
     #[test]
     fn collapse_for_loop_block() {
         let src = "for (;;) {\n\tstmt();\n}\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, "for (;;) { stmt(); }\n");
     }
 
     #[test]
     fn collapse_while_loop_block() {
         let src = "while (cond) {\n\tstmt();\n}\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, "while (cond) { stmt(); }\n");
     }
 
@@ -2378,7 +2406,7 @@ mod tests {
     fn collapse_no_trailing_newline_in_input() {
         // Input without trailing newline
         let src = "if (cond) {\n\tdoIt();\n}";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, "if (cond) { doIt(); }",
             "Should preserve absence of trailing newline");
     }
@@ -2387,7 +2415,7 @@ mod tests {
     fn collapse_obj_lit_with_shorthand_prop() {
         // Object literal with shorthand property `id` should collapse
         let src = "sql_log({\n\ts: \"Delete\",\n\tt: \"text\",\n\tid\n}, req);\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, "sql_log({ s: \"Delete\", t: \"text\", id }, req);\n");
     }
 
@@ -2395,14 +2423,14 @@ mod tests {
     fn collapse_obj_lit_with_shorthand_and_template() {
         // Object literal with shorthand `id` AND template literal `${feature}`
         let src = "sql_log({\n\ts: \"Delete\",\n\tt: `${feature}`,\n\tid\n}, req);\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, "sql_log({ s: \"Delete\", t: `${feature}`, id }, req);\n");
     }
 
     #[test]
     fn collapse_obj_lit_multi_member() {
         let src = "foo({\n\tx: 1,\n\ty: 2,\n\tz: 3\n});\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, "foo({ x: 1, y: 2, z: 3 });\n");
     }
 
@@ -2410,7 +2438,7 @@ mod tests {
     fn collapse_spaced_obj_lit_opener() {
         // Space between function name and `({`
         let src = "foo ({\n\tkey: val\n});\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, "foo ({ key: val });\n");
     }
 
@@ -2418,7 +2446,7 @@ mod tests {
     fn collapse_obj_lit_as_second_arg() {
         // Object literal as non-first argument like dispatchEvent("click", { ... })
         let src = "\t\thidden.dispatchEvent(new Event(\"input\", {\n\t\t\tbubbles: true\n\t\t}));\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, "\t\thidden.dispatchEvent(new Event(\"input\", { bubbles: true }));\n");
     }
 
@@ -2426,7 +2454,7 @@ mod tests {
     fn collapse_obj_lit_as_second_arg_narrow() {
         // Same as above but at a narrow width where it just fits
         let src = "\t\thidden.dispatchEvent(new Event(\"input\", {\n\t\t\tbubbles: true\n\t\t}));\n";
-        let result = collapse_single_stmt_blocks(src, 62, 3);
+        let result = collapse_single_stmt_blocks(src, 62, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, "\t\thidden.dispatchEvent(new Event(\"input\", { bubbles: true }));\n");
     }
 
@@ -2434,7 +2462,7 @@ mod tests {
     fn collapse_obj_lit_as_second_arg_too_wide() {
         // Collapsed line is 62 chars, so at width 61 it should NOT collapse
         let src = "\t\thidden.dispatchEvent(new Event(\"input\", {\n\t\t\tbubbles: true\n\t\t}));\n";
-        let result = collapse_single_stmt_blocks(src, 61, 3);
+        let result = collapse_single_stmt_blocks(src, 61, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, src);
     }
 
@@ -2443,7 +2471,7 @@ mod tests {
         // Outer if fits, but inner obj lit is too wide for 50 chars
         // Inner should stay expanded since it doesn't fit
         let src = "\tif (cond) {\n\t\tfn(veryLongFunctionName, extremelyLongArgumentThatExceedsFiftyCharacters);\n\t}\n";
-        let result = collapse_single_stmt_blocks(src, 50, 3);
+        let result = collapse_single_stmt_blocks(src, 50, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, src, "Should stay multi-line if collapsed line exceeds max_width");
     }
 
@@ -2451,7 +2479,7 @@ mod tests {
     fn collapse_array_simple() {
         // Simple array literal should collapse
         let src = "\tconst arr = [\n\t\t\"vipsheader\",\n\t\tsafe_path\n\t];\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(
             result,
             "\tconst arr = [\"vipsheader\", safe_path];\n"
@@ -2461,7 +2489,7 @@ mod tests {
     #[test]
     fn collapse_array_already_collapsed() {
         let src = "\tconst arr = [\"a\", \"b\"];\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, src);
     }
 
@@ -2469,7 +2497,7 @@ mod tests {
     fn collapse_array_too_wide() {
         let src = "\tconst arr = [\n\t\tone,\n\t\ttwo\n\t];\n";
         // "\tconst arr = [one, two];" = 24 chars, so at width 23 it should NOT collapse
-        let result = collapse_single_stmt_blocks(src, 23, 3);
+        let result = collapse_single_stmt_blocks(src, 23, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, src);
     }
 
@@ -2477,7 +2505,7 @@ mod tests {
     fn collapse_array_with_obj_lit_after() {
         // Both the array and the obj literal should collapse
         let src = "\tconst proc = Bun.spawn([\n\t\t\"vipsheader\",\n\t\tsafe_path\n\t], {\n\t\twindowsHide: true\n\t});\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(
             result,
             "\tconst proc = Bun.spawn([\"vipsheader\", safe_path], { windowsHide: true });\n"
@@ -2508,13 +2536,13 @@ mod tests {
         // After collapse_inline_type_literals, the output should not be re-expanded
         // by collapse_single_stmt_blocks
         let after_type_collapse = "export async function search_records(search: string = \"\", offset: number = 0, limit: number = 20, order_by: string = \"id::asc\", scope_clause: string = \"\", filter_clauses: { clause: string; params: any[]; }[] = []): Promise<{ records: Record[]; total: number; }> {\n\ttry {\n\t\treturn { records: [], total: 0 };\n\t} catch (error) {\n\t\tconsole.error(\"Error:\", error);\n\t\treturn { records: [], total: 0 };\n\t}\n}\n";
-        let result = collapse_single_stmt_blocks(after_type_collapse, 180, 3);
+        let result = collapse_single_stmt_blocks(after_type_collapse, 180, &CollapseConfig::uniform(true, 3));
         assert!(
             result.contains("{ records: Record[]; total: number; }"),
             "collapse_single_stmt_blocks should NOT expand inline type literals: got {:?}",
             result
         );
-        let result2 = collapse_single_stmt_blocks(after_type_collapse, 180, 3);
+        let result2 = collapse_single_stmt_blocks(after_type_collapse, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, result2, "Should be idempotent");
     }
 
@@ -2522,7 +2550,7 @@ mod tests {
     fn full_pipeline_collapses_type_literal_in_param() {
         // Full pipeline test: multi-param function with inline type literal
         let input = "export async function search_records(\n\tsearch: string = \"\",\n\toffset: number = 0,\n\tlimit: number = 20,\n\torder_by: string = \"id::asc\",\n\tscope_clause: string = \"\",\n\tfilter_clauses: { clause: string; params: any[]; }[] = [],\n): Promise<{ records: Record[]; total: number; }> {\n\ttry {\n\t\treturn { records: [], total: 0 };\n\t} catch (error) {\n\t\tconsole.error(\"Error:\", error);\n\t\treturn { records: [], total: 0 };\n\t}\n}\n";
-        let result = format_code_content(input, "ts", 180, true, 3, false);
+        let result = format_code_content(input, "ts", 180, CollapseConfig::uniform(true, 3), false);
         // The type literal { clause: string; params: any[]; } should be collapsed to one line
         assert!(
             result.contains("{ clause: string; params: any[]; }"),
@@ -2536,7 +2564,7 @@ mod tests {
             result
         );
         // Verify idempotency
-        let pass2 = format_code_content(&result, "ts", 180, true, 3, false);
+        let pass2 = format_code_content(&result, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert_eq!(result, pass2, "Full pipeline output should be idempotent");
     }
 
@@ -2560,7 +2588,7 @@ mod tests {
         // `return { width, height }` should collapse. Then the function body becomes
         // a single statement, so the entire `function foo() { return { ... }; }` collapses.
         let src = "\tfunction foo() {\n\t\treturn {\n\t\t\twidth,\n\t\t\theight\n\t\t};\n\t}\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(
             result,
             "\tfunction foo() { return { width, height }; }\n"
@@ -2571,7 +2599,7 @@ mod tests {
     fn collapse_standalone_const_obj_lit() {
         // `const x = { a: 1, b: 2 }` should collapse when it fits.
         let src = "\tconst x = {\n\t\ta: 1,\n\t\tb: 2\n\t};\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(
             result,
             "\tconst x = { a: 1, b: 2 };\n"
@@ -2583,7 +2611,7 @@ mod tests {
         // Should stay multi-line when collapsed line exceeds max_width
         let src = "\treturn {\n\t\twidth,\n\t\theight\n\t};\n";
         // "\treturn { width, height };" = 26 chars, so at width 25 it should NOT collapse
-        let result = collapse_single_stmt_blocks(src, 25, 3);
+        let result = collapse_single_stmt_blocks(src, 25, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, src);
     }
 
@@ -2591,7 +2619,7 @@ mod tests {
     fn collapse_standalone_obj_with_spread() {
         // Object literal with spread should collapse
         let src = "\treturn {\n\t\t...obj,\n\t\tkey: val\n\t};\n";
-        let result = collapse_single_stmt_blocks(src, 180, 3);
+        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
         assert_eq!(
             result,
             "\treturn { ...obj, key: val };\n"
@@ -2605,7 +2633,7 @@ mod tests {
         // Short if-block that just fits in 40 chars
         // "if (cond) { doIt(); }" = 22 chars, with prefix = 23
         let src = "\tif (cond) {\n\t\tdoIt();\n\t}\n";
-        let result = collapse_single_stmt_blocks(src, 23, 3);
+        let result = collapse_single_stmt_blocks(src, 23, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, "\tif (cond) { doIt(); }\n");
     }
 
@@ -2613,7 +2641,7 @@ mod tests {
     fn narrow_width_block_one_char_too_wide() {
         // "\tif (cond) { doIt(); }" = 22 chars (tab + 21), so at width=21 it should NOT collapse
         let src = "\tif (cond) {\n\t\tdoIt();\n\t}\n";
-        let result = collapse_single_stmt_blocks(src, 21, 3);
+        let result = collapse_single_stmt_blocks(src, 21, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, src, "Should stay multi-line when collapsed line is 1 char too wide");
     }
 
@@ -2625,7 +2653,7 @@ mod tests {
         assert!(expected_collapsed_len > 80, "collapsed line should be >80 chars for this test to be meaningful");
 
         let src = "\t\t\t\tif (items[activeIndex]) {\n\t\t\t\t\titems[activeIndex].scrollIntoView({\n\t\t\t\t\t\tblock: \"nearest\"\n\t\t\t\t\t});\n\t\t\t\t}\n";
-        let result = collapse_single_stmt_blocks(src, 80, 3);
+        let result = collapse_single_stmt_blocks(src, 80, &CollapseConfig::uniform(true, 3));
         // Inner obj lit might still collapse since it's short: "items[activeIndex].scrollIntoView({ block: "nearest" });"
         // That's ~62 chars + 5 tabs = ~67 chars, which fits in 80.
         // But the outer if should NOT collapse because the full line is ~93+ chars
@@ -2643,7 +2671,7 @@ mod tests {
     fn narrow_width_obj_lit_barely_fits() {
         // "\t\tfoo({ x: 1, y: 2 });" = 22 chars (2 tabs + 20)
         let src = "\t\tfoo({\n\t\t\tx: 1,\n\t\t\ty: 2\n\t\t});\n";
-        let result = collapse_single_stmt_blocks(src, 22, 3);
+        let result = collapse_single_stmt_blocks(src, 22, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, "\t\tfoo({ x: 1, y: 2 });\n");
     }
 
@@ -2651,7 +2679,7 @@ mod tests {
     fn narrow_width_obj_lit_too_wide() {
         // "\t\tfoo({ x: 1, y: 2 });" = 22 chars, so at width=21 it should NOT collapse
         let src = "\t\tfoo({\n\t\t\tx: 1,\n\t\t\ty: 2\n\t\t});\n";
-        let result = collapse_single_stmt_blocks(src, 21, 3);
+        let result = collapse_single_stmt_blocks(src, 21, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, src, "Obj lit should stay multi-line when 1 char too wide");
     }
 
@@ -2659,7 +2687,7 @@ mod tests {
     fn narrow_width_else_if_barely_fits() {
         // "\t} else if (k) { stmt(); }" = 28 chars
         let src = "\t} else if (k) {\n\t\tstmt();\n\t}\n";
-        let result = collapse_single_stmt_blocks(src, 28, 3);
+        let result = collapse_single_stmt_blocks(src, 28, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, "\t} else if (k) { stmt(); }\n");
     }
 
@@ -2667,7 +2695,7 @@ mod tests {
     fn narrow_width_for_loop_barely_fits() {
         // "\tfor (;;) { stmt(); }" = 22 chars
         let src = "\tfor (;;) {\n\t\tstmt();\n\t}\n";
-        let result = collapse_single_stmt_blocks(src, 22, 3);
+        let result = collapse_single_stmt_blocks(src, 22, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, "\tfor (;;) { stmt(); }\n");
     }
 
@@ -2675,7 +2703,7 @@ mod tests {
     fn narrow_width_while_barely_fits() {
         // "\twhile (c) { stmt(); }" = 24 chars
         let src = "\twhile (c) {\n\t\tstmt();\n\t}\n";
-        let result = collapse_single_stmt_blocks(src, 24, 3);
+        let result = collapse_single_stmt_blocks(src, 24, &CollapseConfig::uniform(true, 3));
         assert_eq!(result, "\twhile (c) { stmt(); }\n");
     }
 
@@ -2687,7 +2715,7 @@ mod tests {
         // content should preserve the template literal tabs AND correctly
         // indent the surrounding code with single tabs (not 4x tabs).
         let src = "export function foo() {\n\tconst x = `\n\t\t<p>text</p>\n\t`;\n}\n";
-        let result = format_code_content(src, "ts", 180, true, 3, false);
+        let result = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
         // Code should use single-tab indentation
         assert!(
             result.contains("\tconst x ="),
@@ -2710,8 +2738,8 @@ mod tests {
     fn ts_with_template_literal_idempotent() {
         // Formatting a TS file with template literals must be idempotent.
         let src = "export function foo() {\n\tconst x = `\n\t\t<p>text</p>\n\t`;\n}\n";
-        let pass1 = format_code_content(src, "ts", 180, true, 3, false);
-        let pass2 = format_code_content(&pass1, "ts", 180, true, 3, false);
+        let pass1 = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
+        let pass2 = format_code_content(&pass1, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert_eq!(
             pass1, pass2,
             "format_code_content with template literals should be idempotent"
@@ -2723,7 +2751,7 @@ mod tests {
         // Regression: the function body should NOT be indented with 4x tabs.
         // Each line at body level should have exactly 1 tab.
         let src = "export function foo() {\n\tconst x = `\n\t\t<p>text</p>\n\t`;\n}\n";
-        let result = format_code_content(src, "ts", 180, true, 3, false);
+        let result = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
         // Check that the result doesn't have 4 tabs at body level (old bug)
         assert!(
             !result.contains("\t\t\t\tconst x ="),
@@ -2840,14 +2868,14 @@ mod tests {
     fn wrap_method_chain_full_pipeline() {
         // Full pipeline test: the method chain inside template literal
         let input = "const grid_cols = `${Object.entries(columns).filter(([_, v]: [string, any]) => v.grid !== false).map(([_, v]: [string, any]) => (typeof v === \"string\" ? v : v.width)).join(\" \")} auto`;\n";
-        let result = format_code_content(input, "ts", 180, true, 3, false);
+        let result = format_code_content(input, "ts", 180, CollapseConfig::uniform(true, 3), false);
         // The method chain should be split
         assert!(result.contains("Object.entries(columns)\n"), "Method chain should be split");
         assert!(result.contains(".filter("), ".filter should be present");
         assert!(result.contains(".map("), ".map should be present");
         assert!(result.contains(".join(\" \")}"), ".join should be present");
         // Verify idempotency
-        let pass2 = format_code_content(&result, "ts", 180, true, 3, false);
+        let pass2 = format_code_content(&result, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert_eq!(result, pass2, "Full pipeline should be idempotent");
     }
 
@@ -2918,12 +2946,12 @@ mod tests {
     fn wrap_full_pipeline_multi_param_function() {
         // Full pipeline: function with params already split should stay split
         let input = "export async function search_records(\n\tsearch: string = \"\",\n\toffset: number = 0,\n\tlimit: number = 20,\n\torder_by: string = \"id::asc\",\n\tscope_clause: string = \"\",\n\tfilter_clauses: { clause: string; params: any[]; }[] = [],\n): Promise<{ records: Record[]; total: number; }> {\n\ttry {\n\t\treturn { records: [], total: 0 };\n\t} catch (error) {\n\t\tconsole.error(\"Error:\", error);\n\t\treturn { records: [], total: 0 };\n\t}\n}\n";
-        let result = format_code_content(input, "ts", 180, true, 3, false);
+        let result = format_code_content(input, "ts", 180, CollapseConfig::uniform(true, 3), false);
         // Should keep params on separate lines (already split)
         assert!(result.contains("search_records("), "Open paren on first line");
         assert!(result.contains("\n\tsearch: string"), "Params should be on separate lines");
         // Verify idempotency
-        let pass2 = format_code_content(&result, "ts", 180, true, 3, false);
+        let pass2 = format_code_content(&result, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert_eq!(result, pass2, "Full pipeline should be idempotent");
     }
 
@@ -3039,7 +3067,7 @@ mod tests {
     fn ts_complex_template_literal_preserved() {
         // A more realistic template literal with multiple levels of nesting.
         let src = "export function page() {\n\tconst html = `\n\t\t<div>\n\t\t\t<p>content</p>\n\t\t</div>\n\t`;\n\treturn html;\n}\n";
-        let result = format_code_content(src, "ts", 180, true, 3, false);
+        let result = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 3), false);
         // Code indentation: single tab
         assert!(result.contains("\tconst html ="), "Code should use single tab");
         assert!(result.contains("\treturn html;"), "Return should use single tab");
@@ -3049,7 +3077,7 @@ mod tests {
         let lines: Vec<&str> = result.lines().collect();
         assert_eq!(lines.last(), Some(&"}"), "Closing brace should be at column 0");
         // Idempotent
-        let pass2 = format_code_content(&result, "ts", 180, true, 3, false);
+        let pass2 = format_code_content(&result, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert_eq!(result, pass2, "Complex template literal should be idempotent");
     }
 }

@@ -139,7 +139,7 @@ impl<'a> Printer<'a> {
     }
 
     pub(super) fn print_fn_sig(&mut self, f: &Function) {
-        if self.collapse_blocks && f.params.len() > self.max_members {
+        if self.collapse.enabled && f.params.len() > self.collapse.max_function_params {
             self.w("(");
             self.nl();
             self.indent();

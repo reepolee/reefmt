@@ -195,7 +195,7 @@ impl<'a> Printer<'a> {
 
     pub(super) fn print_block(&mut self, block: &BlockStmt) {
         // Try single-statement collapse: `if (cond) { stmt; }` on one line
-        if self.collapse_blocks && block.stmts.len() == 1 {
+        if self.collapse.enabled && block.stmts.len() == 1 {
             let stmt = &block.stmts[0];
             let has_leading = self
                 .comments
