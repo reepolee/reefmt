@@ -29,7 +29,7 @@
 	// Maximum line width before elements are broken onto multiple lines.
 	// Controls when inline elements are folded and when long tag lines
 	// are split across multiple lines.
-	"wrapWidth": 180,
+	"wrapWidth": 100,
 	// When true, single-statement blocks (if, for, while, etc.) and
 	// object literal function params collapse onto one line when
 	// they fit within wrapWidth.

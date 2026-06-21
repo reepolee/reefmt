@@ -738,6 +738,74 @@ fn has_unclosed_template_literal(s: &str) -> bool {
     open
 }
 
+/// Returns true if `line` starts a multi-line block comment that isn't closed
+/// on the same line (e.g. `/**` or `/* start`). Ignores `/*` that appears
+/// after a `//` line-comment marker.
+fn line_opens_block_comment(line: &str) -> bool {
+    let t = line.trim_start();
+    let Some(open) = t.find("/*") else { return false; };
+    if let Some(lc) = t.find("//") {
+        if lc < open { return false; }
+    }
+    !t[open + 2..].contains("*/")
+}
+
+/// Returns true if `line` ends a block comment (contains `*/`).
+fn line_closes_block_comment(line: &str) -> bool {
+    line.contains("*/")
+}
+
+/// Apply a line-by-line transformation to `code`, automatically skipping lines
+/// that are inside multi-line template literals or multi-line block comments.
+///
+/// `f` returns `Some(replacement)` (without trailing newline) to replace the
+/// current line, or `None` to copy it verbatim. Lines inside protected regions
+/// are always copied verbatim regardless of what `f` returns.
+fn apply_with_context<F>(code: &str, mut f: F) -> String
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let mut result = String::with_capacity(code.len() + 128);
+    let mut in_template = false;
+    let mut in_block_comment = false;
+
+    for line in code.lines() {
+        if in_block_comment {
+            result.push_str(line);
+            result.push('\n');
+            if line_closes_block_comment(line) {
+                in_block_comment = false;
+            }
+        } else if in_template {
+            result.push_str(line);
+            result.push('\n');
+            if has_unclosed_template_literal(line) {
+                in_template = false;
+            }
+        } else {
+            let has_tpl = has_unclosed_template_literal(line);
+            let opens_cmt = line_opens_block_comment(line);
+            if has_tpl || opens_cmt {
+                // Opening line of a multi-line region — copy verbatim, update state.
+                result.push_str(line);
+                result.push('\n');
+                in_template = has_tpl;
+                in_block_comment = opens_cmt;
+            } else {
+                match f(line) {
+                    Some(replacement) => { result.push_str(&replacement); result.push('\n'); }
+                    None => { result.push_str(line); result.push('\n'); }
+                }
+            }
+        }
+    }
+
+    if !code.ends_with('\n') && result.ends_with('\n') {
+        result.pop();
+    }
+    result
+}
+
 /// Check if a trimmed line is a block opener like `if (cond) {` or `for (;;) {`
 fn is_block_opener(trimmed: &str) -> bool {
     // Must end with `{` and the character before must be `)`
@@ -1422,33 +1490,7 @@ fn try_split_function_params(line: &str, max_width: usize) -> Option<String> {
 /// Operates on each line independently — lines that don't match a function
 /// signature or that already have their params split are left untouched.
 fn wrap_long_function_params(code: &str, max_width: usize) -> String {
-    let mut result = String::with_capacity(code.len());
-    let mut in_template = false;
-
-    for line in code.lines() {
-        let has_tpl = has_unclosed_template_literal(line);
-        if in_template || has_tpl {
-            // Inside (or opening/closing) a multi-line template literal —
-            // copy verbatim so template content is never treated as TS code.
-            result.push_str(line);
-            result.push('\n');
-            if has_tpl {
-                in_template = !in_template;
-            }
-        } else if let Some(split) = try_split_function_params(line, max_width) {
-            result.push_str(&split);
-            result.push('\n');
-        } else {
-            result.push_str(line);
-            result.push('\n');
-        }
-    }
-
-    if !code.ends_with('\n') && result.ends_with('\n') {
-        result.pop();
-    }
-
-    result
+    apply_with_context(code, |line| try_split_function_params(line, max_width))
 }
 
 /// Try to split a method chain that exceeds `max_width` across multiple lines.
@@ -1761,23 +1803,7 @@ fn try_split_method_chain(line: &str, max_width: usize) -> Option<String> {
 /// Operates line-by-line. Lines that don't fit or don't have method chains
 /// are left untouched.
 fn wrap_long_method_chains(code: &str, max_width: usize) -> String {
-    let mut result = String::with_capacity(code.len());
-
-    for line in code.lines() {
-        if let Some(split) = try_split_method_chain(line, max_width) {
-            result.push_str(&split);
-            result.push('\n');
-        } else {
-            result.push_str(line);
-            result.push('\n');
-        }
-    }
-
-    if !code.ends_with('\n') && result.ends_with('\n') {
-        result.pop();
-    }
-
-    result
+    apply_with_context(code, |line| try_split_method_chain(line, max_width))
 }
 
 /// Format standalone code content (TS/JS/CSS) using native SWC, no subprocess needed.
@@ -2927,6 +2953,16 @@ mod tests {
         let src = "async function seed_user(username: string, email: string) {\n\tawait test_db!`\n\t\tINSERT INTO users (email, name)\n\t\tVALUES (${email}, ${\"Seed\"}, ${\"\"}, ${username}, ${\"\"}, ${\"\"}, ${modules}, ${\"2026-01-01 00:00:00\"})\n\t`;\n}\n";
         let result = wrap_long_function_params(src, 100);
         assert_eq!(result, src, "Template literal content must not be split as function params");
+    }
+
+    #[test]
+    fn wrap_function_params_no_false_positive_block_comment() {
+        // Regression: content inside a multi-line block comment must not be
+        // treated as function params. The `:` in backtick literals like
+        // `bun build:dist` previously satisfied the type-annotation guard.
+        let src = "/**\n * pipeline (`bun build:dist`, `bun preview`, sitemap, rss) works against it.\n */\nexport const X = 1;\n";
+        let result = wrap_long_function_params(src, 80);
+        assert_eq!(result, src, "Block comment content must not be split as function params");
     }
 
     #[test]

@@ -394,6 +394,12 @@ fn main() {
         let ext = stdin_ext.as_deref().unwrap_or(".ree");
         let ext = ext.trim_start_matches('.');
 
+        // If the extension matches a skipExtension entry, pass content through unchanged.
+        if config.skip_extensions.iter().any(|skip| ext == skip.as_str()) {
+            print!("{}", input);
+            return;
+        }
+
         let collapse = config.collapse_config();
         let formatted = match ext {
             "ree" => ree_format::format_ree_content(&input, config.wrap_width, collapse, config.remove_unused_imports),
