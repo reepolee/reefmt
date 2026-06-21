@@ -1423,9 +1423,19 @@ fn try_split_function_params(line: &str, max_width: usize) -> Option<String> {
 /// signature or that already have their params split are left untouched.
 fn wrap_long_function_params(code: &str, max_width: usize) -> String {
     let mut result = String::with_capacity(code.len());
+    let mut in_template = false;
 
     for line in code.lines() {
-        if let Some(split) = try_split_function_params(line, max_width) {
+        let has_tpl = has_unclosed_template_literal(line);
+        if in_template || has_tpl {
+            // Inside (or opening/closing) a multi-line template literal —
+            // copy verbatim so template content is never treated as TS code.
+            result.push_str(line);
+            result.push('\n');
+            if has_tpl {
+                in_template = !in_template;
+            }
+        } else if let Some(split) = try_split_function_params(line, max_width) {
             result.push_str(&split);
             result.push('\n');
         } else {
@@ -2907,6 +2917,17 @@ mod tests {
     }
 
     // ─── wrap_long_function_params tests ────────────────────────
+
+    #[test]
+    fn wrap_function_params_no_false_positive_template_literal() {
+        // Regression: VALUES (${a}, ${"2026-01-01 00:00:00"}) inside a tagged
+        // template must not be treated as a function call and split.
+        // The colon in the date string previously satisfied the type-annotation
+        // guard, causing the template content to be corrupted.
+        let src = "async function seed_user(username: string, email: string) {\n\tawait test_db!`\n\t\tINSERT INTO users (email, name)\n\t\tVALUES (${email}, ${\"Seed\"}, ${\"\"}, ${username}, ${\"\"}, ${\"\"}, ${modules}, ${\"2026-01-01 00:00:00\"})\n\t`;\n}\n";
+        let result = wrap_long_function_params(src, 100);
+        assert_eq!(result, src, "Template literal content must not be split as function params");
+    }
 
     #[test]
     fn wrap_split_function_params_6_params_exceeds_width() {
