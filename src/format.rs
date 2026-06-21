@@ -3230,4 +3230,16 @@ mod tests {
         let pass2 = format_code_content(&result, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert_eq!(result, pass2, "Complex template literal should be idempotent");
     }
+
+    #[test]
+    fn collapse_array_with_multiline_object_not_flattened() {
+        // Array containing a multi-line object must NOT be collapsed to one line —
+        // joining `{` as an array member produces `[{, type: "text", ...}]` which
+        // is invalid TypeScript.
+        let src = "const x = [\n\t{\n\t\ttype: \"text\",\n\t\ttext: `error: ${e.message}`,\n\t},\n];\n";
+        let result = format_code_content(src, "ts", 180, CollapseConfig::uniform(true, 4), false);
+        assert!(!result.contains("[{,"), "Array with multi-line object must not collapse to [{{, ...}}]");
+        let pass2 = format_code_content(&result, "ts", 180, CollapseConfig::uniform(true, 4), false);
+        assert_eq!(result, pass2, "Should be idempotent");
+    }
 }
