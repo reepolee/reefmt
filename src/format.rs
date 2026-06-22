@@ -45,12 +45,10 @@ impl CollapseConfig {
             max_call_args: max,
             max_imports: max,
             max_type_members: max,
-            // 0 keeps the count caps authoritative, matching pre-soft-width
-            // behavior so existing tests exercise the count-based path.
+            // 0 isolates the count-cap path: tests that want to exercise the
+            // soft-width override set it explicitly.
             soft_wrap_width: 0,
-            // 1 makes a tab count as a single column, matching the pre-tab-aware
-            // measurement so existing tests are unaffected. Production uses 4.
-            tab_width: 1,
+            tab_width: 4,
         }
     }
 }
