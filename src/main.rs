@@ -21,6 +21,7 @@ fn default_true() -> bool { true }
 fn default_four() -> usize { 4 }
 fn default_soft_width() -> usize { 100 }
 fn default_tab_width() -> usize { 4 }
+fn default_keyvalue_props() -> usize { 1 }
 fn default_skip_extensions() -> Vec<String> { vec!["min.js".to_string()] }
 
 /// Reefmt configuration — loaded from `reefmt.jsonc` in the project root.
@@ -79,6 +80,12 @@ pub(crate) struct ReeConfig {
     /// tab size so wrapWidth/collapseSoftWidth reflect on-screen width.
     #[serde(rename = "tabWidth", default = "default_tab_width")]
     tab_width: usize,
+    /// Maximum number of `key: value` ("named") properties an object literal may
+    /// have and still collapse onto one line. Shorthand (`{ a, b }`) and spread
+    /// (`{ ...x }`) don't count. With the default `1`, `{ x: 1 }` stays inline
+    /// but `{ x: 1, y: 2 }` always expands one-per-line. Set high to disable.
+    #[serde(rename = "collapseMaxKeyValueProps", default = "default_keyvalue_props")]
+    collapse_max_keyvalue_props: usize,
     /// When true, unused import declarations are removed from JS/TS files
     /// during formatting. Side-effect imports (`import "./foo"`) are always kept.
     #[serde(rename = "removeUnusedImports", default)]
@@ -103,6 +110,7 @@ impl ReeConfig {
             max_type_members: self.collapse_max_type_members.unwrap_or(def),
             soft_wrap_width: self.collapse_soft_width,
             tab_width: self.tab_width,
+            max_keyvalue_props: self.collapse_max_keyvalue_props,
         }
     }
 }
@@ -721,6 +729,7 @@ mod tests {
             collapse_max_type_members: None,
             collapse_soft_width: 0,
             tab_width: 4,
+            collapse_max_keyvalue_props: 1,
             remove_unused_imports: false,
             oneline: false,
         };
@@ -771,6 +780,7 @@ mod tests {
         assert_eq!(config.collapse_max_type_members, Some(4));
         assert_eq!(config.collapse_soft_width, 100);
         assert_eq!(config.tab_width, 4);
+        assert_eq!(config.collapse_max_keyvalue_props, 1);
     }
 
     #[test]
@@ -792,6 +802,7 @@ mod tests {
             collapse_max_type_members: None,
             collapse_soft_width: 0,
             tab_width: 4,
+            collapse_max_keyvalue_props: 1,
             remove_unused_imports: false,
             oneline: false,
         };

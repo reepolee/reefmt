@@ -63,8 +63,12 @@ impl<'a> Printer<'a> {
                     self.w("{}");
                     break 'obj;
                 }
-                // Object literals: try inline, expand if too many members or too wide
-                if self.collapse.enabled {
+                // Object literals: try inline, expand if too many members, too
+                // wide, or carrying more than `max_keyvalue_props` named
+                // (`key: value`) properties — inline lists of assignments are
+                // hard to scan, so they stay one-per-line.
+                let kv_props = crate::format::keyvalue_prop_count(&o.props);
+                if self.collapse.enabled && kv_props <= self.collapse.max_keyvalue_props {
                     let checkpoint = self.buf.len();
                     self.w("{ ");
                     for (i, p) in o.props.iter().enumerate() {

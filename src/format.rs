@@ -32,6 +32,12 @@ pub(crate) struct CollapseConfig {
     /// count suggests; measuring with this value makes width decisions reflect
     /// where the last character actually lands on screen.
     pub tab_width: usize,
+    /// Maximum number of `key: value` ("named") properties an object literal may
+    /// have and still collapse onto one line. Shorthand (`{ a, b }`) and spread
+    /// (`{ ...x }`) properties don't count. With the default `1`, a single
+    /// `{ x: 1 }` stays inline but `{ x: 1, y: 2 }` always expands — inline
+    /// lists of named assignments are hard to scan. Set high to disable.
+    pub max_keyvalue_props: usize,
 }
 
 impl CollapseConfig {
@@ -49,8 +55,21 @@ impl CollapseConfig {
             // soft-width override set it explicitly.
             soft_wrap_width: 0,
             tab_width: 4,
+            max_keyvalue_props: 1,
         }
     }
+}
+
+/// Number of "named" (`key: value`) properties in an object literal's property
+/// list. Shorthand (`{ a }`) and spread (`{ ...x }`) members are not counted —
+/// they read like a plain list and stay collapsible. Used to keep objects full
+/// of inline assignments (`{ a: 1, b: 2, ... }`) from collapsing onto one line.
+pub(crate) fn keyvalue_prop_count(props: &[swc_core::ecma::ast::PropOrSpread]) -> usize {
+    use swc_core::ecma::ast::{PropOrSpread, Prop};
+    props.iter().filter(|p| match p {
+        PropOrSpread::Prop(prop) => !matches!(**prop, Prop::Shorthand(_)),
+        PropOrSpread::Spread(_) => false,
+    }).count()
 }
 
 /// Visual column width of a single line: tabs advance to the next multiple of
@@ -925,9 +944,19 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &Col
                     .filter(|l| !l.is_empty())
                     .collect();
 
+                // Count named (`key: value`) members — those that are neither a
+                // spread nor a plain shorthand identifier — to keep objects full
+                // of inline assignments from collapsing onto one line.
+                let named_count = body.iter().filter(|l| {
+                    let c = l.trim_end_matches(',').trim();
+                    !c.starts_with("...") && !is_simple_ident(c)
+                }).count();
                 // Validate: body must contain no statements (no `;`), and each line
                 // must be a key:value pair, shorthand identifier, or spread operator.
-                let is_valid_obj_lit = !body.is_empty() && body.len() <= collapse.max_object_members && body.iter().all(|l| {
+                let is_valid_obj_lit = !body.is_empty()
+                    && body.len() <= collapse.max_object_members
+                    && named_count <= collapse.max_keyvalue_props
+                    && body.iter().all(|l| {
                     let cleaned = l.trim_end_matches(',').trim();
                     // No statements (`;`). Brace-depth tracking handles nested
                     // structures correctly, and template literals like `${expr}`
@@ -986,9 +1015,19 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &Col
                     .filter(|l| !l.is_empty())
                     .collect();
 
+                // Count named (`key: value`) members — those that are neither a
+                // spread nor a plain shorthand identifier — to keep objects full
+                // of inline assignments from collapsing onto one line.
+                let named_count = body.iter().filter(|l| {
+                    let c = l.trim_end_matches(',').trim();
+                    !c.starts_with("...") && !is_simple_ident(c)
+                }).count();
                 // Validate: body must contain no statements (no `;`), and each line
                 // must be a key:value pair, shorthand identifier, or spread operator.
-                let is_valid_obj = !body.is_empty() && body.len() <= collapse.max_object_members && body.iter().all(|l| {
+                let is_valid_obj = !body.is_empty()
+                    && body.len() <= collapse.max_object_members
+                    && named_count <= collapse.max_keyvalue_props
+                    && body.iter().all(|l| {
                     let cleaned = l.trim_end_matches(',').trim();
                     // No statements (`;`), no nested un-collapsed braces (`{`, `}`),
                     // no comments (standalone `//` or trailing ` //`) — collapsing
@@ -2508,7 +2547,7 @@ mod tests {
     fn collapse_obj_lit_with_shorthand_prop() {
         // Object literal with shorthand property `id` should collapse
         let src = "sql_log({\n\ts: \"Delete\",\n\tt: \"text\",\n\tid\n}, req);\n";
-        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
+        let result = collapse_single_stmt_blocks(src, 180, &any_kv(3));
         assert_eq!(result, "sql_log({ s: \"Delete\", t: \"text\", id }, req);\n");
     }
 
@@ -2516,14 +2555,14 @@ mod tests {
     fn collapse_obj_lit_with_shorthand_and_template() {
         // Object literal with shorthand `id` AND template literal `${feature}`
         let src = "sql_log({\n\ts: \"Delete\",\n\tt: `${feature}`,\n\tid\n}, req);\n";
-        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
+        let result = collapse_single_stmt_blocks(src, 180, &any_kv(3));
         assert_eq!(result, "sql_log({ s: \"Delete\", t: `${feature}`, id }, req);\n");
     }
 
     #[test]
     fn collapse_obj_lit_multi_member() {
         let src = "foo({\n\tx: 1,\n\ty: 2,\n\tz: 3\n});\n";
-        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
+        let result = collapse_single_stmt_blocks(src, 180, &any_kv(3));
         assert_eq!(result, "foo({ x: 1, y: 2, z: 3 });\n");
     }
 
@@ -2692,7 +2731,7 @@ mod tests {
     fn collapse_standalone_const_obj_lit() {
         // `const x = { a: 1, b: 2 }` should collapse when it fits.
         let src = "\tconst x = {\n\t\ta: 1,\n\t\tb: 2\n\t};\n";
-        let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
+        let result = collapse_single_stmt_blocks(src, 180, &any_kv(3));
         assert_eq!(
             result,
             "\tconst x = { a: 1, b: 2 };\n"
@@ -2822,7 +2861,7 @@ mod tests {
     fn narrow_width_obj_lit_barely_fits() {
         // "\t\tfoo({ x: 1, y: 2 });" = 22 chars (2 tabs + 20)
         let src = "\t\tfoo({\n\t\t\tx: 1,\n\t\t\ty: 2\n\t\t});\n";
-        let result = collapse_single_stmt_blocks(src, 22, &CollapseConfig::uniform(true, 3));
+        let result = collapse_single_stmt_blocks(src, 22, &any_kv(3));
         assert_eq!(result, "\t\tfoo({ x: 1, y: 2 });\n");
     }
 
@@ -3282,6 +3321,14 @@ mod tests {
     fn soft(max: usize, soft_width: usize) -> CollapseConfig {
         let mut cfg = CollapseConfig::uniform(true, max);
         cfg.soft_wrap_width = soft_width;
+        cfg
+    }
+
+    /// uniform() with the key:value-prop limit lifted, for tests that exercise
+    /// object-collapse mechanics independent of the named-property rule.
+    fn any_kv(max: usize) -> CollapseConfig {
+        let mut cfg = CollapseConfig::uniform(true, max);
+        cfg.max_keyvalue_props = usize::MAX;
         cfg
     }
 
