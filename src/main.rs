@@ -18,7 +18,7 @@ use glob::glob;
 use rayon::prelude::*;
 
 fn default_true() -> bool { true }
-fn default_three() -> usize { 3 }
+fn default_four() -> usize { 4 }
 fn default_skip_extensions() -> Vec<String> { vec!["min.js".to_string()] }
 
 /// Reefmt configuration — loaded from `reefmt.jsonc` in the project root.
@@ -49,7 +49,7 @@ pub(crate) struct ReeConfig {
     collapse_single_stmt_blocks: bool,
     /// Global fallback limit for all categories below. Any category not
     /// explicitly configured falls back to this value.
-    #[serde(rename = "collapseMaxMembers", default = "default_three")]
+    #[serde(rename = "collapseMaxMembers", default = "default_four")]
     collapse_max_members: usize,
     /// Per-category overrides (fall back to collapseMaxMembers when absent).
     #[serde(rename = "collapseMaxObjectMembers", default)]
@@ -703,13 +703,13 @@ mod tests {
         assert!(config.extensions.contains(&"ree".to_string()));
         assert!(config.skip_dot_dirs);
         assert_eq!(config.wrap_width, 180);
-        assert_eq!(config.collapse_max_members, 3);
-        assert_eq!(config.collapse_max_object_members, Some(3));
-        assert_eq!(config.collapse_max_array_elements, Some(3));
-        assert_eq!(config.collapse_max_function_params, Some(3));
-        assert_eq!(config.collapse_max_call_args, Some(3));
-        assert_eq!(config.collapse_max_imports, Some(3));
-        assert_eq!(config.collapse_max_type_members, Some(3));
+        assert_eq!(config.collapse_max_members, 4);
+        assert_eq!(config.collapse_max_object_members, Some(4));
+        assert_eq!(config.collapse_max_array_elements, Some(4));
+        assert_eq!(config.collapse_max_function_params, Some(4));
+        assert_eq!(config.collapse_max_call_args, Some(4));
+        assert_eq!(config.collapse_max_imports, Some(4));
+        assert_eq!(config.collapse_max_type_members, Some(4));
     }
 
     #[test]

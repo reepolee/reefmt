@@ -124,7 +124,7 @@ The file supports JSON comments (`//` and `/* */`) for inline documentation.
 | `skipDotDirs` | `boolean` | `true` | Skip directories whose name starts with a dot (e.g. `.git`, `.next`, `.cache`, `.svelte-kit`). |
 | `wrapWidth` | `number` | `180` | Maximum line width before elements are broken onto multiple lines. |
 | `collapseSingleStatementBlocks` | `boolean` | `true` | When enabled, single-statement blocks (`if`, `for`, `while`, etc.) and object literal function params (`fn({ key: val })`) collapse onto one line when they fit within `wrapWidth`. |
-| `collapseMaxMembers` | `number` | `3` | Maximum number of object literal or type literal members before collapsing is prevented. With the default `3`, a 4+ member object literal stays multi-line regardless of `wrapWidth`. |
+| `collapseMaxMembers` | `number` | `4` | Maximum number of object literal or type literal members before collapsing is prevented. With the default `4`, a 5+ member object literal stays multi-line regardless of `wrapWidth`. |
 
 ### Example config:
 
@@ -135,7 +135,7 @@ The file supports JSON comments (`//` and `/* */`) for inline documentation.
 	"skipDotDirs": true,
 	"wrapWidth": 180,
 	"collapseSingleStatementBlocks": true,
-	"collapseMaxMembers": 3
+	"collapseMaxMembers": 4
 }
 ```
 
