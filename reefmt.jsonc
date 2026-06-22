@@ -52,6 +52,12 @@
 	// the count caps apply and wrapWidth is the hard ceiling. Set to 0 to
 	// disable (count caps always apply).
 	"collapseSoftWidth": 100,
+	// Display width of a tab character. The formatter indents with hard tabs,
+	// so a deeply nested line takes up more screen columns than its raw length.
+	// This value is used when measuring line widths for wrapWidth and
+	// collapseSoftWidth decisions — set it to match your editor's tab size so
+	// those widths reflect where the last character actually lands on screen.
+	"tabWidth": 4,
 	// When true, unused import declarations are removed from JS/TS files
 	// during formatting. Side-effect imports (import "./foo") are always
 	// kept. Defaults to false — enable if you want automatic cleanup.

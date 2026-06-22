@@ -126,6 +126,7 @@ The file supports JSON comments (`//` and `/* */`) for inline documentation.
 | `collapseSingleStatementBlocks` | `boolean` | `true` | When enabled, single-statement blocks (`if`, `for`, `while`, etc.) and object literal function params (`fn({ key: val })`) collapse onto one line when they fit within `wrapWidth`. |
 | `collapseMaxMembers` | `number` | `4` | Maximum number of object literal or type literal members before collapsing is prevented. With the default `4`, a 5+ member object literal stays multi-line regardless of `wrapWidth`. |
 | `collapseSoftWidth` | `number` | `100` | "Soft" wrap width. Any collapsible structure (call args, array/object/type members, imports) whose single-line form fits within this width stays on one line **regardless** of the count caps above — so a short call with many short args collapses instead of exploding one-per-line. Above this width the count caps apply and `wrapWidth` is the hard ceiling. Set to `0` to disable (count caps always apply). |
+| `tabWidth` | `number` | `4` | Display width of a tab character. The formatter indents with hard tabs, so a deeply nested line occupies more screen columns than its raw character count. Width measurements for `wrapWidth` and `collapseSoftWidth` expand tabs to this many columns, so those limits reflect where the last character actually lands on screen. Set it to match your editor's tab size. |
 
 ### Example config:
 
@@ -137,7 +138,8 @@ The file supports JSON comments (`//` and `/* */`) for inline documentation.
 	"wrapWidth": 180,
 	"collapseSingleStatementBlocks": true,
 	"collapseMaxMembers": 4,
-	"collapseSoftWidth": 100
+	"collapseSoftWidth": 100,
+	"tabWidth": 4
 }
 ```
 

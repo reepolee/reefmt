@@ -96,8 +96,13 @@ impl<'a> Printer<'a> {
     /// Used for block comments that appear inline after statements, like
     /// `const x = 1; /* inline */`.
     /// Measure the current line length (chars emitted since last \n).
+    /// On-screen width of the line currently being built (the text after the
+    /// last newline in the buffer). Tabs are expanded to `tab_width` columns so
+    /// deeply indented structures are measured by where their last character
+    /// lands, not by raw character count.
     pub(super) fn current_line_len(&self) -> usize {
-        self.buf.lines().last().map(|l| l.len()).unwrap_or(0)
+        let line = self.buf.rsplit('\n').next().unwrap_or("");
+        crate::format::display_width(line, self.collapse.tab_width)
     }
 
     /// Decide whether a just-emitted inline structure may stay on one line,

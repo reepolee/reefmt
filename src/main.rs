@@ -20,6 +20,7 @@ use rayon::prelude::*;
 fn default_true() -> bool { true }
 fn default_four() -> usize { 4 }
 fn default_soft_width() -> usize { 100 }
+fn default_tab_width() -> usize { 4 }
 fn default_skip_extensions() -> Vec<String> { vec!["min.js".to_string()] }
 
 /// Reefmt configuration — loaded from `reefmt.jsonc` in the project root.
@@ -72,6 +73,12 @@ pub(crate) struct ReeConfig {
     /// to disable (count caps always apply).
     #[serde(rename = "collapseSoftWidth", default = "default_soft_width")]
     collapse_soft_width: usize,
+    /// Display width of a tab, used to measure line widths for wrap/collapse
+    /// decisions. The formatter indents with hard tabs, so this controls how
+    /// many columns each indent level counts as — set it to match your editor's
+    /// tab size so wrapWidth/collapseSoftWidth reflect on-screen width.
+    #[serde(rename = "tabWidth", default = "default_tab_width")]
+    tab_width: usize,
     /// When true, unused import declarations are removed from JS/TS files
     /// during formatting. Side-effect imports (`import "./foo"`) are always kept.
     #[serde(rename = "removeUnusedImports", default)]
@@ -95,6 +102,7 @@ impl ReeConfig {
             max_imports: self.collapse_max_imports.unwrap_or(def),
             max_type_members: self.collapse_max_type_members.unwrap_or(def),
             soft_wrap_width: self.collapse_soft_width,
+            tab_width: self.tab_width,
         }
     }
 }
@@ -337,6 +345,20 @@ fn main() {
         })
     });
 
+    // Parse --tab-width CLI override
+    let cli_tab_width: Option<usize> = args.iter().position(|a| a == "--tab-width").map(|pos| {
+        args.remove(pos);
+        if pos >= args.len() {
+            eprintln!("Error: --tab-width requires a number argument");
+            std::process::exit(1);
+        }
+        let val = args.remove(pos);
+        val.parse().unwrap_or_else(|_| {
+            eprintln!("Error: --tab-width must be a positive integer");
+            std::process::exit(1);
+        })
+    });
+
     // Parse --oneline flag (collapse multi-line HTML elements to one line when they fit)
     let cli_oneline = if let Some(pos) = args.iter().position(|a| a == "--oneline") {
         args.remove(pos);
@@ -390,6 +412,7 @@ fn main() {
         println!("  --wrap-width <N>         Override wrapWidth from config");
         println!("  --collapse-max-members <N>  Override collapseMaxMembers from config");
         println!("  --collapse-soft-width <N>   Override collapseSoftWidth from config (0 disables)");
+        println!("  --tab-width <N>          Override tabWidth from config (tab display columns)");
         println!("  --stdin <.ext>           Read from stdin, write to stdout (.ree, .ts, .js, .css)");
         println!("  --init                   Create or upgrade reefmt.jsonc in the current directory");
         println!("  --version, -v            Print version");
@@ -466,6 +489,11 @@ fn main() {
     // CLI --collapse-soft-width overrides config
     if let Some(w) = cli_soft_width {
         config.collapse_soft_width = w;
+    }
+
+    // CLI --tab-width overrides config
+    if let Some(w) = cli_tab_width {
+        config.tab_width = w;
     }
 
     // CLI --oneline overrides config
@@ -692,6 +720,7 @@ mod tests {
             collapse_max_imports: None,
             collapse_max_type_members: None,
             collapse_soft_width: 0,
+            tab_width: 4,
             remove_unused_imports: false,
             oneline: false,
         };
@@ -741,6 +770,7 @@ mod tests {
         assert_eq!(config.collapse_max_imports, Some(4));
         assert_eq!(config.collapse_max_type_members, Some(4));
         assert_eq!(config.collapse_soft_width, 100);
+        assert_eq!(config.tab_width, 4);
     }
 
     #[test]
@@ -761,6 +791,7 @@ mod tests {
             collapse_max_imports: None,
             collapse_max_type_members: None,
             collapse_soft_width: 0,
+            tab_width: 4,
             remove_unused_imports: false,
             oneline: false,
         };

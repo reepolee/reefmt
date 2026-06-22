@@ -26,6 +26,12 @@ pub(crate) struct CollapseConfig {
     /// above. Above this width the count caps apply as usual, and `wrap_width`
     /// remains the hard ceiling. Set to 0 to disable (count caps always apply).
     pub soft_wrap_width: usize,
+    /// Display width of a tab character, used when measuring line widths for
+    /// wrap/collapse decisions. Because the formatter indents with hard tabs, a
+    /// deeply nested line occupies more screen columns than its raw character
+    /// count suggests; measuring with this value makes width decisions reflect
+    /// where the last character actually lands on screen.
+    pub tab_width: usize,
 }
 
 impl CollapseConfig {
@@ -42,8 +48,28 @@ impl CollapseConfig {
             // 0 keeps the count caps authoritative, matching pre-soft-width
             // behavior so existing tests exercise the count-based path.
             soft_wrap_width: 0,
+            // 1 makes a tab count as a single column, matching the pre-tab-aware
+            // measurement so existing tests are unaffected. Production uses 4.
+            tab_width: 1,
         }
     }
+}
+
+/// Visual column width of a single line: tabs advance to the next multiple of
+/// `tab_width`; every other character counts as one column. Used for every
+/// wrap/collapse width decision so that tab-indented lines are measured by the
+/// on-screen position of their last character rather than their raw length.
+pub(crate) fn display_width(line: &str, tab_width: usize) -> usize {
+    let tab = tab_width.max(1);
+    let mut col = 0;
+    for ch in line.chars() {
+        if ch == '\t' {
+            col += tab - (col % tab);
+        } else {
+            col += 1;
+        }
+    }
+    col
 }
 
 /// A placeholder entry for content extracted before SWC formatting
@@ -3312,5 +3338,38 @@ mod tests {
         let src = "const nested = join(base, \"x\", \"y\", \"z\", \"w\");\n";
         let result = format_code_content(src, "ts", 180, soft(4, 0), false);
         assert!(result.contains("join(\n"), "soft=0 should keep count-cap behavior: {result}");
+    }
+
+    // ─── Tab-aware width measurement ───────────────────────────────
+
+    #[test]
+    fn display_width_expands_tabs_to_stops() {
+        assert_eq!(display_width("abc", 4), 3);
+        assert_eq!(display_width("\tabc", 4), 7); // tab → col 4, then +3
+        assert_eq!(display_width("\t\t", 4), 8); // two tab stops
+        assert_eq!(display_width("a\tb", 4), 5); // a(1) → tab to 4 → b(5)
+        assert_eq!(display_width("\tx", 1), 2); // tab_width 1 == legacy raw count
+        assert_eq!(display_width("", 4), 0);
+    }
+
+    #[test]
+    fn tab_width_decides_deep_object_collapse() {
+        // The `name` object has 5 members (> cap 4) and an 88-char inline body.
+        // It sits at 4-tab depth. With tab_width=4 the line lands at 16+88=104
+        // display columns (> softWidth 100) so it must stay expanded — this is
+        // the "tabs push it off screen" case. With tab_width=1 the same line is
+        // only 92 columns (<= 100) so the soft override collapses it.
+        let src = "function f() {\n\tfunction g() {\n\t\tconst c = setup({\n\t\t\tfields: {\n\t\t\t\tname: {\n\t\t\t\t\tname: \"name\",\n\t\t\t\t\ttype: \"text\",\n\t\t\t\t\trequired: true,\n\t\t\t\t\tis_nullable: false,\n\t\t\t\t\tattributes: {},\n\t\t\t\t},\n\t\t\t},\n\t\t});\n\t}\n}\n";
+        let collapsed_marker = "{ name: \"name\", type: \"text\"";
+
+        let mut wide_tab = soft(4, 100);
+        wide_tab.tab_width = 4;
+        let expanded = format_code_content(src, "ts", 180, wide_tab, false);
+        assert!(!expanded.contains(collapsed_marker), "tab=4: 5-member object should stay expanded:\n{expanded}");
+
+        let mut narrow_tab = soft(4, 100);
+        narrow_tab.tab_width = 1;
+        let collapsed = format_code_content(src, "ts", 180, narrow_tab, false);
+        assert!(collapsed.contains(collapsed_marker), "tab=1: same object fits in 92 cols and collapses:\n{collapsed}");
     }
 }
