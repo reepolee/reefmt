@@ -19,6 +19,7 @@ use rayon::prelude::*;
 
 fn default_true() -> bool { true }
 fn default_four() -> usize { 4 }
+fn default_soft_width() -> usize { 100 }
 fn default_skip_extensions() -> Vec<String> { vec!["min.js".to_string()] }
 
 /// Reefmt configuration — loaded from `reefmt.jsonc` in the project root.
@@ -64,6 +65,13 @@ pub(crate) struct ReeConfig {
     collapse_max_imports: Option<usize>,
     #[serde(rename = "collapseMaxTypeMembers", default)]
     collapse_max_type_members: Option<usize>,
+    /// "Soft" wrap width. Any collapsible structure (call args, array/object/
+    /// type members, imports) whose inline form fits within this width is kept
+    /// on one line regardless of the per-category count caps above. Above this
+    /// width the count caps apply and wrapWidth is the hard ceiling. Set to 0
+    /// to disable (count caps always apply).
+    #[serde(rename = "collapseSoftWidth", default = "default_soft_width")]
+    collapse_soft_width: usize,
     /// When true, unused import declarations are removed from JS/TS files
     /// during formatting. Side-effect imports (`import "./foo"`) are always kept.
     #[serde(rename = "removeUnusedImports", default)]
@@ -86,6 +94,7 @@ impl ReeConfig {
             max_call_args: self.collapse_max_call_args.unwrap_or(def),
             max_imports: self.collapse_max_imports.unwrap_or(def),
             max_type_members: self.collapse_max_type_members.unwrap_or(def),
+            soft_wrap_width: self.collapse_soft_width,
         }
     }
 }
@@ -314,6 +323,20 @@ fn main() {
         })
     });
 
+    // Parse --collapse-soft-width CLI override
+    let cli_soft_width: Option<usize> = args.iter().position(|a| a == "--collapse-soft-width").map(|pos| {
+        args.remove(pos);
+        if pos >= args.len() {
+            eprintln!("Error: --collapse-soft-width requires a number argument");
+            std::process::exit(1);
+        }
+        let val = args.remove(pos);
+        val.parse().unwrap_or_else(|_| {
+            eprintln!("Error: --collapse-soft-width must be a non-negative integer");
+            std::process::exit(1);
+        })
+    });
+
     // Parse --oneline flag (collapse multi-line HTML elements to one line when they fit)
     let cli_oneline = if let Some(pos) = args.iter().position(|a| a == "--oneline") {
         args.remove(pos);
@@ -366,6 +389,7 @@ fn main() {
         println!("  --oneline                Collapse multi-line leaf HTML elements to one line when they fit");
         println!("  --wrap-width <N>         Override wrapWidth from config");
         println!("  --collapse-max-members <N>  Override collapseMaxMembers from config");
+        println!("  --collapse-soft-width <N>   Override collapseSoftWidth from config (0 disables)");
         println!("  --stdin <.ext>           Read from stdin, write to stdout (.ree, .ts, .js, .css)");
         println!("  --init                   Create or upgrade reefmt.jsonc in the current directory");
         println!("  --version, -v            Print version");
@@ -437,6 +461,11 @@ fn main() {
     // CLI --wrap-width overrides config
     if let Some(w) = cli_wrap_width {
         config.wrap_width = w;
+    }
+
+    // CLI --collapse-soft-width overrides config
+    if let Some(w) = cli_soft_width {
+        config.collapse_soft_width = w;
     }
 
     // CLI --oneline overrides config
@@ -662,6 +691,7 @@ mod tests {
             collapse_max_call_args: None,
             collapse_max_imports: None,
             collapse_max_type_members: None,
+            collapse_soft_width: 0,
             remove_unused_imports: false,
             oneline: false,
         };
@@ -710,6 +740,7 @@ mod tests {
         assert_eq!(config.collapse_max_call_args, Some(4));
         assert_eq!(config.collapse_max_imports, Some(4));
         assert_eq!(config.collapse_max_type_members, Some(4));
+        assert_eq!(config.collapse_soft_width, 100);
     }
 
     #[test]
@@ -729,6 +760,7 @@ mod tests {
             collapse_max_call_args: None,
             collapse_max_imports: None,
             collapse_max_type_members: None,
+            collapse_soft_width: 0,
             remove_unused_imports: false,
             oneline: false,
         };

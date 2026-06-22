@@ -45,6 +45,13 @@
 	"collapseMaxCallArgs": 4,
 	"collapseMaxImports": 4,
 	"collapseMaxTypeMembers": 4,
+	// "Soft" wrap width. Any collapsible structure (call args, array/object/
+	// type members, imports) whose inline form fits within this width stays on
+	// one line regardless of the count caps above — so a short call with many
+	// short args collapses instead of exploding one-per-line. Above this width
+	// the count caps apply and wrapWidth is the hard ceiling. Set to 0 to
+	// disable (count caps always apply).
+	"collapseSoftWidth": 100,
 	// When true, unused import declarations are removed from JS/TS files
 	// during formatting. Side-effect imports (import "./foo") are always
 	// kept. Defaults to false — enable if you want automatic cleanup.

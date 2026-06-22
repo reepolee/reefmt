@@ -11,7 +11,7 @@ impl<'a> Printer<'a> {
             Expr::Tpl(t) => self.print_tpl(t),
             Expr::Array(a) => 'arr: {
                 // Array literals: try inline, expand if too many members or too wide
-                if self.collapse.enabled && a.elems.len() <= self.collapse.max_array_elements {
+                if self.collapse.enabled {
                     let checkpoint = self.buf.len();
                     self.w("[");
                     for (i, e) in a.elems.iter().enumerate() {
@@ -28,8 +28,9 @@ impl<'a> Printer<'a> {
                     self.w("]");
                     let added = &self.buf[checkpoint..];
                     // Reject if: contains \n (leading comment), contains // (inline line
-                    // comment that would break the rest of the line), or exceeds wrap width.
-                    if !added.contains('\n') && !added.contains("//") && self.current_line_len() <= self.wrap_width {
+                    // comment that would break the rest of the line), or doesn't fit
+                    // (soft width overrides the element count; wrap_width is the ceiling).
+                    if !added.contains('\n') && !added.contains("//") && self.inline_fits(a.elems.len(), self.collapse.max_array_elements) {
                         break 'arr;
                     }
                     self.buf.truncate(checkpoint);
@@ -63,7 +64,7 @@ impl<'a> Printer<'a> {
                     break 'obj;
                 }
                 // Object literals: try inline, expand if too many members or too wide
-                if self.collapse.enabled && o.props.len() <= self.collapse.max_object_members {
+                if self.collapse.enabled {
                     let checkpoint = self.buf.len();
                     self.w("{ ");
                     for (i, p) in o.props.iter().enumerate() {
@@ -85,8 +86,9 @@ impl<'a> Printer<'a> {
                     self.w(" }");
                     let added = &self.buf[checkpoint..];
                     // Reject if: contains \n (leading comment), contains // (inline line
-                    // comment that would break the rest of the line), or exceeds wrap width.
-                    if !added.contains('\n') && !added.contains("//") && self.current_line_len() <= self.wrap_width {
+                    // comment that would break the rest of the line), or doesn't fit
+                    // (soft width overrides the member count; wrap_width is the ceiling).
+                    if !added.contains('\n') && !added.contains("//") && self.inline_fits(o.props.len(), self.collapse.max_object_members) {
                         break 'obj;
                     }
                     self.buf.truncate(checkpoint);
@@ -127,7 +129,8 @@ impl<'a> Printer<'a> {
                     self.print_expr(&a.expr);
                 }
                 self.w(")");
-                if !c.args.is_empty() && (self.current_line_len() > self.wrap_width || (self.collapse.enabled && c.args.len() > self.collapse.max_call_args)) {
+                let call_cap = if self.collapse.enabled { self.collapse.max_call_args } else { usize::MAX };
+                if !c.args.is_empty() && !self.inline_fits(c.args.len(), call_cap) {
                     self.buf.truncate(call_start);
                     self.print_callee(&c.callee);
                     if let Some(ta) = &c.type_args {
@@ -169,7 +172,8 @@ impl<'a> Printer<'a> {
                 }
                 self.w(")");
                 let n_arg_count = n.args.as_ref().map_or(0, |a| a.len());
-                if n_arg_count > 0 && (self.current_line_len() > self.wrap_width || (self.collapse.enabled && n_arg_count > self.collapse.max_call_args)) {
+                let new_cap = if self.collapse.enabled { self.collapse.max_call_args } else { usize::MAX };
+                if n_arg_count > 0 && !self.inline_fits(n_arg_count, new_cap) {
                     self.buf.truncate(new_start);
                     self.w("new ");
                     self.print_expr(&n.callee);

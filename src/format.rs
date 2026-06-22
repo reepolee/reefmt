@@ -20,6 +20,12 @@ pub(crate) struct CollapseConfig {
     pub max_call_args: usize,
     pub max_imports: usize,
     pub max_type_members: usize,
+    /// "Soft" wrap width. A structure (call args, array/object/type members,
+    /// imports) whose inline form fits within this width collapses onto one
+    /// line regardless of its member count, overriding the per-category caps
+    /// above. Above this width the count caps apply as usual, and `wrap_width`
+    /// remains the hard ceiling. Set to 0 to disable (count caps always apply).
+    pub soft_wrap_width: usize,
 }
 
 impl CollapseConfig {
@@ -33,6 +39,9 @@ impl CollapseConfig {
             max_call_args: max,
             max_imports: max,
             max_type_members: max,
+            // 0 keeps the count caps authoritative, matching pre-soft-width
+            // behavior so existing tests exercise the count-based path.
+            soft_wrap_width: 0,
         }
     }
 }
@@ -3241,5 +3250,67 @@ mod tests {
         assert!(!result.contains("[{,"), "Array with multi-line object must not collapse to [{{, ...}}]");
         let pass2 = format_code_content(&result, "ts", 180, CollapseConfig::uniform(true, 4), false);
         assert_eq!(result, pass2, "Should be idempotent");
+    }
+
+    // ─── Soft wrap width (collapse overrides member count) ─────────
+
+    /// Build a collapse config with the soft-width override enabled.
+    fn soft(max: usize, soft_width: usize) -> CollapseConfig {
+        let mut cfg = CollapseConfig::uniform(true, max);
+        cfg.soft_wrap_width = soft_width;
+        cfg
+    }
+
+    #[test]
+    fn soft_width_collapses_call_over_count_cap() {
+        // 5 args > cap(4) but inline form is short (~46 chars < soft 100) →
+        // collapse onto one line instead of exploding one-per-line.
+        let src = "const nested = join(\n\tbase,\n\t\"x\",\n\t\"y\",\n\t\"z\",\n\t\"w\",\n);\n";
+        let result = format_code_content(src, "ts", 180, soft(4, 100), false);
+        assert_eq!(result, "const nested = join(base, \"x\", \"y\", \"z\", \"w\");\n");
+        let pass2 = format_code_content(&result, "ts", 180, soft(4, 100), false);
+        assert_eq!(result, pass2, "soft-collapsed call should be idempotent");
+    }
+
+    #[test]
+    fn soft_width_expands_call_when_over_soft_and_count() {
+        // count > cap AND inline width > soft → still explodes one-per-line.
+        let src = "const b = makeRequest(longArgumentNumberOne, longArgumentNumberTwo, longArgumentNumberThree, longArgumentNumberFour, longArgumentNumberFive, longArgumentNumberSix);\n";
+        let result = format_code_content(src, "ts", 180, soft(4, 100), false);
+        assert!(result.contains("makeRequest(\n"), "wide 6-arg call should expand: {result}");
+        assert!(result.matches('\n').count() >= 7, "each arg on its own line");
+    }
+
+    #[test]
+    fn soft_width_keeps_low_count_wide_call_inline() {
+        // 3 args <= cap, inline width in the 100..180 band → count path keeps it
+        // inline (this is the asymmetry that distinguishes option 1 from a pure
+        // width rule).
+        let src = "const c = combineThings(firstReasonablyLongArgumentHere, secondReasonablyLongArgument, thirdReasonablyLongOneToo);\n";
+        let result = format_code_content(src, "ts", 180, soft(4, 100), false);
+        assert_eq!(result.matches('\n').count(), 1, "should stay on one line: {result}");
+    }
+
+    #[test]
+    fn soft_width_collapses_array_and_object_over_count_cap() {
+        let arr = format_code_content(
+            "const arr = [\n\t1,\n\t2,\n\t3,\n\t4,\n\t5,\n\t6,\n];\n",
+            "ts", 180, soft(4, 100), false,
+        );
+        assert_eq!(arr, "const arr = [1, 2, 3, 4, 5, 6];\n");
+
+        let obj = format_code_content(
+            "const o = {\n\ta: 1,\n\tb: 2,\n\tc: 3,\n\td: 4,\n\te: 5,\n\tf: 6,\n};\n",
+            "ts", 180, soft(4, 100), false,
+        );
+        assert_eq!(obj, "const o = { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 };\n");
+    }
+
+    #[test]
+    fn soft_width_zero_preserves_count_cap() {
+        // soft = 0 disables the override: 5 short args still explode at cap 4.
+        let src = "const nested = join(base, \"x\", \"y\", \"z\", \"w\");\n";
+        let result = format_code_content(src, "ts", 180, soft(4, 0), false);
+        assert!(result.contains("join(\n"), "soft=0 should keep count-cap behavior: {result}");
     }
 }

@@ -100,6 +100,24 @@ impl<'a> Printer<'a> {
         self.buf.lines().last().map(|l| l.len()).unwrap_or(0)
     }
 
+    /// Decide whether a just-emitted inline structure may stay on one line,
+    /// using the "soft width overrides count" rule. `cap` is the per-category
+    /// member limit for this structure (e.g. `max_call_args`).
+    ///
+    /// - The current line must never exceed the hard `wrap_width`.
+    /// - Within the soft width, the structure collapses regardless of `count`.
+    /// - Above the soft width, `count` must be within `cap`.
+    ///
+    /// Pass `usize::MAX` for `cap` to opt out of the count limit (used when
+    /// collapsing is configured to ignore counts for a given structure).
+    pub(super) fn inline_fits(&self, count: usize, cap: usize) -> bool {
+        let width = self.current_line_len();
+        if width > self.wrap_width {
+            return false;
+        }
+        count <= cap || width <= self.collapse.soft_wrap_width
+    }
+
     pub(super) fn has_trailing_line_comment(&self, pos: BytePos) -> bool {
         self.has_trailing_line_comment_bounded(pos, BytePos(u32::MAX))
     }
@@ -231,7 +249,7 @@ impl<'a> Printer<'a> {
                         }
                     }
                     self.w(" }");
-                    if named.len() > self.collapse.max_imports || self.current_line_len() > self.wrap_width {
+                    if !self.inline_fits(named.len(), self.collapse.max_imports) {
                         self.buf.truncate(checkpoint);
                         self.w("{");
                         self.nl();
