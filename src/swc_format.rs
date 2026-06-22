@@ -7,11 +7,29 @@ use swc_core::common::comments::SingleThreadedComments;
 use swc_core::common::input::StringInput;
 use swc_core::common::sync::Lrc;
 use swc_core::common::{FileName, SourceMap};
-use swc_core::ecma::ast::{EsVersion, Module};
+use swc_core::ecma::ast::{EsVersion, Module, ModuleItem, Stmt};
 use swc_core::ecma::codegen::text_writer::JsWriter;
 use swc_core::ecma::codegen::{Config as CodegenConfig, Emitter};
 use swc_core::ecma::parser::lexer::Lexer;
 use swc_core::ecma::parser::{Parser, Syntax, TsSyntax};
+use swc_core::ecma::visit::{VisitMut, VisitMutWith};
+
+/// Removes empty statements (lone `;`) from every statement list in the module.
+/// Empty statements are no-ops that a formatter should drop; doing it at the AST
+/// level (rather than filtering text) keeps nested blocks correct.
+struct DropEmptyStmts;
+
+impl VisitMut for DropEmptyStmts {
+    fn visit_mut_stmts(&mut self, stmts: &mut Vec<Stmt>) {
+        stmts.visit_mut_children_with(self);
+        stmts.retain(|s| !matches!(s, Stmt::Empty(_)));
+    }
+
+    fn visit_mut_module_items(&mut self, items: &mut Vec<ModuleItem>) {
+        items.visit_mut_children_with(self);
+        items.retain(|i| !matches!(i, ModuleItem::Stmt(Stmt::Empty(_))));
+    }
+}
 
 /// Format a JavaScript string with custom indent string.
 /// Returns the formatted string, or the original if parsing fails.
@@ -32,6 +50,9 @@ pub(crate) fn format_js_with_indent(code: &str, indent: &str, remove_unused: boo
         Some(m) => m,
         None => return code.to_string(), // Parse failure — return original
     };
+
+    // Drop empty statements (no-op `;`).
+    module.visit_mut_with(&mut DropEmptyStmts);
 
     // Remove unused imports if configured
     if remove_unused {

@@ -42,7 +42,6 @@ pub(crate) enum Node {
 pub(crate) fn format_ree(input: &str, wrap_width: usize, oneline: bool) -> String {
     let normalized = input.replace("\r\n", "\n");
     let nodes = parse(&normalized);
-    let nodes = hoist_script_ree_blocks(nodes);
     let out = print_nodes(&nodes, wrap_width, oneline);
     // Normalize to exactly one trailing newline
     let trimmed = out.trim_end_matches('\n');
@@ -660,7 +659,8 @@ fn parse_raw_block_content<'a>(input: &'a str, close_marker: &str) -> (Vec<Node>
             break;
         }
 
-        // Only parse Ree blocks inside script/style (for hoisting).
+        // Parse Ree blocks ({#if}/{#each}/{#with}) inside script/style so their
+        // structure is preserved; the JS between the tokens is formatted later.
         // Leave {=} and {~} as raw Text — they're handled by SWC post-processing.
         if remaining.starts_with("{#if") || remaining.starts_with("{#each") || remaining.starts_with("{#with") {
             let (node, after) = parse_ree_block_open(remaining);
@@ -704,74 +704,6 @@ fn parse_raw_block_content<'a>(input: &'a str, close_marker: &str) -> (Vec<Node>
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Post-processing: Hoist Ree blocks from <script> tags
-// ═══════════════════════════════════════════════════════════════
-
-fn hoist_script_ree_blocks(nodes: Vec<Node>) -> Vec<Node> {
-    let mut result = Vec::new();
-    for node in nodes {
-        match &node {
-            Node::Element { tag, attrs, children, self_closing, inline }
-                if (tag.eq_ignore_ascii_case("script") || tag.eq_ignore_ascii_case("style"))
-                    && !self_closing =>
-            {
-                let non_empty: Vec<&Node> = children
-                    .iter()
-                    .filter(|n| !matches!(n, Node::Text(t) if t.trim().is_empty()))
-                    .collect();
-
-                if non_empty.len() == 1 {
-                    if let Node::ReeBlock { keyword, expr, children: bc, else_children: ec, .. } = non_empty[0] {
-                        let inner = Node::Element {
-                            tag: tag.clone(),
-                            attrs: attrs.clone(),
-                            children: bc.clone(),
-                            self_closing: false,
-                            inline: false,
-                        };
-                        result.push(Node::ReeBlock {
-                            keyword: keyword.clone(),
-                            expr: expr.clone(),
-                            children: vec![inner],
-                            else_children: ec.clone(),
-                            inline: false,
-                        });
-                        continue;
-                    }
-                }
-                result.push(Node::Element {
-                    tag: tag.clone(),
-                    attrs: attrs.clone(),
-                    children: hoist_script_ree_blocks(children.clone()),
-                    self_closing: false,
-                    inline: *inline,
-                });
-            }
-            Node::Element { tag, attrs, children, self_closing, inline } => {
-                result.push(Node::Element {
-                    tag: tag.clone(),
-                    attrs: attrs.clone(),
-                    children: hoist_script_ree_blocks(children.clone()),
-                    self_closing: *self_closing,
-                    inline: *inline,
-                });
-            }
-            Node::ReeBlock { keyword, expr, children, else_children, inline } => {
-                result.push(Node::ReeBlock {
-                    keyword: keyword.clone(),
-                    expr: expr.clone(),
-                    children: hoist_script_ree_blocks(children.clone()),
-                    else_children: else_children.as_ref().map(|e| hoist_script_ree_blocks(e.clone())),
-                    inline: *inline,
-                });
-            }
-            other => result.push(other.clone()),
-        }
-    }
-    result
-}
-
-// ═══════════════════════════════════════════════════════════════
 // Printer
 // ═══════════════════════════════════════════════════════════════
 
@@ -808,11 +740,11 @@ fn print_node(node: &Node, depth: usize, out: &mut String, wrap_width: usize, on
                         out.push('\n');
                     }
                 }
-                // Don't add trailing newline — parent element handles it
-                // unless there are trailing newlines in the text itself
-                if trimmed.ends_with('\n') {
-                    out.push('\n');
-                }
+                // Always terminate with a newline so the next sibling (e.g. a
+                // {#if} block following raw JS in a <script>) starts on its own
+                // line. Matches the single-line branch below; without it the
+                // sibling gets glued onto this text's last line.
+                out.push('\n');
             } else {
                 out.push_str(&"\t".repeat(depth));
                 out.push_str(trimmed);
