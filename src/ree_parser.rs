@@ -375,7 +375,7 @@ fn parse_html_tag<'a>(input: &'a str, ree_keyword: &Option<String>) -> (Option<N
             );
         }
 
-        if tag.eq_ignore_ascii_case("script") || tag.eq_ignore_ascii_case("style") {
+        if tag.eq_ignore_ascii_case("script") || tag.eq_ignore_ascii_case("style") || tag.eq_ignore_ascii_case("code") {
             let close = format!("</{}", tag.to_lowercase());
             let (children, rem) = parse_raw_block_content(after_gt, &close);
             if rem.starts_with(&close) {
@@ -754,6 +754,17 @@ fn print_node(node: &Node, depth: usize, out: &mut String, wrap_width: usize, on
         Node::Element { tag, attrs, children, self_closing, inline } => {
             if *self_closing {
                 print_self_closing(tag, attrs, depth, out);
+            } else if tag.eq_ignore_ascii_case("code") {
+                // Preserve <code> content verbatim — no reformatting or indentation.
+                let attr_str = format_attrs_inline(attrs);
+                let open = if attr_str.is_empty() { format!("<{}>", tag) } else { format!("<{} {}>", tag, attr_str) };
+                out.push_str(&"\t".repeat(depth));
+                out.push_str(&open);
+                for child in children {
+                    if let Node::Text(t) = child { out.push_str(t); }
+                }
+                out.push_str(&format!("</{}>", tag));
+                out.push('\n');
             } else if children.is_empty() || all_children_are_whitespace(children) {
                 print_empty_element(tag, attrs, depth, out, wrap_width);
             } else if *inline && !is_script_or_style(tag) {
