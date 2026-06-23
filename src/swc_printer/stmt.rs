@@ -32,31 +32,7 @@ impl<'a> Printer<'a> {
                 if let Some(arg) = &r.arg { self.w(" "); self.print_expr(arg); }
                 self.w(";");
             }
-            Stmt::If(i) => {
-                self.w("if (");
-                self.print_expr(&i.test);
-                self.w(") ");
-                // Force-expand the cons block when there is an else clause so the
-                // `else` keyword always lands on its own `} else` line rather than
-                // being appended to a collapsed one-liner.
-                if i.alt.is_some() {
-                    match i.cons.as_ref() {
-                        Stmt::Block(b) => self.print_block_expanded(b),
-                        _ => self.print_stmt(&i.cons),
-                    }
-                } else {
-                    self.print_stmt(&i.cons);
-                }
-                if let Some(alt) = &i.alt {
-                    self.w(" else ");
-                    // Force-expand a block-form else body for consistency with
-                    // the expanded if/else-if blocks above it.
-                    match alt.as_ref() {
-                        Stmt::Block(b) => self.print_block_expanded(b),
-                        _ => self.print_stmt(alt),
-                    }
-                }
-            }
+            Stmt::If(i) => self.print_if_stmt(i),
             Stmt::While(w) => {
                 self.w("while (");
                 self.print_expr(&w.test);
@@ -183,6 +159,33 @@ impl<'a> Printer<'a> {
         }
         self.emit_trailing_comments(stmt.span().hi());
         self.nl();
+    }
+
+    /// Print an if/else-if/else chain. `force_expand` is true when this if is
+    /// part of an else-if chain — all blocks are expanded so the chain is
+    /// always symmetric.
+    fn print_if_stmt(&mut self, i: &IfStmt) {
+        let force_expand = i.alt.is_some();
+        self.print_if_stmt_inner(i, force_expand);
+    }
+
+    fn print_if_stmt_inner(&mut self, i: &IfStmt, force_expand: bool) {
+        self.w("if (");
+        self.print_expr(&i.test);
+        self.w(") ");
+        match i.cons.as_ref() {
+            Stmt::Block(b) if force_expand => self.print_block_expanded(b),
+            Stmt::Block(b) => self.print_block(b),
+            _ => self.print_stmt(&i.cons),
+        }
+        if let Some(alt) = &i.alt {
+            self.w(" else ");
+            match alt.as_ref() {
+                Stmt::If(inner) => self.print_if_stmt_inner(inner, true),
+                Stmt::Block(b) => self.print_block_expanded(b),
+                _ => self.print_stmt(alt),
+            }
+        }
     }
 
     /// Print a loop body — always expanded when it's a block, so loop bodies
