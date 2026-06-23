@@ -37,57 +37,94 @@ pub(crate) fn format_ree_content(content: &str, wrap_width: usize, oneline: bool
 }
 
 fn format_script_blocks(content: &str, wrap_width: usize, collapse: crate::format::CollapseConfig, remove_unused: bool) -> String {
+    let after_script = format_tagged_blocks(content, "script", wrap_width, collapse, remove_unused);
+    format_tagged_blocks(&after_script, "style", wrap_width, collapse, remove_unused)
+}
+
+fn format_tagged_blocks(content: &str, tag: &str, wrap_width: usize, collapse: crate::format::CollapseConfig, remove_unused: bool) -> String {
+    let open_prefix = format!("<{}", tag);
+    let close_tag = format!("</{}>", tag);
     let mut out = String::with_capacity(content.len());
     let mut remaining = content;
-    while let Some(script_start) = remaining.find("<script") {
-        // Find the closing > of the opening tag
-        if let Some(tag_end) = remaining[script_start..].find('>') {
-            let tag_close = script_start + tag_end + 1;
-            // Find the closing </script>
-            if let Some(script_end) = remaining[tag_close..].find("</script>") {
+    while let Some(start) = remaining.find(&open_prefix as &str) {
+        if let Some(tag_end) = remaining[start..].find('>') {
+            let tag_close = start + tag_end + 1;
+            if let Some(block_end) = remaining[tag_close..].find(&close_tag as &str) {
                 let content_start = tag_close;
-                let content_end = tag_close + script_end;
+                let content_end = tag_close + block_end;
 
-                // Detect the indentation level of the <script> tag
-                let before = &remaining[..script_start];
-                let script_indent: String = before.chars().rev()
+                let before = &remaining[..start];
+                let indent: String = before.chars().rev()
                     .take_while(|&c| c == '\t')
                     .collect::<String>()
                     .chars()
                     .rev()
                     .collect();
 
-                // Copy everything before the script tag
                 out.push_str(before);
-                // Copy the opening <script...> tag
-                out.push_str(&remaining[script_start..content_start]);
+                out.push_str(&remaining[start..content_start]);
 
-                let script_content = &remaining[content_start..content_end];
-                let formatted = format_script_content(script_content, wrap_width, collapse, remove_unused);
+                let block_content = &remaining[content_start..content_end];
+                let formatted = match tag {
+                    "script" => format_script_content(block_content, wrap_width, collapse, remove_unused),
+                    "style" => format_style_content(block_content, wrap_width, collapse),
+                    _ => block_content.to_string(),
+                };
                 out.push_str(&formatted);
 
                 if formatted.is_empty() {
-                    // Empty script block — keep </script> on same line as opening tag
-                    // e.g. <script src="..."></script>
-                    out.push_str("</script>");
+                    out.push_str(&close_tag);
                 } else {
-                    // Place </script> on its own line at the same indentation as <script>
                     out.push('\n');
-                    out.push_str(&script_indent);
-                    out.push_str("</script>");
+                    out.push_str(&indent);
+                    out.push_str(&close_tag);
                 }
-                remaining = &remaining[content_end + 9..]; // 9 = len("</script>")
+                remaining = &remaining[content_end + close_tag.len()..];
             } else {
-                // No closing tag found, copy as-is
-                out.push_str(&remaining[script_start..]);
+                out.push_str(&remaining[start..]);
                 remaining = "";
             }
         } else {
-            out.push_str(&remaining[script_start..]);
+            out.push_str(&remaining[start..]);
             remaining = "";
         }
     }
     out.push_str(remaining);
+    out
+}
+
+fn format_style_content(content: &str, wrap_width: usize, collapse: crate::format::CollapseConfig) -> String {
+    if content.trim().is_empty() {
+        return String::new();
+    }
+    let leading_nl = count_leading_newlines(content);
+    let trailing_nl = count_trailing_newlines(content);
+
+    let base_tabs = detect_min_leading_tabs(content);
+    let bare: String = content.lines()
+        .map(|l| strip_leading_tabs(l, base_tabs))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let formatted = crate::format::format_code_content(bare.trim(), "css", wrap_width, collapse, false);
+
+    // Re-indent at base_tabs depth
+    let mut out = String::new();
+    for line in formatted.lines() {
+        let ts = line.trim_start();
+        if ts.is_empty() {
+            out.push('\n');
+            continue;
+        }
+        let leading = line.len() - ts.len();
+        for _ in 0..(base_tabs + leading) { out.push('\t'); }
+        out.push_str(ts);
+        out.push('\n');
+    }
+    if out.ends_with('\n') { out.pop(); }
+
+    for _ in 0..leading_nl { out.insert(0, '\n'); }
+    for _ in 0..trailing_nl { out.push('\n'); }
     out
 }
 

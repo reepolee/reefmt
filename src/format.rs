@@ -1918,6 +1918,24 @@ fn wrap_long_method_chains(code: &str, max_width: usize) -> String {
     apply_with_context(code, |line| try_split_method_chain(line, max_width))
 }
 
+pub(crate) fn format_css_content(input: &str, wrap_width: usize) -> String {
+    use malva::Syntax;
+    use malva::config::{FormatOptions, LayoutOptions, LanguageOptions, LineBreak};
+    let options = FormatOptions {
+        layout: LayoutOptions {
+            print_width: wrap_width,
+            use_tabs: true,
+            indent_width: 1,
+            line_break: LineBreak::Lf,
+        },
+        language: LanguageOptions::default(),
+    };
+    match malva::format_text(input, Syntax::Css, &options) {
+        Ok(formatted) => formatted,
+        Err(_) => input.to_string(),
+    }
+}
+
 /// Format standalone code content (TS/JS/CSS) using native SWC, no subprocess needed.
 /// Set `REEFMT_DEBUG=1` to log each pipeline stage to stderr.
 pub(crate) fn format_code_content(
@@ -1977,6 +1995,7 @@ pub(crate) fn format_code_content(
                 chains_split
             }
         }
+        "css" => format_css_content(&normalized, wrap_width),
         _ => normalized.clone(),
     };
 
@@ -2219,10 +2238,10 @@ mod tests {
     }
 
     #[test]
-    fn format_code_content_css_passthrough() {
-        let src = "body { color: red; }\n";
+    fn format_code_content_css_formats() {
+        let src = "body{color:red}\n";
         let result = format_code_content(src, "css", 180, CollapseConfig::uniform(true, 3), false);
-        assert_eq!(result, src, "CSS should pass through unchanged");
+        assert!(result.contains("color: red"), "CSS should be formatted: {result}");
     }
 
     #[test]
