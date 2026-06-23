@@ -872,15 +872,33 @@ where
     result
 }
 
-/// Check if a trimmed line is a block opener like `if (cond) {` or `for (;;) {`
+/// Check if a trimmed line is any block opener ending with `) {`.
+/// Used as a negative guard so object literals aren't mistaken for blocks.
 fn is_block_opener(trimmed: &str) -> bool {
-    // Must end with `{` and the character before must be `)`
-    // e.g. `if (cond) {`, `for (;;) {`, `while (x) {`, `} else if (cond) {`
     if !trimmed.ends_with('{') {
         return false;
     }
     let before_brace = trimmed[..trimmed.len() - 1].trim_end();
     before_brace.ends_with(')')
+}
+
+/// Check if a trimmed line is a block opener that should be collapsed when it
+/// contains a single statement. `for`, `while`, `do`, and `switch` are excluded
+/// — collapsing loop and switch bodies obscures iteration/dispatch structure.
+/// `} catch` and `} finally` are also excluded (they glue onto the preceding `}`).
+fn is_collapsible_block_opener(trimmed: &str) -> bool {
+    if trimmed.starts_with("} catch") || trimmed.starts_with("} finally") {
+        return false;
+    }
+    let t = trimmed.trim_start_matches('}').trim_start();
+    if t.starts_with("for ") || t.starts_with("for(")
+        || t.starts_with("while ") || t.starts_with("while(")
+        || t.starts_with("do {") || t == "do {"
+        || t.starts_with("switch ") || t.starts_with("switch(")
+    {
+        return false;
+    }
+    is_block_opener(trimmed) || trimmed == "} else {" || trimmed.ends_with("else {")
 }
 
 /// Run one pass of the collapse logic. Returns `true` if any changes were made
@@ -908,11 +926,7 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &Col
         }
 
         // ---- Single-statement block: `if (cond) {` stmt `}` ----
-        // Skip catch/finally continuation clauses — collapsing `} catch (err) {`
-        // or `} finally {` merges them onto one line with the preceding `}`,
-        // producing unreadable one-liners. `} else {` / `} else if {` are fine.
-        let is_catch_or_finally = trimmed.starts_with("} catch") || trimmed.starts_with("} finally");
-        if i + 2 < lines.len() && is_block_opener(trimmed) && !is_catch_or_finally {
+        if i + 2 < lines.len() && is_collapsible_block_opener(trimmed) {
             let stmt_trimmed = lines[i + 1].trim();
             let close_trimmed = lines[i + 2].trim();
 
@@ -2540,17 +2554,17 @@ mod tests {
     }
 
     #[test]
-    fn collapse_for_loop_block() {
+    fn for_loop_block_stays_expanded() {
         let src = "for (;;) {\n\tstmt();\n}\n";
         let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
-        assert_eq!(result, "for (;;) { stmt(); }\n");
+        assert_eq!(result, src);
     }
 
     #[test]
-    fn collapse_while_loop_block() {
+    fn while_loop_block_stays_expanded() {
         let src = "while (cond) {\n\tstmt();\n}\n";
         let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
-        assert_eq!(result, "while (cond) { stmt(); }\n");
+        assert_eq!(result, src);
     }
 
     #[test]
@@ -2901,19 +2915,17 @@ mod tests {
     }
 
     #[test]
-    fn narrow_width_for_loop_barely_fits() {
-        // "\tfor (;;) { stmt(); }" = 22 chars
+    fn narrow_width_for_loop_stays_expanded() {
         let src = "\tfor (;;) {\n\t\tstmt();\n\t}\n";
         let result = collapse_single_stmt_blocks(src, 22, &CollapseConfig::uniform(true, 3));
-        assert_eq!(result, "\tfor (;;) { stmt(); }\n");
+        assert_eq!(result, src);
     }
 
     #[test]
-    fn narrow_width_while_barely_fits() {
-        // "\twhile (c) { stmt(); }" = 24 chars
+    fn narrow_width_while_stays_expanded() {
         let src = "\twhile (c) {\n\t\tstmt();\n\t}\n";
         let result = collapse_single_stmt_blocks(src, 24, &CollapseConfig::uniform(true, 3));
-        assert_eq!(result, "\twhile (c) { stmt(); }\n");
+        assert_eq!(result, src);
     }
 
     // ─── Template literal formatting correctness tests ────────────
