@@ -778,6 +778,20 @@ fn is_simple_ident(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$' || c == '.')
 }
 
+/// Returns the net brace depth of `s` (opens minus closes). Zero means all
+/// braces are balanced — e.g. `attributes: {}` returns 0, `fields: {` returns 1.
+fn brace_depth(s: &str) -> i32 {
+    let mut depth = 0i32;
+    for ch in s.chars() {
+        match ch {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    depth
+}
+
 /// Returns true if `s` contains an odd number of unescaped backticks, meaning
 /// it opens a template literal that continues on the next line.
 fn has_unclosed_template_literal(s: &str) -> bool {
@@ -953,23 +967,16 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &Col
                 }).count();
                 // Validate: body must contain no statements (no `;`), and each line
                 // must be a key:value pair, shorthand identifier, or spread operator.
-                let is_valid_obj_lit = !body.is_empty()
-                    && body.len() <= collapse.max_object_members
-                    && named_count <= collapse.max_keyvalue_props
+                let is_structurally_valid_obj_lit = !body.is_empty()
                     && body.iter().all(|l| {
                     let cleaned = l.trim_end_matches(',').trim();
-                    // No statements (`;`). Brace-depth tracking handles nested
-                    // structures correctly, and template literals like `${expr}`
-                    // may contain `{`/`}` inside the expression.
-                    // No comments (standalone `//` or trailing ` //`) — collapsing
-                    // would make them comment out the rest of the inline expression.
                     !cleaned.contains(';')
                         && !cleaned.starts_with("//")
                         && !cleaned.contains(" //")
                         && (cleaned.contains(':') || cleaned.starts_with("...") || is_simple_ident(cleaned))
                 });
 
-                if is_valid_obj_lit {
+                if is_structurally_valid_obj_lit {
                     let prefix = &line[..line.len() - trimmed.len()];
                     let before_paren = trimmed.strip_suffix('{').unwrap_or(trimmed);
                     let after_close_str = &lines[end_idx][after_close..];
@@ -981,7 +988,11 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &Col
                         prefix, before_paren, members.join(", "), after_close_str
                     );
 
-                    if collapsed.len() <= max_width {
+                    let under_soft = collapse.soft_wrap_width > 0
+                        && display_width(&collapsed, collapse.tab_width) <= collapse.soft_wrap_width;
+                    let under_caps = body.len() <= collapse.max_object_members
+                        && named_count <= collapse.max_keyvalue_props;
+                    if (under_caps || under_soft) && collapsed.len() <= max_width {
                         out.push_str(&collapsed);
                         out.push('\n');
                         i = end_idx + 1;
@@ -1024,21 +1035,22 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &Col
                 }).count();
                 // Validate: body must contain no statements (no `;`), and each line
                 // must be a key:value pair, shorthand identifier, or spread operator.
-                let is_valid_obj = !body.is_empty()
-                    && body.len() <= collapse.max_object_members
-                    && named_count <= collapse.max_keyvalue_props
+                let is_structurally_valid_obj = !body.is_empty()
                     && body.iter().all(|l| {
                     let cleaned = l.trim_end_matches(',').trim();
                     // No statements (`;`), no nested un-collapsed braces (`{`, `}`),
                     // no comments (standalone `//` or trailing ` //`) — collapsing
                     // would make them comment out the rest of the inline expression.
-                    !cleaned.contains(';') && !cleaned.contains('{') && !cleaned.contains('}')
+                    // Allow balanced `{}` pairs (e.g. `attributes: {}`) but reject
+                    // lines with unbalanced braces that would break nesting.
+                    !cleaned.contains(';')
                         && !cleaned.starts_with("//")
                         && !cleaned.contains(" //")
+                        && brace_depth(cleaned) == 0
                         && (cleaned.contains(':') || cleaned.starts_with("...") || is_simple_ident(cleaned))
                 });
 
-                if is_valid_obj {
+                if is_structurally_valid_obj {
                     let prefix = &line[..line.len() - trimmed.len()];
                     let before_brace = trimmed.strip_suffix('{').unwrap_or(trimmed);
                     let after_close_str = &lines[end_idx][after_close..];
@@ -1050,7 +1062,11 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &Col
                         prefix, before_brace, members.join(", "), after_close_str
                     );
 
-                    if collapsed.len() <= max_width {
+                    let under_soft = collapse.soft_wrap_width > 0
+                        && display_width(&collapsed, collapse.tab_width) <= collapse.soft_wrap_width;
+                    let under_caps = body.len() <= collapse.max_object_members
+                        && named_count <= collapse.max_keyvalue_props;
+                    if (under_caps || under_soft) && collapsed.len() <= max_width {
                         out.push_str(&collapsed);
                         out.push('\n');
                         i = end_idx + 1;
@@ -1094,7 +1110,7 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &Col
                     // Validate: body must contain no statements (no `;`), no nested arrays,
                     // no comments (standalone `//` or trailing ` //`) — collapsing
                     // would make them comment out the rest of the inline expression.
-                    let is_valid_arr = !body.is_empty() && body.len() <= collapse.max_array_elements && body.iter().all(|l| {
+                    let is_structurally_valid_arr = !body.is_empty() && body.iter().all(|l| {
                         let cleaned = l.trim_end_matches(',').trim();
                         !cleaned.contains(';') && !cleaned.contains('[') && !cleaned.contains(']')
                             && !cleaned.starts_with("//")
@@ -1102,7 +1118,7 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &Col
                             && cleaned != "{" && cleaned != "}"
                     });
 
-                    if is_valid_arr {
+                    if is_structurally_valid_arr {
                         let prefix = &line[..line.len() - trimmed.len()];
                         let before_bracket = trimmed.strip_suffix('[').unwrap_or(trimmed);
                         let after_close_str = &lines[end_idx][after_close..];
@@ -1114,7 +1130,10 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &Col
                             prefix, before_bracket, members.join(", "), after_close_str
                         );
 
-                        if collapsed.len() <= max_width {
+                        let under_soft = collapse.soft_wrap_width > 0
+                            && display_width(&collapsed, collapse.tab_width) <= collapse.soft_wrap_width;
+                        let under_cap = body.len() <= collapse.max_array_elements;
+                        if (under_cap || under_soft) && collapsed.len() <= max_width {
                             out.push_str(&collapsed);
                             out.push('\n');
                             i = end_idx + 1;
