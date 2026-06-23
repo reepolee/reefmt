@@ -171,7 +171,16 @@ foreach ($t in $targets) {
     Write-Host "`n→ Building $($t.BinaryName) ($($t.Target))..."
     rustup target add $t.Target 2>$null | Out-Null
     cargo build --release --target $t.Target
-    if ($LASTEXITCODE -ne 0) { Write-Error "Build failed for $($t.Target)"; exit 1 }
+    if ($LASTEXITCODE -ne 0) {
+        if ($t.Target -eq "aarch64-pc-windows-msvc") {
+            Write-Host "  WARNING: ARM64 build failed — skipping."
+            Write-Host "  To enable ARM64 builds, install the MSVC ARM64 toolchain:"
+            Write-Host "    Visual Studio Installer → Modify → Individual Components"
+            Write-Host "    → 'MSVC v143 - VS 2022 C++ ARM64 build tools'"
+            continue
+        }
+        Write-Error "Build failed for $($t.Target)"; exit 1
+    }
     Copy-Item ".\target\$($t.Target)\release\$AppName.exe" ".\$($t.BinaryName)"
     $builtAssets += ".\$($t.BinaryName)#$($t.BinaryName)"
 }
@@ -290,8 +299,10 @@ Write-Host "  Installed to $(Join-Path $InstallDir "$AppName.exe")"
 
 Write-Host "`n→ Cleaning up..."
 foreach ($t in $targets) {
-    Remove-Item ".\$($t.BinaryName)" -Force -ErrorAction SilentlyContinue
-    Write-Host "  Removed .\$($t.BinaryName)"
+    if (Test-Path ".\$($t.BinaryName)") {
+        Remove-Item ".\$($t.BinaryName)" -Force
+        Write-Host "  Removed .\$($t.BinaryName)"
+    }
 }
 
 # ──────────────────────────────────────────────
