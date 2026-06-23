@@ -264,6 +264,16 @@ for entry in "${targets[@]}"; do
 	echo "→ Building $binary_name ($target)..."
 	rustup target add "$target" 2>/dev/null || true
 	if [ "$os" = "Linux" ] && [ "$target" = "aarch64-unknown-linux-gnu" ]; then
+		if ! command -v aarch64-linux-gnu-gcc &>/dev/null; then
+			if command -v apt-get &>/dev/null; then
+				echo "  aarch64-linux-gnu-gcc not found — installing gcc-aarch64-linux-gnu..."
+				sudo apt-get install -y gcc-aarch64-linux-gnu
+			else
+				echo "ERROR: aarch64-linux-gnu-gcc not found." >&2
+				echo "  Install it with: sudo apt-get install gcc-aarch64-linux-gnu" >&2
+				exit 1
+			fi
+		fi
 		CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
 			cargo build --release --target "$target"
 	else
