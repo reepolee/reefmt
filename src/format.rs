@@ -883,8 +883,10 @@ fn is_block_opener(trimmed: &str) -> bool {
 }
 
 /// Check if a trimmed line is a block opener that should be collapsed when it
-/// contains a single statement. `for`, `while`, `do`, and `switch` are excluded
-/// — collapsing loop and switch bodies obscures iteration/dispatch structure.
+/// contains a single statement. `for`, `while`, `do`, `switch`, and plain
+/// `else` blocks are excluded. Loops and switch obscure iteration/dispatch
+/// structure; `} else {` is excluded so if/else branches are always symmetric
+/// (both expanded or both collapsed — never one of each).
 /// `} catch` and `} finally` are also excluded (they glue onto the preceding `}`).
 fn is_collapsible_block_opener(trimmed: &str) -> bool {
     if trimmed.starts_with("} catch") || trimmed.starts_with("} finally") {
@@ -895,10 +897,11 @@ fn is_collapsible_block_opener(trimmed: &str) -> bool {
         || t.starts_with("while ") || t.starts_with("while(")
         || t.starts_with("do {") || t == "do {"
         || t.starts_with("switch ") || t.starts_with("switch(")
+        || t == "else {" || t.starts_with("else {")
     {
         return false;
     }
-    is_block_opener(trimmed) || trimmed == "} else {" || trimmed.ends_with("else {")
+    is_block_opener(trimmed)
 }
 
 /// Run one pass of the collapse logic. Returns `true` if any changes were made
