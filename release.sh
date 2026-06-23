@@ -107,22 +107,30 @@ os="$(uname -s)"
 arch="$(uname -m)"
 
 # ──────────────────────────────────────────────
-# Determine binary name for this platform
+# Determine targets and native binary for this platform
 # ──────────────────────────────────────────────
 
 case "$os" in
 	Darwin)
+		targets=(
+			"aarch64-apple-darwin:${APP}-macos-arm64"
+			"x86_64-apple-darwin:${APP}-macos-x64"
+		)
 		case "$arch" in
-			arm64|aarch64) binary_name="${APP}-macos-arm64" ;;
-			x86_64)       binary_name="${APP}-macos-x64" ;;
-			*)            echo "Unsupported arch: $arch" >&2; exit 1 ;;
+			arm64|aarch64) native_binary="${APP}-macos-arm64" ;;
+			x86_64)        native_binary="${APP}-macos-x64" ;;
+			*)             echo "Unsupported arch: $arch" >&2; exit 1 ;;
 		esac
 		;;
 	Linux)
+		targets=(
+			"x86_64-unknown-linux-gnu:${APP}-linux-x64"
+			"aarch64-unknown-linux-gnu:${APP}-linux-arm64"
+		)
 		case "$arch" in
-			x86_64|amd64)      binary_name="${APP}-linux-x64" ;;
-			arm64|aarch64)     binary_name="${APP}-linux-arm64" ;;
-			*)                 echo "Unsupported arch: $arch" >&2; exit 1 ;;
+			x86_64|amd64)  native_binary="${APP}-linux-x64" ;;
+			arm64|aarch64) native_binary="${APP}-linux-arm64" ;;
+			*)             echo "Unsupported arch: $arch" >&2; exit 1 ;;
 		esac
 		;;
 	*)
@@ -245,14 +253,26 @@ else
 fi
 
 # ──────────────────────────────────────────────
-# Build
+# Build (all targets for this platform)
 # ──────────────────────────────────────────────
 
-echo ""
-echo "→ Building $binary_name..."
-cargo build --release
-cp "./target/release/$APP" "./$binary_name"
-file "./$binary_name"
+built_assets=()
+for entry in "${targets[@]}"; do
+	target="${entry%%:*}"
+	binary_name="${entry##*:}"
+	echo ""
+	echo "→ Building $binary_name ($target)..."
+	rustup target add "$target" 2>/dev/null || true
+	if [ "$os" = "Linux" ] && [ "$target" = "aarch64-unknown-linux-gnu" ]; then
+		CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+			cargo build --release --target "$target"
+	else
+		cargo build --release --target "$target"
+	fi
+	cp "./target/$target/release/$APP" "./$binary_name"
+	file "./$binary_name"
+	built_assets+=("./$binary_name#$binary_name")
+done
 
 # ──────────────────────────────────────────────
 # Commit version bump (first machine only)
@@ -296,12 +316,9 @@ git push origin "$tag"
 echo ""
 echo "→ Publishing release $tag..."
 
-asset_path="./$binary_name"
-asset_name="$binary_name"
-
 if gh release view "$tag" >/dev/null 2>&1; then
-	echo "  Release $tag already exists. Uploading asset..."
-	gh release upload "$tag" "$asset_path#$asset_name" --clobber
+	echo "  Release $tag already exists. Uploading assets..."
+	gh release upload "$tag" "${built_assets[@]}" --clobber
 else
 	echo "  Creating release $tag..."
 	# Extract changelog entry for release notes
@@ -314,7 +331,7 @@ else
 	fi
 
 	gh release create "$tag" \
-		"$asset_path#$asset_name" \
+		"${built_assets[@]}" \
 		--title "$tag" \
 		--notes-file "$notes_file" \
 		$draft_flag
@@ -327,10 +344,10 @@ fi
 # ──────────────────────────────────────────────
 
 echo ""
-echo "→ Installing locally..."
+echo "→ Installing locally ($native_binary)..."
 install_dir="$HOME/.local/bin"
 mkdir -p "$install_dir"
-cp "./target/release/$APP" "$install_dir/$APP"
+cp "./$native_binary" "$install_dir/$APP"
 chmod +x "$install_dir/$APP"
 
 if ! echo ":$PATH:" | grep -q ":$install_dir:"; then
@@ -361,13 +378,16 @@ echo "  Installed to $install_dir/$APP"
 
 echo ""
 echo "→ Cleaning up..."
-rm "./$binary_name"
-echo "  Removed ./$binary_name"
+for entry in "${targets[@]}"; do
+	binary_name="${entry##*:}"
+	rm -f "./$binary_name"
+	echo "  Removed ./$binary_name"
+done
 
 # ──────────────────────────────────────────────
 # Done
 # ──────────────────────────────────────────────
 
 echo ""
-echo "✅ Done! Released $binary_name → $tag"
+echo "✅ Done! Released ${#targets[@]} binaries → $tag"
 echo "   View at: https://github.com/$(git remote get-url origin | sed -E 's|.*github.com[/:]||; s|\.git$||')/releases/tag/$tag"
