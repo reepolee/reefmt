@@ -51,13 +51,18 @@ if (-not $versionMatch.Success) {
 
 $version = $versionMatch.Groups[1].Value
 
-# Detect Windows architecture
+# Detect native arch for local install
 $arch = $env:PROCESSOR_ARCHITECTURE
-switch ($arch) {
-    'AMD64' { $binaryName = "$AppName-windows-x64.exe" }
-    'ARM64' { $binaryName = "$AppName-windows-arm64.exe" }
+$nativeBinary = switch ($arch) {
+    'AMD64' { "$AppName-windows-x64.exe" }
+    'ARM64' { "$AppName-windows-arm64.exe" }
     default { Write-Error "Unsupported architecture: $arch"; exit 1 }
 }
+
+$targets = @(
+    @{ Target = "x86_64-pc-windows-msvc";   BinaryName = "$AppName-windows-x64.exe" }
+    @{ Target = "aarch64-pc-windows-msvc";  BinaryName = "$AppName-windows-arm64.exe" }
+)
 
 # ──────────────────────────────────────────────
 # Detect code changes since last release
@@ -158,12 +163,18 @@ if ($newCommits -gt 0) {
 }
 
 # ──────────────────────────────────────────────
-# Build
+# Build (all targets for Windows)
 # ──────────────────────────────────────────────
 
-Write-Host "`n→ Building $binaryName..."
-cargo build --release
-Copy-Item ".\target\release\$AppName.exe" ".\$binaryName"
+$builtAssets = @()
+foreach ($t in $targets) {
+    Write-Host "`n→ Building $($t.BinaryName) ($($t.Target))..."
+    rustup target add $t.Target 2>$null | Out-Null
+    cargo build --release --target $t.Target
+    if ($LASTEXITCODE -ne 0) { Write-Error "Build failed for $($t.Target)"; exit 1 }
+    Copy-Item ".\target\$($t.Target)\release\$AppName.exe" ".\$($t.BinaryName)"
+    $builtAssets += ".\$($t.BinaryName)#$($t.BinaryName)"
+}
 
 # ──────────────────────────────────────────────
 # Commit version bump (first machine only)
@@ -207,14 +218,10 @@ git push origin $tag
 
 Write-Host "`n→ Publishing release $tag..."
 
-$assetPath = ".\$binaryName"
-$assetName = $binaryName
-$releaseArgs = @()
-
 $releaseExists = gh release view $tag 2>$null
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "  Release $tag already exists. Uploading asset..."
-    gh release upload $tag "$assetPath#$assetName" --clobber
+    Write-Host "  Release $tag already exists. Uploading assets..."
+    gh release upload $tag @builtAssets --clobber
 } else {
     Write-Host "  Creating release $tag..."
     $notesFile = [System.IO.Path]::GetTempFileName()
@@ -240,8 +247,8 @@ if ($LASTEXITCODE -eq 0) {
     }
 
     $releaseArgs = @(
-        "release", "create", $tag,
-        "$assetPath#$assetName",
+        "release", "create", $tag
+    ) + $builtAssets + @(
         "--title", $tag,
         "--notes-file", $notesFile
     )
@@ -257,10 +264,10 @@ if ($LASTEXITCODE -eq 0) {
 # Install locally (to PATH)
 # ──────────────────────────────────────────────
 
-Write-Host "`n→ Installing locally..."
+Write-Host "`n→ Installing locally ($nativeBinary)..."
 $InstallDir = Join-Path $HOME "bin"
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-Copy-Item ".\target\release\$AppName.exe" (Join-Path $InstallDir "$AppName.exe") -Force
+Copy-Item ".\$nativeBinary" (Join-Path $InstallDir "$AppName.exe") -Force
 
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
 $Paths = $UserPath -split ";"
@@ -282,8 +289,10 @@ Write-Host "  Installed to $(Join-Path $InstallDir "$AppName.exe")"
 # ──────────────────────────────────────────────
 
 Write-Host "`n→ Cleaning up..."
-Remove-Item ".\$binaryName" -Force
-Write-Host "  Removed .\$binaryName"
+foreach ($t in $targets) {
+    Remove-Item ".\$($t.BinaryName)" -Force -ErrorAction SilentlyContinue
+    Write-Host "  Removed .\$($t.BinaryName)"
+}
 
 # ──────────────────────────────────────────────
 # Done
@@ -291,5 +300,5 @@ Write-Host "  Removed .\$binaryName"
 
 $remoteUrl = git remote get-url origin
 $repoPath = $remoteUrl -replace '.*github.com[/:]', '' -replace '\.git$', ''
-Write-Host "`n✅ Done! Released $binaryName → $tag"
+Write-Host "`n✅ Done! Released $($targets.Count) binaries → $tag"
 Write-Host "   View at: https://github.com/$repoPath/releases/tag/$tag"
