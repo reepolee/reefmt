@@ -883,10 +883,10 @@ fn is_block_opener(trimmed: &str) -> bool {
 }
 
 /// Check if a trimmed line is a block opener that should be collapsed when it
-/// contains a single statement. `for`, `while`, `do`, `switch`, and plain
-/// `else` blocks are excluded. Loops and switch obscure iteration/dispatch
-/// structure; `} else {` is excluded so if/else branches are always symmetric
-/// (both expanded or both collapsed — never one of each).
+/// contains a single statement. `for`, `while`, `do`, `switch`, and all `else`
+/// variants are excluded. Loops and switch obscure iteration/dispatch structure;
+/// `else`/`else if` are excluded so all branches of an if/else chain are always
+/// symmetric (all expanded or all collapsed — never mixed).
 /// `} catch` and `} finally` are also excluded (they glue onto the preceding `}`).
 fn is_collapsible_block_opener(trimmed: &str) -> bool {
     if trimmed.starts_with("} catch") || trimmed.starts_with("} finally") {
@@ -897,7 +897,7 @@ fn is_collapsible_block_opener(trimmed: &str) -> bool {
         || t.starts_with("while ") || t.starts_with("while(")
         || t.starts_with("do {") || t == "do {"
         || t.starts_with("switch ") || t.starts_with("switch(")
-        || t == "else {" || t.starts_with("else {")
+        || t.starts_with("else")
     {
         return false;
     }
@@ -2456,10 +2456,10 @@ mod tests {
     }
 
     #[test]
-    fn collapse_else_if_chain() {
+    fn else_if_chain_stays_expanded() {
         let src = "\t} else if (e.key === \"Escape\") {\n\t\tlist.classList.add(\"hidden\");\n\t}\n";
         let result = collapse_single_stmt_blocks(src, 180, &CollapseConfig::uniform(true, 3));
-        assert_eq!(result, "\t} else if (e.key === \"Escape\") { list.classList.add(\"hidden\"); }\n");
+        assert_eq!(result, src);
     }
 
     #[test]
@@ -2929,11 +2929,10 @@ mod tests {
     }
 
     #[test]
-    fn narrow_width_else_if_barely_fits() {
-        // "\t} else if (k) { stmt(); }" = 28 chars
+    fn narrow_width_else_if_stays_expanded() {
         let src = "\t} else if (k) {\n\t\tstmt();\n\t}\n";
         let result = collapse_single_stmt_blocks(src, 28, &CollapseConfig::uniform(true, 3));
-        assert_eq!(result, "\t} else if (k) { stmt(); }\n");
+        assert_eq!(result, src);
     }
 
     #[test]
