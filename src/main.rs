@@ -367,6 +367,20 @@ fn main() {
         })
     });
 
+    // Parse --collapse-max-keyvalue-props CLI override
+    let cli_max_keyvalue_props: Option<usize> = args.iter().position(|a| a == "--collapse-max-keyvalue-props").map(|pos| {
+        args.remove(pos);
+        if pos >= args.len() {
+            eprintln!("Error: --collapse-max-keyvalue-props requires a number argument");
+            std::process::exit(1);
+        }
+        let val = args.remove(pos);
+        val.parse().unwrap_or_else(|_| {
+            eprintln!("Error: --collapse-max-keyvalue-props must be a non-negative integer");
+            std::process::exit(1);
+        })
+    });
+
     // Parse --oneline flag (collapse multi-line HTML elements to one line when they fit)
     let cli_oneline = if let Some(pos) = args.iter().position(|a| a == "--oneline") {
         args.remove(pos);
@@ -420,7 +434,8 @@ fn main() {
         println!("  --wrap-width <N>         Override wrapWidth from config");
         println!("  --collapse-max-members <N>  Override collapseMaxMembers from config");
         println!("  --collapse-soft-width <N>   Override collapseSoftWidth from config (0 disables)");
-        println!("  --tab-width <N>          Override tabWidth from config (tab display columns)");
+        println!("  --tab-width <N>              Override tabWidth from config (tab display columns)");
+        println!("  --collapse-max-keyvalue-props <N>  Override collapseMaxKeyValueProps (0 never collapses)");
         println!("  --stdin <.ext>           Read from stdin, write to stdout (.ree, .ts, .js, .css)");
         println!("  --init                   Create or upgrade reefmt.jsonc in the current directory");
         println!("  --version, -v            Print version");
@@ -502,6 +517,11 @@ fn main() {
     // CLI --tab-width overrides config
     if let Some(w) = cli_tab_width {
         config.tab_width = w;
+    }
+
+    // CLI --collapse-max-keyvalue-props overrides config
+    if let Some(max) = cli_max_keyvalue_props {
+        config.collapse_max_keyvalue_props = max;
     }
 
     // CLI --oneline overrides config
