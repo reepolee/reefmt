@@ -61,11 +61,11 @@ impl<'a> Printer<'a> {
                 self.w("while (");
                 self.print_expr(&w.test);
                 self.w(") ");
-                self.print_stmt(&w.body);
+                self.print_loop_body(&w.body);
             }
             Stmt::DoWhile(d) => {
                 self.w("do ");
-                self.print_stmt(&d.body);
+                self.print_loop_body(&d.body);
                 self.w(" while (");
                 self.print_expr(&d.test);
                 self.w(");");
@@ -83,7 +83,7 @@ impl<'a> Printer<'a> {
                 self.w("; ");
                 if let Some(update) = &f.update { self.print_expr(update); }
                 self.w(") ");
-                self.print_stmt(&f.body);
+                self.print_loop_body(&f.body);
             }
             Stmt::ForIn(fi) => {
                 self.w("for (");
@@ -91,7 +91,7 @@ impl<'a> Printer<'a> {
                 self.w(" in ");
                 self.print_expr(&fi.right);
                 self.w(") ");
-                self.print_stmt(&fi.body);
+                self.print_loop_body(&fi.body);
             }
             Stmt::ForOf(fo) => {
                 self.w("for ");
@@ -101,7 +101,7 @@ impl<'a> Printer<'a> {
                 self.w(" of ");
                 self.print_expr(&fo.right);
                 self.w(") ");
-                self.print_stmt(&fo.body);
+                self.print_loop_body(&fo.body);
             }
             Stmt::Try(t) => {
                 self.w("try ");
@@ -183,6 +183,15 @@ impl<'a> Printer<'a> {
         }
         self.emit_trailing_comments(stmt.span().hi());
         self.nl();
+    }
+
+    /// Print a loop body — always expanded when it's a block, so loop bodies
+    /// are never collapsed onto one line with the loop header.
+    pub(super) fn print_loop_body(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Block(b) => self.print_block_expanded(b),
+            _ => self.print_stmt(stmt),
+        }
     }
 
     pub(super) fn print_for_head(&mut self, left: &ForHead) {
