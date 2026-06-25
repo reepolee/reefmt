@@ -81,7 +81,7 @@ impl<'a> Printer<'a> {
             }
             Stmt::Try(t) => {
                 self.w("try ");
-                self.print_block(&t.block);
+                self.print_block_expanded(&t.block);
                 if let Some(catch) = &t.handler {
                     self.w(" catch");
                     if let Some(param) = &catch.param {
