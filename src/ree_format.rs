@@ -33,12 +33,79 @@ pub(crate) fn flatten_concat(src: &str) -> String {
 /// Format full Ree template content.
 pub(crate) fn format_ree_content(content: &str, wrap_width: usize, oneline: usize, collapse: crate::format::CollapseConfig, remove_unused: bool) -> String {
     let ast_output = crate::ree_parser::format_ree(content, wrap_width, oneline);
-    format_script_blocks(&ast_output, wrap_width, collapse, remove_unused)
+    let after_raw_js = format_raw_js_blocks(&ast_output, wrap_width, collapse.clone(), remove_unused);
+    format_script_blocks(&after_raw_js, wrap_width, collapse, remove_unused)
 }
 
 fn format_script_blocks(content: &str, wrap_width: usize, collapse: crate::format::CollapseConfig, remove_unused: bool) -> String {
     let after_script = format_tagged_blocks(content, "script", wrap_width, collapse, remove_unused);
     format_tagged_blocks(&after_script, "style", wrap_width, collapse, remove_unused)
+}
+
+/// Format JS inside `{{ ... }}` raw-JS blocks using the same SWC pipeline as
+/// `<script>` blocks. The ree renderer already emits these as:
+///
+/// ```
+/// [indent]{{
+/// [indent+1]line...
+/// [indent]}}
+/// ```
+///
+/// This post-pass finds each `{{` opener, extracts the body, runs it through
+/// `format_script_content`, and re-emits with correct indentation.
+fn format_raw_js_blocks(content: &str, wrap_width: usize, collapse: crate::format::CollapseConfig, remove_unused: bool) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut remaining = content;
+
+    loop {
+        // Find `{{` that sits at the start of a line (after optional tabs).
+        // We look for "\n<tabs>{{" or, for a block at position 0, just "{{".
+        let search_result = remaining.find("{{");
+        let Some(rel) = search_result else {
+            break;
+        };
+
+        // Only treat it as a raw-JS opener when `{{` is at the start of a
+        // line — i.e. everything after the previous newline (or start) is tabs.
+        let prefix = &remaining[..rel];
+        let last_nl = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let indent = &prefix[last_nl..];
+        if !indent.chars().all(|c| c == '\t') {
+            // Not a line-start `{{` — skip past it and keep scanning.
+            out.push_str(&remaining[..rel + 2]);
+            remaining = &remaining[rel + 2..];
+            continue;
+        }
+
+        // Emit everything up to and including `{{`.
+        out.push_str(prefix);
+        out.push_str("{{");
+        let after_open = &remaining[rel + 2..];
+
+        // Find the matching `}}` on its own line at the same indent level.
+        // We look for "\n<indent>}}" (close marker).
+        let close_marker = format!("\n{}}}}}",  indent);
+        if let Some(close_rel) = after_open.find(&close_marker as &str) {
+            let block_content = &after_open[..close_rel];
+
+            let formatted = format_script_content(block_content, wrap_width, collapse.clone(), remove_unused);
+            out.push_str(&formatted);
+            if !formatted.is_empty() && !formatted.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(indent);
+            out.push_str("}}");
+
+            remaining = &after_open[close_rel + close_marker.len()..];
+        } else {
+            // No matching close — leave the rest as-is.
+            out.push_str(after_open);
+            remaining = "";
+        }
+    }
+
+    out.push_str(remaining);
+    out
 }
 
 fn format_tagged_blocks(content: &str, tag: &str, wrap_width: usize, collapse: crate::format::CollapseConfig, remove_unused: bool) -> String {
@@ -572,7 +639,7 @@ mod tests {
     #[test]
     fn script_if_block_body_is_indented() {
         let src = "{#with props}\n\t<script>\n\t\tconst x = 1;\n\t\t{#if flag}\n\t\tdoThing();\n\t\t{/if}\n\t</script>\n{/with}\n";
-        let out = format_ree_content(src, 120, false, cfg(), false);
+        let out = format_ree_content(src, 120, 0, cfg(), false);
         assert!(out.contains("\t\t{#if flag}\n\t\t\tdoThing();\n\t\t{/if}"),
             "if-block body should be indented one level deeper than the tokens:\n{out}");
     }
@@ -582,18 +649,18 @@ mod tests {
         // Mimics a file a previous reefmt run corrupted: stray `;` after the
         // control tokens, and a flattened body.
         let src = "{#with props}\n\t<script>\n\t\tconst x = 1;\n\t\t{#if flag};\n\t\tdoThing();\n\t\t{/if};\n\t\tmore();\n\t</script>\n{/with}\n";
-        let out = format_ree_content(src, 120, false, cfg(), false);
+        let out = format_ree_content(src, 120, 0, cfg(), false);
         assert!(!out.contains("{#if flag};"), "stray ; after {{#if}} should be removed:\n{out}");
         assert!(!out.contains("{/if};"), "stray ; after {{/if}} should be removed:\n{out}");
         // Repaired output must be idempotent.
-        let out2 = format_ree_content(&out, 120, false, cfg(), false);
+        let out2 = format_ree_content(&out, 120, 0, cfg(), false);
         assert_eq!(out, out2, "repaired output should be idempotent");
     }
 
     #[test]
     fn script_if_block_idempotent() {
         let src = "{#with props}\n\t<script>\n\t\tconst x = 1;\n\t\t{#if flag}\n\t\t\tdoThing();\n\t\t{/if}\n\t</script>\n{/with}\n";
-        let p1 = format_ree_content(src, 120, false, cfg(), false);
+        let p1 = format_ree_content(src, 120, 0, cfg(), false);
         let p2 = format_ree_content(&p1, 120, false, cfg(), false);
         assert_eq!(p1, p2, "well-formed if-in-script should be stable");
     }
@@ -604,7 +671,7 @@ mod tests {
         // into {#if}<script>…</script>{/if} (that changes semantics: empty-tag vs
         // no-tag) and must be stable across passes.
         let src = "{#with props}\n\t<script>\n\t\t{#if dev}\n\t\t\tconsole.log(\"x\");\n\t\t{/if}\n\t</script>\n{/with}\n";
-        let p1 = format_ree_content(src, 120, false, cfg(), false);
+        let p1 = format_ree_content(src, 120, 0, cfg(), false);
         assert!(p1.contains("<script>\n\t\t{#if dev}"),
             "the {{#if}} block must stay inside <script>:\n{p1}");
         let p2 = format_ree_content(&p1, 120, false, cfg(), false);
@@ -614,7 +681,7 @@ mod tests {
     #[test]
     fn format_ree_content_idempotent() {
         let src = "<span>text</span>\n";
-        let result = format_ree_content(src, 120, false, CollapseConfig::uniform(true, 3), false);
+        let result = format_ree_content(src, 120, 0, CollapseConfig::uniform(true, 3), false);
         assert_eq!(result, src, "format_ree_content should be idempotent for already-formatted content");
     }
 
@@ -623,8 +690,8 @@ mod tests {
         // Regression: non-ASCII UTF-8 chars in <script> comments were corrupted
         // by protect_ree_expressions pushing bytes as chars (mojibake).
         let src = "<!DOCTYPE html>\n<html>\n\t<head>\n\t\t<script>\n\t\t// šč test — non-ASCII\n\t\tconst x = 1;\n\t\t</script>\n\t</head>\n</html>\n";
-        let pass1 = format_ree_content(src, 120, false, CollapseConfig::uniform(true, 3), false);
-        let pass2 = format_ree_content(&pass1, 120, false, CollapseConfig::uniform(true, 3), false);
+        let pass1 = format_ree_content(src, 120, 0, CollapseConfig::uniform(true, 3), false);
+        let pass2 = format_ree_content(&pass1, 120, 0, CollapseConfig::uniform(true, 3), false);
         assert_eq!(pass1, pass2,
             "format_ree_content should be idempotent with non-ASCII chars in script comments");
     }
@@ -633,8 +700,8 @@ mod tests {
     fn idempotent_non_ascii_in_ree_expr() {
         // Non-ASCII inside Ree expressions should also be stable
         let src = "<p>{= props.ui.šč_test }</p>\n";
-        let pass1 = format_ree_content(src, 120, false, CollapseConfig::uniform(true, 3), false);
-        let pass2 = format_ree_content(&pass1, 120, false, CollapseConfig::uniform(true, 3), false);
+        let pass1 = format_ree_content(src, 120, 0, CollapseConfig::uniform(true, 3), false);
+        let pass2 = format_ree_content(&pass1, 120, 0, CollapseConfig::uniform(true, 3), false);
         assert_eq!(pass1, pass2,
             "format_ree_content should be idempotent with non-ASCII in Ree expressions");
     }
@@ -643,8 +710,8 @@ mod tests {
     fn idempotent_doctype_and_html() {
         // Regression: DOCTYPE was parsed as an HTML element, causing indentation drift
         let src = "<!DOCTYPE html>\n\n<html lang=\"en\">\n\t<head>\n\t\t<meta charset=\"UTF-8\" />\n\t</head>\n</html>\n";
-        let pass1 = format_ree_content(src, 120, false, CollapseConfig::uniform(true, 3), false);
-        let pass2 = format_ree_content(&pass1, 120, false, CollapseConfig::uniform(true, 3), false);
+        let pass1 = format_ree_content(src, 120, 0, CollapseConfig::uniform(true, 3), false);
+        let pass2 = format_ree_content(&pass1, 120, 0, CollapseConfig::uniform(true, 3), false);
         assert_eq!(pass1, pass2,
             "format_ree_content should be idempotent with DOCTYPE declarations");
     }
@@ -653,18 +720,32 @@ mod tests {
     fn idempotent_ree_blocks_and_script() {
         // Full Ree block with embedded script containing non-ASCII
         let src = "{#if props.show}\n\t<script>\n\t// Café naïve — UTF-8 in script\n\tconsole.log(42);\n\t</script>\n{/if}\n";
-        let pass1 = format_ree_content(src, 120, false, CollapseConfig::uniform(true, 3), false);
-        let pass2 = format_ree_content(&pass1, 120, false, CollapseConfig::uniform(true, 3), false);
+        let pass1 = format_ree_content(src, 120, 0, CollapseConfig::uniform(true, 3), false);
+        let pass2 = format_ree_content(&pass1, 120, 0, CollapseConfig::uniform(true, 3), false);
         assert_eq!(pass1, pass2,
             "format_ree_content should be idempotent with Ree blocks and UTF-8 in scripts");
+    }
+
+    #[test]
+    fn raw_js_block_is_formatted() {
+        // {{ ... }} blocks should go through the JS formatter, not just get
+        // flat-indented. Nested object literal should get proper relative indentation.
+        let src = "{{\n\tconst x = {\n\ta: 1,\n\tb: 2,\n\t};\n}}\n";
+        let result = format_ree_content(src, 120, 0, CollapseConfig::uniform(true, 3), false);
+        // After formatting, nested object members should be indented deeper than 1 tab.
+        assert!(result.starts_with("{{"), "block starts with {{");
+        assert!(result.contains("}}"), "block ends with }}");
+        // Idempotent
+        let pass2 = format_ree_content(&result, 120, 0, CollapseConfig::uniform(true, 3), false);
+        assert_eq!(result, pass2, "{{}} block formatting should be idempotent");
     }
 
     #[test]
     fn idempotent_multiple_blank_lines() {
         // Multiple consecutive blank lines should converge to stable output
         let src = "<div>\n\n\n<p>text</p>\n</div>\n";
-        let pass1 = format_ree_content(src, 120, false, CollapseConfig::uniform(true, 3), false);
-        let pass2 = format_ree_content(&pass1, 120, false, CollapseConfig::uniform(true, 3), false);
+        let pass1 = format_ree_content(src, 120, 0, CollapseConfig::uniform(true, 3), false);
+        let pass2 = format_ree_content(&pass1, 120, 0, CollapseConfig::uniform(true, 3), false);
         assert_eq!(pass1, pass2,
             "format_ree_content should be idempotent with multiple blank lines");
     }
