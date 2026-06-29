@@ -39,7 +39,7 @@ pub(crate) enum Node {
 // Public API
 // ═══════════════════════════════════════════════════════════════
 
-pub(crate) fn format_ree(input: &str, wrap_width: usize, oneline: bool) -> String {
+pub(crate) fn format_ree(input: &str, wrap_width: usize, oneline: usize) -> String {
     let normalized = input.replace("\r\n", "\n");
     let nodes = parse(&normalized);
     let out = print_nodes(&nodes, wrap_width, oneline);
@@ -707,7 +707,7 @@ fn parse_raw_block_content<'a>(input: &'a str, close_marker: &str) -> (Vec<Node>
 // Printer
 // ═══════════════════════════════════════════════════════════════
 
-fn print_nodes(nodes: &[Node], wrap_width: usize, oneline: bool) -> String {
+fn print_nodes(nodes: &[Node], wrap_width: usize, oneline: usize) -> String {
     let mut out = String::new();
     for node in nodes {
         print_node(node, 0, &mut out, wrap_width, oneline);
@@ -715,7 +715,7 @@ fn print_nodes(nodes: &[Node], wrap_width: usize, oneline: bool) -> String {
     out
 }
 
-fn print_node(node: &Node, depth: usize, out: &mut String, wrap_width: usize, oneline: bool) {
+fn print_node(node: &Node, depth: usize, out: &mut String, wrap_width: usize, oneline: usize) {
     match node {
         Node::Text(text) => {
             let trimmed = text.trim();
@@ -773,11 +773,11 @@ fn print_node(node: &Node, depth: usize, out: &mut String, wrap_width: usize, on
                 out.push_str(&"\t".repeat(depth));
                 out.push_str(&inline_str);
                 out.push('\n');
-            } else if oneline && !is_script_or_style(tag) && has_no_child_elements(children) {
-                // --oneline: only collapse leaf elements (no child tags), and only when they fit.
+            } else if oneline > 0 && !is_script_or_style(tag) && has_no_child_elements(children) {
+                // oneline: only collapse leaf elements (no child tags), and only when they fit.
                 let inline_str = render_node_inline(node);
                 let full_len = depth + inline_str.len(); // tabs counted as 1 char
-                if full_len <= wrap_width {
+                if full_len <= oneline {
                     out.push_str(&"\t".repeat(depth));
                     out.push_str(&inline_str);
                     out.push('\n');
@@ -915,7 +915,7 @@ fn render_node_inline(node: &Node) -> String {
     }
 }
 
-fn print_block_element(tag: &str, attrs: &[String], children: &[Node], depth: usize, out: &mut String, wrap_width: usize, oneline: bool) {
+fn print_block_element(tag: &str, attrs: &[String], children: &[Node], depth: usize, out: &mut String, wrap_width: usize, oneline: usize) {
     let attr_str = format_attrs_inline(attrs);
     let tag_line = if attr_str.is_empty() {
         format!("<{}>", tag)
@@ -1089,7 +1089,7 @@ fn print_inline_nodes(nodes: &[Node], depth: usize, out: &mut String, _wrap_widt
 /// Block-level children (Element, ReeBlock, etc.) still print on their own lines.
 /// Blank-line text nodes (Text with >= 2 newlines, whitespace only) act as
 /// separators between inline groups — they are preserved rather than merged.
-fn print_ree_block_children(children: &[Node], depth: usize, out: &mut String, wrap_width: usize, oneline: bool) {
+fn print_ree_block_children(children: &[Node], depth: usize, out: &mut String, wrap_width: usize, oneline: usize) {
     let mut i = 0;
     while i < children.len() {
         if is_inline_node(&children[i]) {
@@ -1361,9 +1361,9 @@ mod tests {
 
     #[test]
     fn oneline_collapses_multiline_leaf_element() {
-        // Multi-line element with only text content (a leaf) collapses with --oneline.
+        // Multi-line element with only text content (a leaf) collapses with oneline.
         let input = "<p>\nhello\n</p>";
-        let output = format_ree(input, 120, true);
+        let output = format_ree(input, 120, 120);
         assert_eq!(output, "<p>hello</p>\n");
     }
 
@@ -1371,7 +1371,7 @@ mod tests {
     fn oneline_does_not_collapse_parent_with_child_elements() {
         // div contains a p → not a leaf → div stays block; p is already inline so unchanged.
         let input = "<div>\n<p>hello</p>\n</div>";
-        let output = format_ree(input, 120, true);
+        let output = format_ree(input, 120, 120);
         assert_eq!(output, "<div>\n\t<p>hello</p>\n</div>\n");
     }
 
@@ -1379,16 +1379,16 @@ mod tests {
     fn oneline_collapses_inner_leaf_but_not_outer() {
         // li elements are leaves (text only) and collapse; ul has child elements so stays block.
         let input = "<ul>\n<li>\nfoo\n</li>\n<li>\nbar\n</li>\n</ul>";
-        let output = format_ree(input, 120, true);
+        let output = format_ree(input, 120, 120);
         assert_eq!(output, "<ul>\n\t<li>foo</li>\n\t<li>bar</li>\n</ul>\n");
     }
 
     #[test]
     fn oneline_keeps_block_when_too_wide() {
-        // Leaf element that doesn't fit within wrap_width stays multi-line.
+        // Leaf element that doesn't fit within oneline width stays multi-line.
         let input = "<p>\nthis content is quite long and exceeds the narrow wrap width\n</p>";
-        let output = format_ree(input, 20, true);
-        assert!(output.contains('\n'), "Should stay multi-line when collapsed line exceeds wrap_width");
+        let output = format_ree(input, 120, 20);
+        assert!(output.contains('\n'), "Should stay multi-line when collapsed line exceeds oneline width");
         assert!(output.contains("<p>"), "Opening tag present");
         assert!(output.contains("</p>"), "Closing tag present");
     }
@@ -1397,23 +1397,23 @@ mod tests {
     fn oneline_with_ree_expr_collapses() {
         // Leaf element with a Ree expression collapses correctly.
         let input = "<span>\n{= title}\n</span>";
-        let output = format_ree(input, 120, true);
+        let output = format_ree(input, 120, 120);
         assert_eq!(output, "<span>{= title}</span>\n");
     }
 
     #[test]
-    fn oneline_false_preserves_block_form() {
-        // Without --oneline, multi-line leaf elements stay multi-line (author intent).
+    fn oneline_zero_preserves_block_form() {
+        // oneline: 0 disables collapsing — multi-line leaf elements stay multi-line.
         let input = "<p>\nhello\n</p>";
-        let output = format_ree(input, 120, false);
+        let output = format_ree(input, 120, 0);
         assert_eq!(output, "<p>\n\thello\n</p>\n");
     }
 
     #[test]
     fn oneline_already_inline_stays_inline() {
-        // Elements already authored on one line stay on one line regardless of --oneline.
+        // Elements already authored on one line stay on one line regardless of oneline.
         let input = "<div><p>hello</p></div>";
-        let output = format_ree(input, 120, true);
+        let output = format_ree(input, 120, 120);
         assert_eq!(output, "<div><p>hello</p></div>\n");
     }
 }

@@ -31,7 +31,7 @@ pub(crate) fn flatten_concat(src: &str) -> String {
 }
 
 /// Format full Ree template content.
-pub(crate) fn format_ree_content(content: &str, wrap_width: usize, oneline: bool, collapse: crate::format::CollapseConfig, remove_unused: bool) -> String {
+pub(crate) fn format_ree_content(content: &str, wrap_width: usize, oneline: usize, collapse: crate::format::CollapseConfig, remove_unused: bool) -> String {
     let ast_output = crate::ree_parser::format_ree(content, wrap_width, oneline);
     format_script_blocks(&ast_output, wrap_width, collapse, remove_unused)
 }
@@ -493,7 +493,7 @@ fn restore_ree_expressions(input: &str, placeholders: &[String]) -> String {
 
 
 /// Format a Ree template file. Returns `true` if the file was (or would be) modified.
-pub(crate) fn format_ree_file(path: &Path, mode: crate::format::Mode, wrap_width: usize, oneline: bool, collapse: crate::format::CollapseConfig, remove_unused: bool) -> bool {
+pub(crate) fn format_ree_file(path: &Path, mode: crate::format::Mode, wrap_width: usize, oneline: usize, collapse: crate::format::CollapseConfig, remove_unused: bool) -> bool {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {

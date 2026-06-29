@@ -90,11 +90,11 @@ pub(crate) struct ReeConfig {
     /// during formatting. Side-effect imports (`import "./foo"`) are always kept.
     #[serde(rename = "removeUnusedImports", default)]
     remove_unused_imports: bool,
-    /// When true, multi-line HTML elements in .ree files are collapsed to a
-    /// single line when the full `<tag>content</tag>` fits within wrapWidth.
-    /// Elements that don't fit stay multi-line.
-    #[serde(default = "default_true")]
-    oneline: bool,
+    /// Width threshold for collapsing multi-line HTML leaf elements in .ree
+    /// files onto one line. An element is collapsed only when its inline form
+    /// fits within this many columns. Set to 0 to disable.
+    #[serde(default)]
+    oneline: usize,
 }
 
 impl ReeConfig {
@@ -381,12 +381,16 @@ fn main() {
         })
     });
 
-    // Parse --oneline flag (collapse multi-line HTML elements to one line when they fit)
-    let cli_oneline = if let Some(pos) = args.iter().position(|a| a == "--oneline") {
+    // Parse --oneline <N> flag (collapse multi-line HTML leaf elements to one line when they fit within N columns)
+    let cli_oneline: Option<usize> = if let Some(pos) = args.iter().position(|a| a == "--oneline") {
         args.remove(pos);
-        true
+        let val = args.remove(pos).parse::<usize>().unwrap_or_else(|_| {
+            eprintln!("Error: --oneline requires a numeric width argument");
+            std::process::exit(1);
+        });
+        Some(val)
     } else {
-        false
+        None
     };
 
     let mode = if diff_mode {
@@ -430,7 +434,7 @@ fn main() {
         println!("  --check, -c              List files that would change (exit 1 if any)");
         println!("  --git                    Format only uncommitted (git-changed) files");
         println!("  --verbose                Print files that were already formatted");
-        println!("  --oneline                Collapse multi-line leaf HTML elements to one line when they fit");
+        println!("  --oneline <N>            Collapse multi-line leaf HTML elements to one line when they fit within N columns");
         println!("  --wrap-width <N>         Override wrapWidth from config");
         println!("  --collapse-max-members <N>  Override collapseMaxMembers from config");
         println!("  --collapse-soft-width <N>   Override collapseSoftWidth from config (0 disables)");
@@ -525,8 +529,8 @@ fn main() {
     }
 
     // CLI --oneline overrides config
-    if cli_oneline {
-        config.oneline = true;
+    if let Some(w) = cli_oneline {
+        config.oneline = w;
     }
 
     // Handle --stdin (uses config)
@@ -751,7 +755,7 @@ mod tests {
             tab_width: 4,
             collapse_max_keyvalue_props: 1,
             remove_unused_imports: false,
-            oneline: false,
+            oneline: 0,
         };
         let modified = format::format_file(&path, format::Mode::Write, &config);
         assert!(!modified, "format_file should return false for unsupported extension");
@@ -767,7 +771,7 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, format::Mode::Check, 120, false, crate::format::CollapseConfig::uniform(true, 3), false);
+        let modified = crate::ree_format::format_ree_file(&path, format::Mode::Check, 120, 0, crate::format::CollapseConfig::uniform(true, 3), false);
         assert!(modified, "Check mode should return true when file would change");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, unformatted, "Check mode should not modify the file");
@@ -824,7 +828,7 @@ mod tests {
             tab_width: 4,
             collapse_max_keyvalue_props: 1,
             remove_unused_imports: false,
-            oneline: false,
+            oneline: 0,
         };
 
         let matched = Path::new("generator/templates/ui/button.ts");
