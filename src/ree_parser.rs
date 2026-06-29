@@ -452,13 +452,21 @@ fn parse_one_attr(input: &str) -> Option<(String, &str)> {
     }
 
     let name_end = input
-        .find(|c: char| c == '=' || c == '>' || c.is_whitespace())
+        .find(|c: char| c == '=' || c == '>' || c == '{' || c.is_whitespace())
         .unwrap_or(input.len());
     if name_end == 0 {
         return None;
     }
     let name = &input[..name_end];
     let remaining = &input[name_end..];
+
+    // Handle boolean attrs followed by a ree expression, e.g. `data-foo{~ expr }`.
+    // Consume the brace expression and return the whole thing as one attr token.
+    if remaining.starts_with('{') {
+        let brace_end = find_brace_end(remaining);
+        let attr = format!("{}{}", name, &remaining[..brace_end]);
+        return Some((attr, &remaining[brace_end..]));
+    }
 
     if let Some(after_eq) = remaining.strip_prefix('=') {
         if after_eq.starts_with('"') {
@@ -1415,5 +1423,14 @@ mod tests {
         let input = "<div><p>hello</p></div>";
         let output = format_ree(input, 120, 120);
         assert_eq!(output, "<div><p>hello</p></div>\n");
+    }
+
+    #[test]
+    fn boolean_attr_with_ree_expr_stays_intact() {
+        // `data-foo{~ expr }` must be kept as a single attribute token, not split
+        // into separate tokens at the space inside the brace expression.
+        let input = "<nav data-site-nav{~ x ? ' data-light-hero' : '' }>";
+        let output = format_ree(input, 120, 0);
+        assert_eq!(output, "<nav data-site-nav{~ x ? ' data-light-hero' : '' }>\n");
     }
 }
