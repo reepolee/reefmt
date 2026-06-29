@@ -351,7 +351,7 @@ fn parse_html_tag<'a>(input: &'a str, ree_keyword: &Option<String>) -> (Option<N
     let after_lt = &input[1..];
 
     let name_end = after_lt
-        .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+        .find(|c: char| c.is_whitespace() || c == '>' || c == '/' || c == '{')
         .unwrap_or(after_lt.len());
     let tag = after_lt[..name_end].to_string();
     let remaining = &after_lt[name_end..];
@@ -1432,5 +1432,16 @@ mod tests {
         let input = "<nav data-site-nav{~ x ? ' data-light-hero' : '' }>";
         let output = format_ree(input, 120, 0);
         assert_eq!(output, "<nav data-site-nav{~ x ? ' data-light-hero' : '' }>\n");
+    }
+
+    #[test]
+    fn ree_expr_directly_after_tag_name_parses_correctly() {
+        // `<details{~ expr }` — brace expression directly after tag name with no
+        // space. Tag name must be `details`, not `details{~`, and closing tag
+        // must render as `</details>` not `</details{~>`.
+        let input = "<details{~ open ? ' open' : '' }>\nhello\n</details>";
+        let output = format_ree(input, 120, 0);
+        assert!(output.starts_with("<details{~ open ? ' open' : '' }>"), "opening tag preserved");
+        assert!(output.contains("</details>"), "closing tag must not include the brace expression");
     }
 }
