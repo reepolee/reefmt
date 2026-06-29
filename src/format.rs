@@ -38,6 +38,10 @@ pub(crate) struct CollapseConfig {
     /// `{ x: 1 }` stays inline but `{ x: 1, y: 2 }` always expands — inline
     /// lists of named assignments are hard to scan. Set high to disable.
     pub max_keyvalue_props: usize,
+    /// When non-zero, overrides `wrap_width` as the hard ceiling for collapse
+    /// decisions. A structure only collapses if its inline form fits within this
+    /// many columns. Driven by the `oneline` config field.
+    pub collapse_width: usize,
 }
 
 impl CollapseConfig {
@@ -56,6 +60,7 @@ impl CollapseConfig {
             soft_wrap_width: 0,
             tab_width: 4,
             max_keyvalue_props: 1,
+            collapse_width: 0,
         }
     }
 }
@@ -1981,14 +1986,15 @@ pub(crate) fn format_code_content(
             // method chains on a single line; re-apply the line-wrapping passes
             // (and type-literal / single-statement collapsing) that the old
             // codegen path used, so long lines still wrap.
-            let collapsed = collapse_inline_type_literals(&restored, wrap_width, collapse.max_type_members);
+            let effective_width = if collapse.collapse_width > 0 { collapse.collapse_width } else { wrap_width };
+            let collapsed = collapse_inline_type_literals(&restored, effective_width, collapse.max_type_members);
             log_stage!("after collapse_inline_type_literals", collapsed);
-            let params_split = wrap_long_function_params(&collapsed, wrap_width, collapse.max_function_params);
+            let params_split = wrap_long_function_params(&collapsed, effective_width, collapse.max_function_params);
             log_stage!("after wrap_long_function_params", params_split);
-            let chains_split = wrap_long_method_chains(&params_split, wrap_width);
+            let chains_split = wrap_long_method_chains(&params_split, effective_width);
             log_stage!("after wrap_long_method_chains", chains_split);
             if collapse.enabled {
-                let final_result = collapse_single_stmt_blocks(&chains_split, wrap_width, &collapse);
+                let final_result = collapse_single_stmt_blocks(&chains_split, effective_width, &collapse);
                 log_stage!("after collapse_single_stmt_blocks", final_result);
                 final_result
             } else {

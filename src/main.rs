@@ -111,6 +111,7 @@ impl ReeConfig {
             soft_wrap_width: self.collapse_soft_width,
             tab_width: self.tab_width,
             max_keyvalue_props: self.collapse_max_keyvalue_props,
+            collapse_width: self.oneline,
         }
     }
 }
