@@ -144,20 +144,34 @@ impl<'a> Printer<'a> {
                         for (i, p) in ta.params.iter().enumerate() { if i > 0 { self.w(", "); } self.print_ts_type(p); }
                         self.w(">");
                     }
-                    self.w("(");
-                    self.nl();
-                    self.indent();
-                    for a in c.args.iter() {
-                        self.wi();
-                        if a.spread.is_some() { self.w("..."); }
-                        self.print_expr(&a.expr);
-                        self.w(",");
-                        self.emit_trailing_comments_bounded(a.expr.span().hi(), c.span.hi());
+                    // Line comments inside the arg are fine here: the hug branch
+                    // re-prints the object/arrow multi-line, so each `//` comment
+                    // lands on its own line. The guard only matters for the inline
+                    // expand branch, so it is intentionally not part of `can_hug`.
+                    let can_hug = self.collapse.hug_call_args
+                        && c.args.len() == 1
+                        && c.args[0].spread.is_none()
+                        && matches!(*c.args[0].expr, Expr::Object(_) | Expr::Array(_) | Expr::Arrow(_) | Expr::Fn(_));
+                    if can_hug {
+                        self.w("(");
+                        self.print_expr(&c.args[0].expr);
+                        self.w(")");
+                    } else {
+                        self.w("(");
                         self.nl();
+                        self.indent();
+                        for a in c.args.iter() {
+                            self.wi();
+                            if a.spread.is_some() { self.w("..."); }
+                            self.print_expr(&a.expr);
+                            self.w(",");
+                            self.emit_trailing_comments_bounded(a.expr.span().hi(), c.span.hi());
+                            self.nl();
+                        }
+                        self.dedent();
+                        self.wi();
+                        self.w(")");
                     }
-                    self.dedent();
-                    self.wi();
-                    self.w(")");
                 }
             }
             Expr::New(n) => {

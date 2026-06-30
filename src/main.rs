@@ -86,6 +86,12 @@ pub(crate) struct ReeConfig {
     /// but `{ x: 1, y: 2 }` always expands one-per-line. Set high to disable.
     #[serde(rename = "collapseMaxKeyValueProps", default = "default_keyvalue_props")]
     collapse_max_keyvalue_props: usize,
+    /// When true, a call with a single object or array literal argument that
+    /// doesn't fit inline is printed with `({` on the same line as the callee
+    /// and `})` on its own line, instead of expanding the `{` onto a separate
+    /// indented line. Mirrors Prettier's "argument hugging" style.
+    #[serde(rename = "hugCallArgs", default)]
+    hug_call_args: bool,
     /// When true, unused import declarations are removed from JS/TS files
     /// during formatting. Side-effect imports (`import "./foo"`) are always kept.
     #[serde(rename = "removeUnusedImports", default)]
@@ -112,6 +118,7 @@ impl ReeConfig {
             tab_width: self.tab_width,
             max_keyvalue_props: self.collapse_max_keyvalue_props,
             collapse_width: self.oneline,
+            hug_call_args: self.hug_call_args,
         }
     }
 }
@@ -755,6 +762,7 @@ mod tests {
             collapse_soft_width: 0,
             tab_width: 4,
             collapse_max_keyvalue_props: 1,
+            hug_call_args: false,
             remove_unused_imports: false,
             oneline: 0,
         };
@@ -828,6 +836,7 @@ mod tests {
             collapse_soft_width: 0,
             tab_width: 4,
             collapse_max_keyvalue_props: 1,
+            hug_call_args: false,
             remove_unused_imports: false,
             oneline: 0,
         };

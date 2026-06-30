@@ -42,6 +42,11 @@ pub(crate) struct CollapseConfig {
     /// decisions. A structure only collapses if its inline form fits within this
     /// many columns. Driven by the `oneline` config field.
     pub collapse_width: usize,
+    /// When true, a call with a single object or array literal argument that
+    /// doesn't fit inline is printed with the opening `({` on the same line as
+    /// the callee and the closing `})` on its own line, instead of expanding
+    /// the argument onto a separate indented line.
+    pub hug_call_args: bool,
 }
 
 impl CollapseConfig {
@@ -61,6 +66,7 @@ impl CollapseConfig {
             tab_width: 4,
             max_keyvalue_props: 1,
             collapse_width: 0,
+            hug_call_args: false,
         }
     }
 }
