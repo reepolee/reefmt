@@ -131,10 +131,12 @@ impl<'a> Printer<'a> {
                     if i > 0 { self.w(", "); }
                     if a.spread.is_some() { self.w("..."); }
                     self.print_expr(&a.expr);
+                    self.emit_trailing_comments_bounded(a.expr.span().hi(), c.span.hi());
                 }
                 self.w(")");
                 let call_cap = if self.collapse.enabled { self.collapse.max_call_args } else { usize::MAX };
-                if !c.args.is_empty() && !self.inline_fits(c.args.len(), call_cap) {
+                let has_line_comment = self.buf[call_start..].contains("//");
+                if !c.args.is_empty() && (has_line_comment || !self.inline_fits(c.args.len(), call_cap)) {
                     self.buf.truncate(call_start);
                     self.print_callee(&c.callee);
                     if let Some(ta) = &c.type_args {
@@ -150,6 +152,7 @@ impl<'a> Printer<'a> {
                         if a.spread.is_some() { self.w("..."); }
                         self.print_expr(&a.expr);
                         self.w(",");
+                        self.emit_trailing_comments_bounded(a.expr.span().hi(), c.span.hi());
                         self.nl();
                     }
                     self.dedent();
@@ -172,12 +175,14 @@ impl<'a> Printer<'a> {
                         if i > 0 { self.w(", "); }
                         if a.spread.is_some() { self.w("..."); }
                         self.print_expr(&a.expr);
+                        self.emit_trailing_comments_bounded(a.expr.span().hi(), n.span.hi());
                     }
                 }
                 self.w(")");
                 let n_arg_count = n.args.as_ref().map_or(0, |a| a.len());
                 let new_cap = if self.collapse.enabled { self.collapse.max_call_args } else { usize::MAX };
-                if n_arg_count > 0 && !self.inline_fits(n_arg_count, new_cap) {
+                let has_line_comment = self.buf[new_start..].contains("//");
+                if n_arg_count > 0 && (has_line_comment || !self.inline_fits(n_arg_count, new_cap)) {
                     self.buf.truncate(new_start);
                     self.w("new ");
                     self.print_expr(&n.callee);
@@ -195,6 +200,7 @@ impl<'a> Printer<'a> {
                             if a.spread.is_some() { self.w("..."); }
                             self.print_expr(&a.expr);
                             self.w(",");
+                            self.emit_trailing_comments_bounded(a.expr.span().hi(), n.span.hi());
                             self.nl();
                         }
                     }
