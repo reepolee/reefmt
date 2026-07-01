@@ -221,8 +221,11 @@ fn find_next_special_in_raw(input: &str, close_marker: &str) -> usize {
                 i += 1;
                 continue;
             }
-            b'<' => {
-                // Don't skip HTML comments inside script/style — return position
+            b'<' if input[i..].starts_with("<!--") => {
+                // Isolate HTML comments inside script/style/pre. Any other `<`
+                // is opaque raw content (JS comparisons/generics, `<` in template
+                // literals or strings, preformatted markup) and must NOT split the
+                // text — doing so fragments the JS and corrupts it before SWC runs.
                 return i;
             }
             _ => {}
