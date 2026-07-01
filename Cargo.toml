@@ -1,6 +1,6 @@
 [package]
 name = "reefmt"
-version = "0.7.110"
+version = "0.7.111"
 edition = "2021"
 
 [[bin]]
@@ -24,5 +24,6 @@ swc_core = { version = "69", features = [
 	"swc_atoms",
 ] }
 malva = "0.16.0"
+
 
 
