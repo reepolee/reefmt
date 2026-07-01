@@ -293,6 +293,13 @@ if ($Paths -notcontains $InstallDir) {
 
 Write-Host "  Installed to $(Join-Path $InstallDir "$AppName.exe")"
 
+# Remove stale cargo-installed binary if present (avoids version conflicts)
+$cargoBin = Join-Path $HOME ".cargo\bin\$AppName.exe"
+if (Test-Path $cargoBin) {
+    Remove-Item $cargoBin -Force
+    Write-Host "  Removed stale $cargoBin"
+}
+
 # ──────────────────────────────────────────────
 # Cleanup copied binary from project root
 # ──────────────────────────────────────────────

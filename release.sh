@@ -377,6 +377,13 @@ fi
 
 echo "  Installed to $install_dir/$APP"
 
+# Remove stale cargo-installed binary if present (avoids version conflicts)
+cargo_bin="$HOME/.cargo/bin/$APP"
+if [ -f "$cargo_bin" ]; then
+    rm -f "$cargo_bin"
+    echo "  Removed stale $cargo_bin"
+fi
+
 # ──────────────────────────────────────────────
 # Cleanup copied binary from project root
 # ──────────────────────────────────────────────
