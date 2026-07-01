@@ -148,10 +148,22 @@ impl<'a> Printer<'a> {
                     // re-prints the object/arrow multi-line, so each `//` comment
                     // lands on its own line. The guard only matters for the inline
                     // expand branch, so it is intentionally not part of `can_hug`.
-                    let can_hug = self.collapse.hug_call_args
-                        && c.args.len() == 1
-                        && c.args[0].spread.is_none()
-                        && matches!(*c.args[0].expr, Expr::Object(_) | Expr::Array(_) | Expr::Arrow(_) | Expr::Fn(_));
+                    //
+                    // A lone function-like argument (arrow or function expression)
+                    // always hugs — `foo(() => {\n\t...\n})` — the near-universal
+                    // callback style that keeps the callee, params, and opening
+                    // brace on one line and closes with `})`. Without this a body
+                    // that must break (e.g. it contains a block comment, which is
+                    // masked as a `//` placeholder and forces this branch) would
+                    // expand the argument onto its own line. Object/array literal
+                    // hugging stays opt-in behind `hug_call_args`.
+                    let single_arg = c.args.len() == 1 && c.args[0].spread.is_none();
+                    let can_hug = single_arg
+                        && match &*c.args[0].expr {
+                            Expr::Arrow(_) | Expr::Fn(_) => true,
+                            Expr::Object(_) | Expr::Array(_) => self.collapse.hug_call_args,
+                            _ => false,
+                        };
                     if can_hug {
                         self.w("(");
                         self.print_expr(&c.args[0].expr);
