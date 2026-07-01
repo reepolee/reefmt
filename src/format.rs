@@ -337,7 +337,7 @@ fn extract_block_comments(code: &str, placeholders: &mut Vec<Placeholder>, id: &
             }
             let comment_text = &code[start..i];
 
-            if is_block_comment_own_line(code, start, i) {
+            if is_block_comment_at_line_start(code, start) {
                 // Capture the whitespace before `/*` on the opening line.
                 let line_start = code[..start].rfind('\n').map(|p| p + 1).unwrap_or(0);
                 let original_indent = code[line_start..start].to_string();
@@ -371,25 +371,18 @@ fn extract_block_comments(code: &str, placeholders: &mut Vec<Placeholder>, id: &
     out
 }
 
-/// Check whether a block comment (between `start` and `end` byte offsets)
-/// is on its own line: only whitespace before `/*` and after `*/` on their
-/// respective lines.
-fn is_block_comment_own_line(code: &str, start: usize, end: usize) -> bool {
-    // Check before `/*` on the same line
+/// Check whether a block comment starting at byte offset `start` begins its
+/// line: only whitespace precedes `/*` on that line.
+///
+/// Trailing code after `*/` (e.g. `*/ export function f()`) is intentionally
+/// allowed — such comments must still be masked, because SWC's codegen
+/// silently drops a leading block comment when a statement follows it on the
+/// same line. The placeholder lines end in `\n`, so the trailing code flows
+/// onto its own line for SWC to format, and the comment is restored verbatim.
+fn is_block_comment_at_line_start(code: &str, start: usize) -> bool {
     let line_start = code[..start].rfind('\n').map(|p| p + 1).unwrap_or(0);
     let before = &code[line_start..start];
-    if !before.trim().is_empty() {
-        return false;
-    }
-
-    // Check after `*/` on the same line
-    let line_end = code[end..].find('\n').map(|p| end + p).unwrap_or(code.len());
-    let after = &code[end..line_end];
-    if !after.trim().is_empty() {
-        return false;
-    }
-
-    true
+    before.trim().is_empty()
 }
 
 /// Extract blank lines (empty or whitespace-only lines) and replace each
