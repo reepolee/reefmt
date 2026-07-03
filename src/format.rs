@@ -1217,6 +1217,21 @@ fn is_obj_lit_opener(trimmed: &str) -> bool {
 /// Ensures proper spacing around arrow function `=>` tokens:
 /// `()=>{` → `() => {`, `param=>` → `param => `, etc.
 /// Avoids modifying `<=` and `>=` comparison operators.
+/// Fix SWC codegen spacing issues in try/catch/finally blocks.
+///
+/// SWC's built-in codegen (swc_ecma_codegen) produces incorrect spacing for
+/// bare `catch` (no exception variable) and `finally` clauses. These are known
+/// SWC codegen bugs:
+/// - `} catch  {` → `} catch {`  (double space before `{` when no param)
+/// - `} finally{` → `} finally {` (missing space before `{`)
+///
+/// The custom printer (swc_printer) handles these correctly; only the SWC
+/// codegen path (used for .ree template script content) needs this fix.
+pub(crate) fn fix_swc_try_catch_spacing(code: &str) -> String {
+    code.replace("catch  {", "catch {")
+        .replace("finally{", "finally {")
+}
+
 pub(crate) fn fix_arrow_spacing(code: &str) -> String {
     let mut out = String::with_capacity(code.len());
     let bytes = code.as_bytes();

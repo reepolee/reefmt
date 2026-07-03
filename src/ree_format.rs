@@ -300,6 +300,8 @@ fn format_js_fragment(bare_js: &str, remove_unused: bool) -> String {
     let restored_swc = crate::format::postprocess_from_swc(&swc_out, &swc_placeholders);
     // Fix arrow function spacing: `()=>{` → `() => {`
     let formatted = crate::format::fix_arrow_spacing(&restored_swc);
+    // Fix SWC codegen try/catch spacing: `catch  {` → `catch {`, `finally{` → `finally {`
+    let formatted = crate::format::fix_swc_try_catch_spacing(&formatted);
     restore_ree_expressions(&formatted, &ree_placeholders)
 }
 
