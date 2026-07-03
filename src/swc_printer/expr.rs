@@ -1,5 +1,6 @@
 use swc_core::ecma::ast::*;
 use swc_core::common::{Spanned, BytePos};
+use swc_core::common::comments::Comments;
 use super::Printer;
 
 impl<'a> Printer<'a> {
@@ -268,7 +269,23 @@ impl<'a> Printer<'a> {
                     BlockStmtOrExpr::BlockStmt(b) => {
                         if b.stmts.len() == 1 && matches!(&b.stmts[0], Stmt::Expr(_)) {
                             if let Stmt::Expr(e) = &b.stmts[0] {
-                                self.print_expr(&e.expr);
+                                // Only collapse the block if no comments would be lost.
+                                // Check leading, closing-brace, and trailing line comments
+                                // (matching the same guards in print_block).
+                                let has_leading = self
+                                    .comments
+                                    .get_leading(e.span().lo())
+                                    .map_or(false, |c| !c.is_empty());
+                                let has_closing = self
+                                    .comments
+                                    .get_leading(b.span.hi() - BytePos(1))
+                                    .map_or(false, |c| !c.is_empty());
+                                let has_trailing = self.has_trailing_line_comment(e.span().hi());
+                                if has_leading || has_closing || has_trailing {
+                                    self.print_block(b);
+                                } else {
+                                    self.print_expr(&e.expr);
+                                }
                             }
                         } else {
                             self.print_block(b);
