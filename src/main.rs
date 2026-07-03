@@ -549,7 +549,7 @@ fn main() {
             std::process::exit(1);
         }
 
-        let ext = stdin_ext.as_deref().unwrap_or(".ree");
+        let ext = stdin_ext.as_deref().unwrap_or(".ts");
         let ext = ext.trim_start_matches('.');
 
         // If the extension matches a skipExtension entry, pass content through unchanged.
