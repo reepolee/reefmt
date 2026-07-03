@@ -165,9 +165,27 @@ impl<'a> Printer<'a> {
                             Expr::Object(_) | Expr::Array(_) => self.collapse.hug_call_args,
                             _ => false,
                         };
+                    // Also hug when the last arg is an arrow/fn in a multi-arg call:
+                    // `describe("extract_db_name", () => { ... })` stays on one line
+                    // instead of expanding each arg onto its own line.
+                    let last_is_arrow = c.args.last().map_or(false, |a| {
+                        a.spread.is_none()
+                            && matches!(&*a.expr, Expr::Arrow(_) | Expr::Fn(_))
+                    });
+                    let can_hug_last = c.args.len() > 1 && last_is_arrow;
                     if can_hug {
                         self.w("(");
                         self.print_expr(&c.args[0].expr);
+                        self.w(")");
+                    } else if can_hug_last {
+                        self.w("(");
+                        let last_idx = c.args.len() - 1;
+                        for (i, a) in c.args.iter().enumerate() {
+                            if a.spread.is_some() { self.w("..."); }
+                            self.print_expr(&a.expr);
+                            self.emit_trailing_comments_bounded(a.expr.span().hi(), c.span.hi());
+                            if i < last_idx { self.w(", "); }
+                        }
                         self.w(")");
                     } else {
                         self.w("(");
