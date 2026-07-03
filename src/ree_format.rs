@@ -468,7 +468,7 @@ fn detect_min_leading_tabs(content: &str) -> usize {
 
 /// Replace all Ree syntax with unique placeholders so SWC can parse
 /// the surrounding JS without choking on template syntax.
-/// Protects: {= expr}, {~ expr}, {#keyword ...}, {:else}, {/keyword}
+/// Protects: {= expr}, {~ expr}, {_ expr}, {- expr}, {#keyword ...}, {:else}, {/keyword}
 /// Correctly skips content inside JS single/double-quoted strings.
 /// Preserves multi-byte UTF-8 characters (does NOT push bytes as chars).
 fn protect_ree_expressions(input: &str, placeholders: &mut Vec<String>) -> String {
@@ -512,10 +512,10 @@ fn protect_ree_expressions(input: &str, placeholders: &mut Vec<String>) -> Strin
             continue;
         }
 
-        // Check for ANY Ree syntax at '{': {=, {~, {#, {:, {/
+        // Check for ANY Ree syntax at '{': {=, {~, {_, {-, {#, {:, {/
         if b == b'{' && i + 1 < len {
             let next = bytes[i + 1];
-            let is_ree = next == b'=' || next == b'~' || next == b'#' || next == b':' || next == b'/';
+            let is_ree = next == b'=' || next == b'~' || next == b'_' || next == b'-' || next == b'#' || next == b':' || next == b'/';
             if is_ree {
                 // Scan to the MATCHING `}`, accounting for nested braces and
                 // quoted strings inside the expression. A naive first-`}` scan
@@ -661,7 +661,7 @@ mod tests {
     fn script_if_block_idempotent() {
         let src = "{#with props}\n\t<script>\n\t\tconst x = 1;\n\t\t{#if flag}\n\t\t\tdoThing();\n\t\t{/if}\n\t</script>\n{/with}\n";
         let p1 = format_ree_content(src, 120, 0, cfg(), false);
-        let p2 = format_ree_content(&p1, 120, false, cfg(), false);
+        let p2 = format_ree_content(&p1, 120, 0, cfg(), false);
         assert_eq!(p1, p2, "well-formed if-in-script should be stable");
     }
 
@@ -674,7 +674,7 @@ mod tests {
         let p1 = format_ree_content(src, 120, 0, cfg(), false);
         assert!(p1.contains("<script>\n\t\t{#if dev}"),
             "the {{#if}} block must stay inside <script>:\n{p1}");
-        let p2 = format_ree_content(&p1, 120, false, cfg(), false);
+        let p2 = format_ree_content(&p1, 120, 0, cfg(), false);
         assert_eq!(p1, p2, "single-block-in-script must be idempotent");
     }
 

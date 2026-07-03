@@ -2116,7 +2116,7 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Check, 120, false, CollapseConfig::uniform(true, 3), false);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Check, 120, 0, CollapseConfig::uniform(true, 3), false);
         assert!(modified, "Check mode should return true when file would change");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, unformatted, "Check mode should not modify the file");
@@ -2132,7 +2132,7 @@ mod tests {
         let content = "<span>text</span>\n";
         fs::write(&path, content).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Check, 120, false, CollapseConfig::uniform(true, 3), false);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Check, 120, 0, CollapseConfig::uniform(true, 3), false);
         assert!(!modified, "Check mode should return false for already-formatted file (modified={})", modified);
 
         let content_after = fs::read_to_string(&path).unwrap();
@@ -2149,7 +2149,7 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Diff, 120, false, CollapseConfig::uniform(true, 3), false);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Diff, 120, 0, CollapseConfig::uniform(true, 3), false);
         assert!(modified, "Diff mode should return true when file would change");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, unformatted, "Diff mode should not modify the file");
@@ -2165,7 +2165,7 @@ mod tests {
         let unformatted = "{#if show}\n<div>\n{=title}\n</div>\n{/if}";
         fs::write(&path, unformatted).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Write, 120, false, CollapseConfig::uniform(true, 3), false);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Write, 120, 0, CollapseConfig::uniform(true, 3), false);
         assert!(modified, "Write mode should return true when file changes");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_ne!(content_after, unformatted, "Write mode should modify the file");
@@ -2181,7 +2181,7 @@ mod tests {
         let content = "<span>text</span>\n";
         fs::write(&path, content).unwrap();
 
-        let modified = crate::ree_format::format_ree_file(&path, Mode::Diff, 120, false, CollapseConfig::uniform(true, 3), false);
+        let modified = crate::ree_format::format_ree_file(&path, Mode::Diff, 120, 0, CollapseConfig::uniform(true, 3), false);
         assert!(!modified, "Diff mode should return false for already-formatted file");
         let content_after = fs::read_to_string(&path).unwrap();
         assert_eq!(content_after, content, "Diff mode should not modify the file");
@@ -2214,7 +2214,7 @@ mod tests {
     #[test]
     fn check_mode_ree_file_missing_returns_false() {
         let path = Path::new("/tmp/nonexistent_file_reefmt_test.ree");
-        let modified = crate::ree_format::format_ree_file(path, Mode::Check, 120, false, CollapseConfig::uniform(true, 3), false);
+        let modified = crate::ree_format::format_ree_file(path, Mode::Check, 120, 0, CollapseConfig::uniform(true, 3), false);
         assert!(!modified, "format_ree_file should return false for missing file");
     }
 

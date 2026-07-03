@@ -30,6 +30,10 @@ pub(crate) enum Node {
     },
     ReeExpr(String),
     ReeCall(String),
+    /// `{_ expr}` — trimmed text.
+    ReeTrim(String),
+    /// `{- expr}` — unescaped text.
+    ReeUnescaped(String),
     ReeDirective(String),
     Comment(String),
     RawJs(String),
@@ -209,7 +213,7 @@ fn find_next_special_in_raw(input: &str, close_marker: &str) -> usize {
             b'{' if i + 1 < len => {
                 let next = bytes[i + 1];
                 // Inside <script>/<style>, only split at Ree BLOCKS ({#, {/, {:)
-                // and {{ (raw JS). Leave {= and {~ as raw text — SWC post-processor handles them.
+                // and {{ (raw JS). Leave {=, {~, {_, {- as raw text — SWC post-processor handles them.
                 if next == b'#' || next == b'/' || next == b':' || next == b'{' {
                     return i;
                 }
@@ -274,9 +278,13 @@ fn parse_token<'a>(input: &'a str, ree_keyword: &Option<String>) -> (Option<Node
             (Some(Node::Text(ch.to_string())), next)
         }
     } else if input.starts_with("{=") {
-        parse_ree_inline(input, 2, true)
+        parse_ree_inline(input, 2, ReeInlineKind::Expr)
     } else if input.starts_with("{~") {
-        parse_ree_inline(input, 2, false)
+        parse_ree_inline(input, 2, ReeInlineKind::Call)
+    } else if input.starts_with("{_") {
+        parse_ree_inline(input, 2, ReeInlineKind::Trim)
+    } else if input.starts_with("{-") {
+        parse_ree_inline(input, 2, ReeInlineKind::Unescaped)
     } else if input.starts_with("{{") {
         parse_ree_raw_js(input)
     } else if let Some(rest) = input.strip_prefix('{') {
@@ -443,7 +451,7 @@ fn parse_attrs(input: &str) -> (Vec<String>, &str) {
 }
 
 fn parse_one_attr(input: &str) -> Option<(String, &str)> {
-    // Detect Ree constructs ({#if, {#each, {#with, {=, {~, {/if, {/each, {/with, {:else})
+    // Detect Ree constructs ({#if, {#each, {#with, {=, {~, {_, {-, {/if, {/each, {/with, {:else})
     // inside HTML attribute position and handle them as a single token.
     // Without this, {#if condition}selected{/if} inside <option> would be parsed as
     // separate broken attributes ({#if, m.code===, record.module_code, }selected{/if}).
@@ -622,19 +630,28 @@ fn parse_ree_raw_js(input: &str) -> (Option<Node>, &str) {
 
 // ── Ree Expression / Call ────────────────────────────────────
 
-fn parse_ree_inline(input: &str, open_len: usize, is_expr: bool) -> (Option<Node>, &str) {
+enum ReeInlineKind {
+    Expr,
+    Call,
+    Trim,
+    Unescaped,
+}
+
+fn parse_ree_inline(input: &str, open_len: usize, kind: ReeInlineKind) -> (Option<Node>, &str) {
     let after = &input[open_len..];
     if let Some(pos) = after.find('}') {
         // Trim both sides so formatting is consistent regardless of source spacing.
-        // The printer always adds a space after {= / {~ and before }.
+        // The printer always adds a space after {= / {~ / {_ / {- and before }.
         let raw = &after[..pos];
         let expr = raw.trim().to_string();
         let remaining = &after[pos + 1..];
-        if is_expr {
-            (Some(Node::ReeExpr(expr)), remaining)
-        } else {
-            (Some(Node::ReeCall(expr)), remaining)
-        }
+        let node = match kind {
+            ReeInlineKind::Expr => Node::ReeExpr(expr),
+            ReeInlineKind::Call => Node::ReeCall(expr),
+            ReeInlineKind::Trim => Node::ReeTrim(expr),
+            ReeInlineKind::Unescaped => Node::ReeUnescaped(expr),
+        };
+        (Some(node), remaining)
     } else {
         (Some(Node::Text(input.to_string())), "")
     }
@@ -643,8 +660,8 @@ fn parse_ree_inline(input: &str, open_len: usize, is_expr: bool) -> (Option<Node
 // ── Script/Style Raw Block Content ───────────────────────────
 //
 // For <script> and <style> tags, we parse ONLY Ree blocks ({#if}, {#each}, {#with})
-// but NOT inline Ree expressions ({=}, {~}). The inline expressions are preserved
-// as raw Text and handled later by the SWC post-processor (format_script_blocks).
+// but NOT inline Ree expressions ({=}, {~}, {_}, {-}). The inline expressions are
+// preserved as raw Text and handled later by the SWC post-processor (format_script_blocks).
 // This prevents the parser from breaking JS code structure.
 
 fn parse_raw_block_content<'a>(input: &'a str, close_marker: &str) -> (Vec<Node>, &'a str) {
@@ -672,7 +689,7 @@ fn parse_raw_block_content<'a>(input: &'a str, close_marker: &str) -> (Vec<Node>
 
         // Parse Ree blocks ({#if}/{#each}/{#with}) inside script/style so their
         // structure is preserved; the JS between the tokens is formatted later.
-        // Leave {=} and {~} as raw Text — they're handled by SWC post-processing.
+        // Leave {=}, {~}, {_}, {-} as raw Text — they're handled by SWC post-processing.
         if remaining.starts_with("{#if") || remaining.starts_with("{#each") || remaining.starts_with("{#with") {
             let (node, after) = parse_ree_block_open(remaining);
             if let Some(n) = node { nodes.push(n); }
@@ -841,6 +858,16 @@ fn print_node(node: &Node, depth: usize, out: &mut String, wrap_width: usize, on
             out.push_str(&format!("{{~ {}}}", expr));
             out.push('\n');
         }
+        Node::ReeTrim(expr) => {
+            out.push_str(&"\t".repeat(depth));
+            out.push_str(&format!("{{_ {}}}", expr));
+            out.push('\n');
+        }
+        Node::ReeUnescaped(expr) => {
+            out.push_str(&"\t".repeat(depth));
+            out.push_str(&format!("{{- {}}}", expr));
+            out.push('\n');
+        }
         Node::ReeDirective(text) => {
             out.push_str(&"\t".repeat(depth));
             out.push_str(text);
@@ -887,6 +914,8 @@ fn render_node_inline(node: &Node) -> String {
         Node::Text(t) => t.to_string(),
         Node::ReeExpr(e) => format!("{{= {}}}", e),
         Node::ReeCall(e) => format!("{{~ {}}}", e),
+        Node::ReeTrim(e) => format!("{{_ {}}}", e),
+        Node::ReeUnescaped(e) => format!("{{- {}}}", e),
         Node::Comment(c) => c.clone(),
         Node::ReeDirective(t) => t.clone(),
         Node::Element { tag, attrs, children, self_closing, .. } => {
@@ -1039,7 +1068,10 @@ fn print_empty_element(tag: &str, attrs: &[String], depth: usize, out: &mut Stri
 /// Check whether a node is an "inline" type (text, expression, or call)
 /// that can be grouped with adjacent inline nodes on the same line.
 fn is_inline_node(node: &Node) -> bool {
-    matches!(node, Node::Text(_) | Node::ReeExpr(_) | Node::ReeCall(_) | Node::Comment(_))
+    matches!(
+        node,
+        Node::Text(_) | Node::ReeExpr(_) | Node::ReeCall(_) | Node::ReeTrim(_) | Node::ReeUnescaped(_) | Node::Comment(_)
+    )
 }
 
 /// Check whether a node is a blank-line text node that should act as a
@@ -1077,6 +1109,12 @@ fn print_inline_nodes(nodes: &[Node], depth: usize, out: &mut String, _wrap_widt
             Node::ReeCall(c) => {
                 line.push_str(&format!("{{~ {}}} ", c));
             }
+            Node::ReeTrim(e) => {
+                line.push_str(&format!("{{_ {}}} ", e));
+            }
+            Node::ReeUnescaped(e) => {
+                line.push_str(&format!("{{- {}}} ", e));
+            }
             Node::Comment(c) => {
                 let trimmed = c.trim();
                 if !trimmed.is_empty() {
@@ -1096,7 +1134,7 @@ fn print_inline_nodes(nodes: &[Node], depth: usize, out: &mut String, _wrap_widt
 }
 
 /// Print children of a ReeBlock, grouping consecutive inline nodes (Text,
-/// ReeExpr, ReeCall, Comment) onto a single line instead of splitting them.
+/// ReeExpr, ReeCall, ReeTrim, ReeUnescaped, Comment) onto a single line instead of splitting them.
 /// Block-level children (Element, ReeBlock, etc.) still print on their own lines.
 /// Blank-line text nodes (Text with >= 2 newlines, whitespace only) act as
 /// separators between inline groups — they are preserved rather than merged.
@@ -1155,7 +1193,7 @@ mod tests {
     fn simple_element() {
         // Source has both tags on one line → inline flag set → stays inline
         let input = "<div><p>hello</p></div>";
-        let output = format_ree(input, 120, false);
+        let output = format_ree(input, 120, 0);
         assert_eq!(output, "<div><p>hello</p></div>\n");
     }
 
@@ -1163,14 +1201,14 @@ mod tests {
     fn simple_element_block() {
         // Source has tags on separate lines → block formatting
         let input = "<div>\n<p>hello</p>\n</div>";
-        let output = format_ree(input, 120, false);
+        let output = format_ree(input, 120, 0);
         assert_eq!(output, "<div>\n\t<p>hello</p>\n</div>\n");
     }
 
     #[test]
     fn ree_block() {
         let input = "{#if show}<div>yes</div>{/if}";
-        let output = format_ree(input, 120, false);        assert!(output.contains("{#if show}"));
+        let output = format_ree(input, 120, 0);        assert!(output.contains("{#if show}"));
         assert!(output.contains("<div>yes</div>"));
         assert!(output.contains("{/if}"));
     }
@@ -1178,21 +1216,21 @@ mod tests {
     #[test]
     fn ree_expression() {
         let input = "<span>{= title }</span>";
-        let output = format_ree(input, 120, false);
+        let output = format_ree(input, 120, 0);
         assert_eq!(output, "<span>{= title}</span>\n");
     }
 
     #[test]
     fn void_element_self_closing() {
         let input = "<input type=\"text\" />";
-        let output = format_ree(input, 120, false);
+        let output = format_ree(input, 120, 0);
         assert!(output.contains("<input type=\"text\" />"), "void elements should use /> syntax, got: {:?}", output);
     }
 
     #[test]
     fn comment_preserved() {
         let input = "<!-- hello -->";
-        let output = format_ree(input, 120, false);
+        let output = format_ree(input, 120, 0);
         assert_eq!(output, "<!-- hello -->\n");
     }
 
@@ -1201,7 +1239,7 @@ mod tests {
         // Regression: {#if} blocks inside HTML tag attributes (like <option {#if cond}selected{/if}>)
         // were being parsed as separate broken attributes ({#if, name===, value, }...}selected...{/if}).
         let input = "{#each items as item }\n\t<option value=\"{= item.code }\" {#if item.selected}selected{/if}>{= item.label }</option>\n{/each}\n";
-        let output = format_ree(input, 120, false);
+        let output = format_ree(input, 120, 0);
         assert!(            output.contains("{#if item.selected}"),
             "{{#if}} block should be preserved in output, got: {:?}",
             output
@@ -1221,14 +1259,14 @@ mod tests {
             "{{#if}} should NOT be split at attribute name boundary"
         );
         // Verify idempotency
-        let pass2 = format_ree(&output, 120, false);
+        let pass2 = format_ree(&output, 120, 0);
         assert_eq!(output, pass2, "format_ree should be idempotent with Ree blocks inside HTML attrs");
     }
 
     #[test]
     fn doctype_preserved_and_html_root() {
         let input = "<!DOCTYPE html>\n\n<html lang=\"en\">\n\t<head>\n\t\t<meta charset=\"UTF-8\" />\n\t</head>\n</html>\n";
-        let output = format_ree(input, 120, false);
+        let output = format_ree(input, 120, 0);
         assert!(output.starts_with("<!DOCTYPE html>"), "DOCTYPE should be first, got: {:?}", &output[..20]);
         assert!(!output.starts_with("\t<!DOCTYPE"), "DOCTYPE should not be indented");
         assert!(output.contains("\n<html"), "html should be at depth 0 after blank line");
@@ -1241,7 +1279,7 @@ mod tests {
         // semantically significant spaces like "{= name } © Year {= year }" →
         // "{= name }© Year{= year }" (missing spaces around ©).
         let input = "<p>{= props.site_name } © Reepolee {= props.year }</p>";
-        let output = format_ree(input, 120, false);
+        let output = format_ree(input, 120, 0);
         assert_eq!(
             output,
             "<p>{= props.site_name} © Reepolee {= props.year}</p>\n",
@@ -1254,8 +1292,8 @@ mod tests {
         // The output of the previous test must be idempotent — formatting twice
         // should produce the same result.
         let input = "<p>{= props.site_name } © Reepolee {= props.year }</p>";
-        let pass1 = format_ree(input, 120, false);
-        let pass2 = format_ree(&pass1, 120, false);
+        let pass1 = format_ree(input, 120, 0);
+        let pass2 = format_ree(&pass1, 120, 0);
         assert_eq!(pass1, pass2, "Inline element with Ree expressions should be idempotent");
     }
 
@@ -1264,7 +1302,7 @@ mod tests {
         // Regression: text before a Ree expression should not lose its trailing space.
         // E.g. "<span>text {= expr }</span>" should stay as-is.
         let input = "<span>hello {= name }</span>";
-        let output = format_ree(input, 120, false);
+        let output = format_ree(input, 120, 0);
         assert_eq!(
             output,
             "<span>hello {= name}</span>\n",
@@ -1276,7 +1314,7 @@ mod tests {
     fn inline_element_ree_expr_with_text_after() {
         // Regression: text after a Ree expression should not lose its leading space.
         let input = "<span>{= name } world</span>";
-        let output = format_ree(input, 120, false);
+        let output = format_ree(input, 120, 0);
         assert_eq!(
             output,
             "<span>{= name} world</span>\n",
@@ -1288,7 +1326,7 @@ mod tests {
     fn inline_element_ree_expr_text_ree_expr() {
         // Multiple Ree expressions with text between — all spacing should be preserved.
         let input = "<span>{= a } between {= b }</span>";
-        let output = format_ree(input, 120, false);
+        let output = format_ree(input, 120, 0);
         assert_eq!(
             output,
             "<span>{= a} between {= b}</span>\n",
@@ -1300,7 +1338,7 @@ mod tests {
     fn ree_block_close_trailing_space_if() {
         // Regression: {/if } (with trailing space before }) should be consumed entirely.
         let input = "{#if show}yes{/if }";
-        let output = format_ree(input, 120, false);
+        let output = format_ree(input, 120, 0);
         assert_eq!(output, "{#if show}\n\tyes\n{/if}\n");
     }
 
@@ -1308,7 +1346,7 @@ mod tests {
     fn ree_block_close_trailing_space_each() {
         // Same for {/each } with trailing space before }.
         let input = "{#each items as item}{= item }{/each }";
-        let output = format_ree(input, 120, false);
+        let output = format_ree(input, 120, 0);
         assert_eq!(output, "{#each items as item}\n\t{= item}\n{/each}\n");
     }
 
@@ -1316,15 +1354,15 @@ mod tests {
     fn ree_block_close_spaced_and_trailing_space() {
         // {/ if } (space after /) with trailing space before }.
         let input = "{#if show}yes{/ if }";
-        let output = format_ree(input, 120, false);
+        let output = format_ree(input, 120, 0);
         assert_eq!(output, "{#if show}\n\tyes\n{/if}\n");
     }
 
     #[test]
     fn ree_block_close_trailing_space_idempotent() {
         let input = "{#if show}yes{/if }";
-        let pass1 = format_ree(input, 120, false);
-        let pass2 = format_ree(&pass1, 120, false);
+        let pass1 = format_ree(input, 120, 0);
+        let pass2 = format_ree(&pass1, 120, 0);
         assert_eq!(pass1, pass2, "close tag with trailing space should be idempotent");
     }
 
@@ -1332,13 +1370,13 @@ mod tests {
     fn ree_block_inline() {
         // Source has {#if} and {/if} on the same line → inline flag → stays on one line
         let input = "{#if option===\"all\"}{= selectors.all}{:else}{= option} {= selectors.per_page}{/if}";
-        let output = format_ree(input, 120, false);
+        let output = format_ree(input, 120, 0);
         assert_eq!(
             output,
             "{#if option===\"all\"}{= selectors.all}{:else}{= option} {= selectors.per_page}{/if}\n",
             "ReeBlock with opening and closing on same line should stay inline"
         );
-        let pass2 = format_ree(&output, 120, false);
+        let pass2 = format_ree(&output, 120, 0);
         assert_eq!(output, pass2, "inline ReeBlock should be idempotent");
     }
 
@@ -1346,13 +1384,13 @@ mod tests {
     fn ree_block_multiline() {
         // Source has {#if} and {/if} on separate lines → block formatting
         let input = "{#if option===\"all\"}\n{= selectors.all}\n{:else}\n{= option} {= selectors.per_page}\n{/if}";
-        let output = format_ree(input, 120, false);
+        let output = format_ree(input, 120, 0);
         assert_eq!(
             output,
             "{#if option===\"all\"}\n\t{= selectors.all}\n{:else}\n\t{= option} {= selectors.per_page}\n{/if}\n",
             "Multi-line ReeBlock should be formatted with indented children"
         );
-        let pass2 = format_ree(&output, 120, false);
+        let pass2 = format_ree(&output, 120, 0);
         assert_eq!(output, pass2, "multi-line ReeBlock should be idempotent");
     }
 
@@ -1360,7 +1398,7 @@ mod tests {
     fn inline_element_ree_call_text() {
         // Ree calls ({~ expr}) should also preserve spacing.
         let input = "<span>{~ props.greeting } user</span>";
-        let output = format_ree(input, 120, false);
+        let output = format_ree(input, 120, 0);
         assert_eq!(
             output,
             "<span>{~ props.greeting} user</span>\n",
