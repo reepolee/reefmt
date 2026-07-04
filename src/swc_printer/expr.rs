@@ -138,7 +138,12 @@ impl<'a> Printer<'a> {
                 let call_cap = if self.collapse.enabled { self.collapse.max_call_args } else { usize::MAX };
                 let has_line_comment = self.buf[call_start..].split('\n').any(|line| {
                     if let Some(pos) = line.find("//") {
-                        pos == 0 || line.as_bytes().get(pos - 1) != Some(&b':')
+                        if pos == 0 {
+                            return true;
+                        }
+                        let prev = line.as_bytes().get(pos - 1);
+                        // Not a comment if preceded by : (URL) or quote (string literal)
+                        prev != Some(&b':') && prev != Some(&b'"') && prev != Some(&b'\'')
                     } else {
                         false
                     }
