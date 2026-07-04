@@ -1214,9 +1214,6 @@ fn is_obj_lit_opener(trimmed: &str) -> bool {
     before_brace.ends_with('(') || before_brace.ends_with(',') || before_brace.ends_with(']')
 }
 
-/// Ensures proper spacing around arrow function `=>` tokens:
-/// `()=>{` → `() => {`, `param=>` → `param => `, etc.
-/// Avoids modifying `<=` and `>=` comparison operators.
 /// Fix SWC codegen spacing issues in try/catch/finally blocks.
 ///
 /// SWC's built-in codegen (swc_ecma_codegen) produces incorrect spacing for

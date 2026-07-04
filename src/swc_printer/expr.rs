@@ -191,11 +191,11 @@ impl<'a> Printer<'a> {
                         self.w("(");
                         self.nl();
                         self.indent();
-                        for a in c.args.iter() {
+                        for (i, a) in c.args.iter().enumerate() {
                             self.wi();
                             if a.spread.is_some() { self.w("..."); }
                             self.print_expr(&a.expr);
-                            self.w(",");
+                            if i < c.args.len() - 1 { self.w(","); }
                             self.emit_trailing_comments_bounded(a.expr.span().hi(), c.span.hi());
                             self.nl();
                         }
