@@ -136,7 +136,13 @@ impl<'a> Printer<'a> {
                 }
                 self.w(")");
                 let call_cap = if self.collapse.enabled { self.collapse.max_call_args } else { usize::MAX };
-                let has_line_comment = self.buf[call_start..].contains("//");
+                let has_line_comment = self.buf[call_start..].split('\n').any(|line| {
+                    if let Some(pos) = line.find("//") {
+                        pos == 0 || line.as_bytes().get(pos - 1) != Some(&b':')
+                    } else {
+                        false
+                    }
+                });
                 if !c.args.is_empty() && (has_line_comment || !self.inline_fits(c.args.len(), call_cap)) {
                     self.buf.truncate(call_start);
                     self.print_callee(&c.callee);
