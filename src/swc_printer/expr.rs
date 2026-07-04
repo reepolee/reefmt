@@ -128,6 +128,7 @@ impl<'a> Printer<'a> {
                     self.w(">");
                 }
                 self.w("(");
+                let args_start = self.buf.len();
                 for (i, a) in c.args.iter().enumerate() {
                     if i > 0 { self.w(", "); }
                     if a.spread.is_some() { self.w("..."); }
@@ -136,7 +137,7 @@ impl<'a> Printer<'a> {
                 }
                 self.w(")");
                 let call_cap = if self.collapse.enabled { self.collapse.max_call_args } else { usize::MAX };
-                let has_line_comment = self.buf[call_start..].split('\n').any(|line| {
+                let has_line_comment = self.buf[args_start..self.buf.len() - 1].split('\n').any(|line| {
                     if let Some(pos) = line.find("//") {
                         if pos == 0 {
                             return true;
@@ -226,6 +227,7 @@ impl<'a> Printer<'a> {
                     self.w(">");
                 }
                 self.w("(");
+                let args_start = self.buf.len();
                 if let Some(args) = &n.args {
                     for (i, a) in args.iter().enumerate() {
                         if i > 0 { self.w(", "); }
@@ -237,7 +239,7 @@ impl<'a> Printer<'a> {
                 self.w(")");
                 let n_arg_count = n.args.as_ref().map_or(0, |a| a.len());
                 let new_cap = if self.collapse.enabled { self.collapse.max_call_args } else { usize::MAX };
-                let has_line_comment = self.buf[new_start..].contains("//");
+                let has_line_comment = self.buf[args_start..self.buf.len() - 1].contains("//");
                 if n_arg_count > 0 && (has_line_comment || !self.inline_fits(n_arg_count, new_cap)) {
                     self.buf.truncate(new_start);
                     self.w("new ");
