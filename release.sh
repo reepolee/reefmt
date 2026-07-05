@@ -209,7 +209,7 @@ if [ "$new_commits" -gt 0 ] && [ "$force_skip_bump" = false ]; then
 	if [ -f CHANGELOG.md ]; then
 		today=$(date +%Y-%m-%d)
 		if ! grep -q "^## \\[$version\\]" CHANGELOG.md 2>/dev/null; then
-			first_version_line=$(grep -n "^## \\[" CHANGELOG.md | head -1 | cut -d: -f1)
+			first_version_line=$(grep -n "^## \\[" CHANGELOG.md | head -1 | cut -d: -f1 || true)
 			if [ -n "$first_version_line" ]; then
 				{
 					head -n $((first_version_line - 1)) CHANGELOG.md
@@ -232,7 +232,7 @@ elif [ "$force_skip_bump" = true ]; then
 	if [ -f CHANGELOG.md ]; then
 		today=$(date +%Y-%m-%d)
 		if ! grep -q "^## \\[$version\\]" CHANGELOG.md 2>/dev/null; then
-			first_version_line=$(grep -n "^## \\[" CHANGELOG.md | head -1 | cut -d: -f1)
+			first_version_line=$(grep -n "^## \\[" CHANGELOG.md | head -1 | cut -d: -f1 || true)
 			if [ -n "$first_version_line" ]; then
 				{
 					head -n $((first_version_line - 1)) CHANGELOG.md
