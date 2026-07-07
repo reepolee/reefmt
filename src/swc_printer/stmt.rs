@@ -161,27 +161,25 @@ impl<'a> Printer<'a> {
         self.nl();
     }
 
-    /// Print an if/else-if/else chain. `force_expand` is true when this if is
-    /// part of an else-if chain — all blocks are expanded so the chain is
-    /// always symmetric.
+    /// Print an if/else-if/else chain. All blocks are expanded so that
+    /// the structure is always symmetric and safe from collapse-induced
+    /// semantic changes.
     fn print_if_stmt(&mut self, i: &IfStmt) {
-        let force_expand = i.alt.is_some();
-        self.print_if_stmt_inner(i, force_expand);
+        self.print_if_stmt_inner(i);
     }
 
-    fn print_if_stmt_inner(&mut self, i: &IfStmt, force_expand: bool) {
+    fn print_if_stmt_inner(&mut self, i: &IfStmt) {
         self.w("if (");
         self.print_expr(&i.test);
         self.w(") ");
         match i.cons.as_ref() {
-            Stmt::Block(b) if force_expand => self.print_block_expanded(b),
-            Stmt::Block(b) => self.print_block(b),
+            Stmt::Block(b) => self.print_block_expanded(b),
             _ => self.print_stmt(&i.cons),
         }
         if let Some(alt) = &i.alt {
             self.w(" else ");
             match alt.as_ref() {
-                Stmt::If(inner) => self.print_if_stmt_inner(inner, true),
+                Stmt::If(inner) => self.print_if_stmt_inner(inner),
                 Stmt::Block(b) => self.print_block_expanded(b),
                 _ => self.print_stmt(alt),
             }
