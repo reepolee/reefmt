@@ -82,12 +82,46 @@ impl<'a> Printer<'a> {
     pub(super) fn emit_leading_comments(&mut self, pos: BytePos) {
         if let Some(comments) = self.comments.get_leading(pos) {
             for c in &comments {
-                if c.kind == swc_core::common::comments::CommentKind::Line {
-                    self.wi();
-                    self.w("//");
-                    self.w(&c.text);
-                    self.nl();
+                match c.kind {
+                    swc_core::common::comments::CommentKind::Line => {
+                        self.wi();
+                        self.w("//");
+                        self.w(&c.text);
+                        self.nl();
+                    }
+                    // Inline block comments (e.g. `catch { /* dead */ }`) are not
+                    // masked by the preprocess step, so they reach the printer as
+                    // real block comments. Emit them on their own line so they are
+                    // never dropped.
+                    swc_core::common::comments::CommentKind::Block => {
+                        self.wi();
+                        self.w("/*");
+                        self.w(&c.text);
+                        self.w("*/");
+                        self.nl();
+                    }
                 }
+            }
+        }
+    }
+
+    /// Emit a single comment on its own indented line. Used for comments found
+    /// inside an otherwise-empty block, where there is no statement to attach
+    /// them to inline.
+    pub(super) fn emit_inner_comment(&mut self, c: &swc_core::common::comments::Comment) {
+        match c.kind {
+            swc_core::common::comments::CommentKind::Line => {
+                self.wi();
+                self.w("//");
+                self.w(&c.text);
+                self.nl();
+            }
+            swc_core::common::comments::CommentKind::Block => {
+                self.wi();
+                self.w("/*");
+                self.w(&c.text);
+                self.w("*/");
+                self.nl();
             }
         }
     }

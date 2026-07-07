@@ -908,32 +908,127 @@ fn is_collapsible_block_opener(trimmed: &str) -> bool {
     is_block_opener(trimmed)
 }
 
+/// Character-scanner state carried across lines so the collapse pass can tell
+/// which lines fall inside a multi-line template literal or block comment and
+/// must be copied verbatim. Naive backtick counting mis-fires on backticks that
+/// appear inside string literals or comments (e.g. `quote === "`"`), which
+/// previously flipped the template-tracking parity and corrupted multi-line
+/// template literals.
+#[derive(Clone, Copy, Default)]
+struct ScanState {
+    in_template: bool,
+    /// `${}` interpolation nesting depth inside a template literal.
+    interp_depth: u32,
+    in_block_comment: bool,
+}
+
+/// Scan a single line starting from `state`, returning the state at end of line.
+/// In normal mode, string literals (`"..."`, `'...'`), line comments (`//`), and
+/// block comments (`/* */`) are skipped so backticks inside them never toggle
+/// template state. In template mode, only unescaped backticks at interpolation
+/// depth 0 close the literal, and `${`/`}` adjust interpolation depth.
+fn scan_line(line: &str, mut state: ScanState) -> ScanState {
+    let bytes = line.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        let b = bytes[i];
+        if state.in_block_comment {
+            if b == b'*' && i + 1 < len && bytes[i + 1] == b'/' {
+                state.in_block_comment = false;
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        if state.in_template {
+            if b == b'\\' {
+                i += 2;
+            } else if b == b'$' && i + 1 < len && bytes[i + 1] == b'{' {
+                state.interp_depth += 1;
+                i += 2;
+            } else if b == b'}' && state.interp_depth > 0 {
+                state.interp_depth -= 1;
+                i += 1;
+            } else if b == b'`' && state.interp_depth == 0 {
+                state.in_template = false;
+                i += 1;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        // Normal code mode.
+        match b {
+            b'"' => {
+                i += 1;
+                while i < len {
+                    let c = bytes[i];
+                    if c == b'\\' { i += 2; } else if c == b'"' { i += 1; break; } else { i += 1; }
+                }
+            }
+            b'\'' => {
+                i += 1;
+                while i < len {
+                    let c = bytes[i];
+                    if c == b'\\' { i += 2; } else if c == b'\'' { i += 1; break; } else { i += 1; }
+                }
+            }
+            b'`' => {
+                state.in_template = true;
+                state.interp_depth = 0;
+                i += 1;
+            }
+            b'/' if i + 1 < len && bytes[i + 1] == b'/' => break, // rest of line is a comment
+            b'/' if i + 1 < len && bytes[i + 1] == b'*' => {
+                state.in_block_comment = true;
+                i += 2;
+            }
+            _ => i += 1,
+        }
+    }
+    state
+}
+
+/// For each line, compute whether its START lies inside a multi-line template
+/// literal or block comment (i.e. a region opened on an earlier line). Such
+/// lines must be copied verbatim by the collapse pass.
+fn compute_line_protection(lines: &[&str]) -> Vec<bool> {
+    let mut protection = Vec::with_capacity(lines.len());
+    let mut state = ScanState::default();
+    for line in lines {
+        protection.push(state.in_template || state.in_block_comment);
+        state = scan_line(line, state);
+    }
+    protection
+}
+
 /// Run one pass of the collapse logic. Returns `true` if any changes were made
 /// (meaning another pass may find more opportunities).
 fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &CollapseConfig, out: &mut String) -> bool {
     out.clear();
     let lines: Vec<&str> = code.lines().collect();
+    let protection = compute_line_protection(&lines);
     let mut i = 0;
     let mut modified = false;
-    let mut in_template_literal = false;
 
     while i < lines.len() {
         let line = lines[i];
         let trimmed = line.trim();
 
-        // Inside a multi-line template literal: copy verbatim, track state.
-        if in_template_literal {
+        // Inside a multi-line template literal or block comment: copy verbatim.
+        // Protection is computed with a scanner that ignores backticks inside
+        // strings and comments, so multi-line templates are never corrupted.
+        if protection[i] {
             out.push_str(line);
             out.push('\n');
-            if has_unclosed_template_literal(line) {
-                in_template_literal = false;
-            }
             i += 1;
             continue;
         }
 
         // ---- Single-statement block: `if (cond) {` stmt `}` ----
-        if i + 2 < lines.len() && is_collapsible_block_opener(trimmed) {
+        if i + 2 < lines.len() && !protection[i + 1] && !protection[i + 2] && is_collapsible_block_opener(trimmed) {
             let stmt_trimmed = lines[i + 1].trim();
             let close_trimmed = lines[i + 2].trim();
 
@@ -997,7 +1092,7 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &Col
                         && (cleaned.contains(':') || cleaned.starts_with("...") || is_simple_ident(cleaned))
                 });
 
-                if is_structurally_valid_obj_lit {
+                if is_structurally_valid_obj_lit && !(i + 1..=end_idx).any(|j| protection[j]) {
                     let prefix = &line[..line.len() - trimmed.len()];
                     let before_paren = trimmed.strip_suffix('{').unwrap_or(trimmed);
                     let after_close_str = &lines[end_idx][after_close..];
@@ -1071,7 +1166,7 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &Col
                         && (cleaned.contains(':') || cleaned.starts_with("...") || is_simple_ident(cleaned))
                 });
 
-                if is_structurally_valid_obj {
+                if is_structurally_valid_obj && !(i + 1..=end_idx).any(|j| protection[j]) {
                     let prefix = &line[..line.len() - trimmed.len()];
                     let before_brace = trimmed.strip_suffix('{').unwrap_or(trimmed);
                     let after_close_str = &lines[end_idx][after_close..];
@@ -1139,7 +1234,7 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &Col
                             && cleaned != "{" && cleaned != "}"
                     });
 
-                    if is_structurally_valid_arr {
+                    if is_structurally_valid_arr && !(i + 1..=end_idx).any(|j| protection[j]) {
                         let prefix = &line[..line.len() - trimmed.len()];
                         let before_bracket = trimmed.strip_suffix('[').unwrap_or(trimmed);
                         let after_close_str = &lines[end_idx][after_close..];
@@ -1168,9 +1263,6 @@ fn collapse_single_stmt_blocks_pass(code: &str, max_width: usize, collapse: &Col
 
         out.push_str(line);
         out.push('\n');
-        if has_unclosed_template_literal(line) {
-            in_template_literal = true;
-        }
         i += 1;
     }
 
@@ -3370,6 +3462,45 @@ mod tests {
         // Idempotent
         let pass2 = format_code_content(&result, "ts", 180, CollapseConfig::uniform(true, 3), false);
         assert_eq!(result, pass2, "Complex template literal should be idempotent");
+    }
+
+    #[test]
+    fn template_body_not_collapsed_after_backtick_in_string() {
+        // Regression: a backtick inside a string literal (`quote !== "`"`) must
+        // not flip template-literal tracking. Previously it did, leaving a later
+        // multi-line template literal unprotected so its inner `if` block was
+        // collapsed onto one line — a semantic change to the generated code.
+        let src = "function f() {\n\tif (quote !== \"`\") return null;\n\tconst helper = `const h = 1;\nfor (const x of y) {\n  if (typeof x === 'fn') {\n    run(x);\n  }\n}`;\n\treturn helper;\n}\n";
+        let result = format_code_content(src, "ts", 150, CollapseConfig::uniform(true, 4), false);
+        assert!(
+            !result.contains("if (typeof x === 'fn') { run(x); }"),
+            "template body must not be collapsed:\n{}",
+            result
+        );
+        assert!(
+            result.contains("  if (typeof x === 'fn') {\n    run(x);\n  }"),
+            "template body must be preserved verbatim:\n{}",
+            result
+        );
+        let pass2 = format_code_content(&result, "ts", 150, CollapseConfig::uniform(true, 4), false);
+        assert_eq!(result, pass2, "should be idempotent");
+    }
+
+    #[test]
+    fn inline_block_comment_in_empty_catch_preserved() {
+        // Regression: an inline block comment inside an empty catch block
+        // (`catch { /* dead */ }`) attaches as a trailing comment of the opening
+        // brace. The printer previously only looked for line comments before the
+        // closing brace, silently dropping it.
+        let src = "function f() {\n\ttry {\n\t\tx();\n\t} catch { /* process already dead */ }\n}\n";
+        let result = format_code_content(src, "ts", 150, CollapseConfig::uniform(true, 4), false);
+        assert!(
+            result.contains("/* process already dead */"),
+            "block comment in empty catch must be preserved:\n{}",
+            result
+        );
+        let pass2 = format_code_content(&result, "ts", 150, CollapseConfig::uniform(true, 4), false);
+        assert_eq!(result, pass2, "should be idempotent");
     }
 
     #[test]

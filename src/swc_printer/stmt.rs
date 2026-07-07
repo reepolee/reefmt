@@ -1,6 +1,6 @@
 use swc_core::ecma::ast::*;
 use swc_core::common::{Spanned, BytePos};
-use swc_core::common::comments::{Comments, CommentKind};
+use swc_core::common::comments::{Comment, Comments, CommentKind};
 use super::Printer;
 
 impl<'a> Printer<'a> {
@@ -244,16 +244,33 @@ impl<'a> Printer<'a> {
     /// their own line and are never merged with following `finally`/`catch`.
     pub(super) fn print_block_expanded(&mut self, block: &BlockStmt) {
         if block.stmts.is_empty() {
-            // Check for comments before the closing brace (attached as leading
-            // comments on the `}` token position, which is hi() - 1).
+            // An empty block may still contain comments that must not be dropped.
+            // Line-start block comments are masked into `//` placeholders that
+            // attach as *leading* comments of the `}` (at hi - 1). Inline block
+            // comments (e.g. `catch { /* dead */ }`) reach the printer unmasked
+            // and attach as *trailing* comments of the opening `{` (at lo + 1).
+            // Gather both, deduping by span, so neither source is lost.
+            let open_pos = block.span.lo() + BytePos(1);
             let closing_pos = block.span.hi() - BytePos(1);
-            let has_inner = self.comments.get_leading(closing_pos)
-                .map_or(false, |c| c.iter().any(|c| c.kind == CommentKind::Line));
+            let mut inner: Vec<Comment> = Vec::new();
+            let mut seen: Vec<BytePos> = Vec::new();
+            for c in self.comments.get_trailing(open_pos).unwrap_or_default().into_iter()
+                .chain(self.comments.get_leading(closing_pos).unwrap_or_default())
+            {
+                if !seen.contains(&c.span.lo) {
+                    seen.push(c.span.lo);
+                    inner.push(c);
+                }
+            }
+            let has_inner = inner.iter()
+                .any(|c| matches!(c.kind, CommentKind::Line | CommentKind::Block));
             if has_inner {
                 self.w("{");
                 self.nl();
                 self.indent();
-                self.emit_leading_comments(closing_pos);
+                for c in &inner {
+                    self.emit_inner_comment(c);
+                }
                 self.dedent();
                 self.wi();
                 self.w("}");
