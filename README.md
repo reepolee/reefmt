@@ -223,3 +223,5 @@ Run on each machine after pushing code:
 
 Add `--draft` / `-Draft` to create the release as a draft.
 
+## onpull
+
