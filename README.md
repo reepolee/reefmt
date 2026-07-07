@@ -228,3 +228,4 @@ Add `--draft` / `-Draft` to create the release as a draft.
 Two scripts
 
 onpull.sh
+onpull.ps1
