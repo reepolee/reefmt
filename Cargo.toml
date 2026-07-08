@@ -1,6 +1,6 @@
 [package]
 name = "reefmt"
-version = "0.7.132"
+version = "0.7.133"
 edition = "2021"
 
 [[bin]]
