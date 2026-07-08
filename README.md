@@ -188,47 +188,32 @@ The file supports JSON comments (`//` and `/* */`) for inline documentation.
 
 ## Development
 
-This is a Rust project. Build and install the latest local source:
-
-**macOS / Linux:**
-
-```bash
-bash release.sh
-```
-
-**Windows:**
-
-```powershell
-.\release.ps1
-```
-
-This builds from source, tags the release, publishes to GitHub, and installs the binary to your PATH.
-
-To just test locally without releasing:
+This is a Rust project. To test locally without releasing:
 
 ```bash
 cargo build --release
 cp target/release/reefmt ~/.local/bin/   # macOS/Linux
-# or
-Copy-Item .\target\release\reefmt.exe ~\bin\   # Windows
 ```
 
 ### Release workflow
 
-Run on each machine after pushing code:
+Releases are cut from a single machine (the Mac mini). `release.sh` cross-builds
+**all six targets** and publishes them as one GitHub Release:
 
-1. **macOS (first):** `bash release.sh` — bumps version, creates tag and GitHub Release, uploads macOS binary
-2. **Linux:** `bash release.sh` — uploads Linux binary to existing release
-3. **Windows:** `.\release.ps1` — uploads Windows binary to existing release
+- macOS arm64/x64 (native `cargo build`)
+- Linux x64/arm64 (`cargo zigbuild`)
+- Windows x64/arm64 (`cargo xwin build`)
 
-Add `--draft` / `-Draft` to create the release as a draft.
+```bash
+bash release.sh            # bump, tag, cross-build all targets, publish
+bash release.sh --minor    # bump the minor version instead of patch
+bash release.sh --draft    # publish the release as a draft
+```
 
-## onpull
+One-time setup on the Mac:
 
-There are two scripts, one for Windows, the other for Linux and MacOS.
-
-Windows runs native build and WSL build for Linux on Ubuntu.
-
-onpull.sh
-onpull.ps1
-
+```bash
+brew install zig
+cargo install cargo-zigbuild cargo-xwin
+rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+```
