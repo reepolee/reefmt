@@ -225,7 +225,8 @@ Add `--draft` / `-Draft` to create the release as a draft.
 
 ## onpull
 
-Two scripts
+There are two scripts, one for Windows, the other for Linux and MacOS
 
 onpull.sh
 onpull.ps1
+
