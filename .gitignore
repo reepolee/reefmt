@@ -1,10 +1,9 @@
 /target/
-Cargo.lock
 
 # macOS folder metadata
 .DS_Store
 
-# Release binaries left by release.sh / release.ps1
+# Release binaries left by release.sh
 reefmt-linux-*
 reefmt-macos-*
 reefmt-windows-*.exe
