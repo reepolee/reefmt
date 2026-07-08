@@ -225,7 +225,9 @@ Add `--draft` / `-Draft` to create the release as a draft.
 
 ## onpull
 
-There are two scripts, one for Windows, the other for Linux and MacOS
+There are two scripts, one for Windows, the other for Linux and MacOS.
+
+Windows runs native build and WSL build for Linux on Ubuntu.
 
 onpull.sh
 onpull.ps1
