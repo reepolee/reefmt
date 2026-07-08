@@ -24,23 +24,3 @@ swc_core = { version = "69", features = [
 	"swc_atoms",
 ] }
 malva = "0.16.0"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
