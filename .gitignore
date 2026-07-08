@@ -3,8 +3,10 @@
 # macOS folder metadata
 .DS_Store
 
-# Release binaries left by release.sh
+# Release binaries left in the project root by release.sh
 reefmt-linux-*
 reefmt-macos-*
 reefmt-windows-*.exe
+
+# Scratch files left behind by testing
 test-files/
